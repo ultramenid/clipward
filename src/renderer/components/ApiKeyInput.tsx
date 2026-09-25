@@ -41,8 +41,8 @@ export function ApiKeyInput({
         <>
           {label}
           {(hasValue || configured) && (
-            <span className="inline-flex h-5 items-center gap-1 rounded-full bg-success/[0.12] px-2 text-2xs font-medium text-success shadow-[inset_0_0_0_1px_rgb(var(--success)/0.28)] animate-fade-in">
-              <Check className="h-3 w-3" strokeWidth={3} />
+            <span className="inline-flex h-[18px] items-center gap-1 rounded border border-success/25 bg-success/10 px-1.5 text-2xs font-medium text-success animate-fade-in">
+              <Check className="h-2.5 w-2.5" strokeWidth={3} />
               Added
             </span>
           )}
@@ -54,7 +54,7 @@ export function ApiKeyInput({
             <button
               type="button"
               onClick={onRemove}
-              className="rounded-full px-2 py-1 text-xs text-ink-subtle transition-colors hover:bg-danger/10 hover:text-danger"
+              className="rounded-md px-2 py-1 text-xs text-content/45 transition-colors duration-feedback hover:bg-danger/10 hover:text-danger"
             >
               Remove key
             </button>
@@ -63,7 +63,7 @@ export function ApiKeyInput({
             <button
               type="button"
               onClick={() => getApi().shell.openPath(getKeyUrl)}
-              className="inline-flex items-center gap-0.5 rounded-full px-2 py-1 text-xs text-ink-muted transition-colors hover:bg-accent/10 hover:text-accent-hover"
+              className="inline-flex items-center gap-0.5 rounded-md px-2 py-1 text-xs text-content/60 transition-colors duration-feedback hover:bg-content/10 hover:text-content"
             >
               Get a key
               <ArrowUpRight className="h-3 w-3" />
@@ -82,13 +82,13 @@ export function ApiKeyInput({
         placeholder={configured ? 'Saved securely. Paste a new key to replace.' : placeholder}
         disabled={disabled}
         mono={visible && hasValue}
-        leading={<KeyRound className="h-3.5 w-3.5" />}
+        leading={<KeyRound />}
         trailing={
           <Button
             variant="ghost"
             size="sm"
             iconOnly
-            className="h-7 w-7"
+            className="h-5 w-5 rounded"
             aria-label={visible ? 'Hide key' : 'Show key'}
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => setVisible(!visible)}

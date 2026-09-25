@@ -6,7 +6,7 @@ interface SettingRowProps {
   description?: ReactNode
   /** The control on the right, usually a Switch. */
   control: ReactNode
-  /** Inset glass tile (default) or a bare row inside an existing tile. */
+  /** Inset tile (default) or a bare row inside an existing card. */
   bare?: boolean
   className?: string
 }
@@ -16,14 +16,14 @@ export function SettingRow({ title, description, control, bare = false, classNam
   return (
     <div
       className={cn(
-        'flex items-center justify-between gap-3',
-        !bare && 'glass-tile rounded-xl px-3 py-2',
+        'flex items-center justify-between gap-4',
+        !bare && 'tile rounded-lg px-3 py-2.5',
         className
       )}
     >
       <div className="min-w-0">
-        <p className="text-sm font-medium text-ink">{title}</p>
-        {description && <p className="mt-0.5 text-2xs leading-relaxed text-ink-subtle">{description}</p>}
+        <p className="text-[13px] font-medium text-ink">{title}</p>
+        {description && <p className="mt-0.5 text-xs leading-relaxed text-content/45">{description}</p>}
       </div>
       {control}
     </div>

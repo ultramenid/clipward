@@ -158,8 +158,8 @@ export function ClipList({ output, outputDir: runDirectory, leading, onNewClip }
         </Callout>
       )}
 
-      {/* Floating glass toolbar; sticks just below the 40px title-bar strip. */}
-      <div className="glass-thick sticky top-12 z-10 mt-4 flex items-center justify-between gap-3 rounded-2xl py-1.5 pl-3 pr-1.5">
+      {/* Floating card toolbar; sticks to the top of the scroll area, under the title bar. */}
+      <div className="popover-surface sticky top-2 z-10 mt-4 flex items-center justify-between gap-3 rounded-lg py-1 pl-2.5 pr-1 shadow-none">
         <div className="flex min-w-0 items-center gap-3">
           <Checkbox
             checked={allSelected}
@@ -167,7 +167,7 @@ export function ClipList({ output, outputDir: runDirectory, leading, onNewClip }
             onChange={() => setSelected(allSelected ? new Set() : new Set(clips.map((c) => c.clip_index)))}
             label="Select all clips"
           />
-          <span className="whitespace-nowrap text-sm text-ink-muted">
+          <span className="whitespace-nowrap text-xs text-content/60">
             {selected.size > 0 ? (
               <>
                 <span className="font-medium text-ink">{selected.size}</span> selected
@@ -177,8 +177,8 @@ export function ClipList({ output, outputDir: runDirectory, leading, onNewClip }
             )}
           </span>
           {notice && (
-            <span className="inline-flex min-w-0 items-center gap-1.5 truncate rounded-full bg-success/[0.1] px-2.5 py-1 text-xs text-success shadow-[inset_0_0_0_1px_rgb(var(--success)/0.25)] animate-fade-in">
-              <Check className="h-3.5 w-3.5 shrink-0" strokeWidth={3} />
+            <span className="inline-flex h-[18px] min-w-0 items-center gap-1 truncate rounded border border-success/25 bg-success/10 px-1.5 text-2xs font-medium text-success animate-fade-in">
+              <Check className="h-2.5 w-2.5 shrink-0" strokeWidth={3} />
               <span className="truncate">{notice}</span>
             </span>
           )}
@@ -198,7 +198,7 @@ export function ClipList({ output, outputDir: runDirectory, leading, onNewClip }
               >
                 Export {selected.size}
               </Button>
-              <span aria-hidden className="mx-1 h-5 w-px bg-white/10" />
+              <span aria-hidden className="mx-1 h-4 w-px bg-stroke" />
             </div>
           )}
           <Segmented<Sort>
@@ -224,7 +224,7 @@ export function ClipList({ output, outputDir: runDirectory, leading, onNewClip }
       ) : (
         <div
           className={cn(
-            'mt-3 grid gap-3',
+            'mt-3 grid gap-2.5',
             vertical
               ? 'grid-cols-[repeat(auto-fill,minmax(140px,1fr))]'
               : 'grid-cols-[repeat(auto-fill,minmax(220px,1fr))]'
@@ -253,10 +253,11 @@ export function ClipList({ output, outputDir: runDirectory, leading, onNewClip }
 export function BackLink({ label, onClick }: { label: string; onClick: () => void }): React.JSX.Element {
   return (
     <button
+      type="button"
       onClick={onClick}
-      className="-ml-2 inline-flex h-6 items-center gap-1 rounded-full pl-1.5 pr-2.5 text-xs font-medium text-ink-muted transition-colors duration-150 hover:bg-white/[0.06] hover:text-ink"
+      className="-ml-2 inline-flex h-6 items-center gap-1 rounded-md pl-1.5 pr-2 text-xs text-content/50 transition-colors duration-feedback hover:bg-content/10 hover:text-content"
     >
-      <ArrowLeft className="h-3.5 w-3.5" />
+      <ArrowLeft className="h-3.5 w-3.5" strokeWidth={1.75} />
       {label}
     </button>
   )

@@ -7,22 +7,22 @@ type CalloutTone = 'danger' | 'warning' | 'success' | 'info'
 
 const TONES: Record<CalloutTone, { box: string; icon: string; Icon: typeof Info }> = {
   danger: {
-    box: 'bg-danger/[0.07] shadow-[inset_0_0_0_1px_rgb(var(--danger)/0.26),inset_0_1px_0_rgb(255_255_255/0.05)]',
+    box: 'border-danger/25 bg-danger/[0.06]',
     icon: 'text-danger',
     Icon: AlertTriangle
   },
   warning: {
-    box: 'bg-warning/[0.06] shadow-[inset_0_0_0_1px_rgb(var(--warning)/0.24),inset_0_1px_0_rgb(255_255_255/0.05)]',
+    box: 'border-warning/25 bg-warning/[0.06]',
     icon: 'text-warning',
     Icon: TriangleAlert
   },
   success: {
-    box: 'bg-success/[0.06] shadow-[inset_0_0_0_1px_rgb(var(--success)/0.24),inset_0_1px_0_rgb(255_255_255/0.05)]',
+    box: 'border-success/25 bg-success/[0.06]',
     icon: 'text-success',
     Icon: Check
   },
   info: {
-    box: 'bg-white/[0.045] shadow-[inset_0_0_0_1px_rgb(255_255_255/0.1),inset_0_1px_0_rgb(255_255_255/0.06)]',
+    box: 'border-content/10 bg-content/[0.03]',
     icon: 'text-ink-muted',
     Icon: Info
   }
@@ -44,7 +44,7 @@ interface CalloutProps {
   'data-testid'?: string
 }
 
-/** Tinted glass strip for errors, warnings and confirmations. */
+/** Tinted strip with a hairline border for errors, warnings and confirmations. */
 export function Callout({
   tone = 'info',
   icon,
@@ -62,19 +62,19 @@ export function Callout({
     <div
       role={role ?? (tone === 'danger' ? 'alert' : 'status')}
       data-testid={testId}
-      className={cn('flex items-start gap-2.5 rounded-xl px-3 py-2.5 animate-fade-in', t.box, className)}
+      className={cn('flex items-start gap-2 rounded-lg border px-3 py-2 animate-fade-in', t.box, className)}
     >
-      <span className={cn('mt-px shrink-0 [&_svg]:h-4 [&_svg]:w-4', t.icon)}>
+      <span className={cn('mt-0.5 shrink-0 [&_svg]:h-3.5 [&_svg]:w-3.5', t.icon)}>
         {icon ?? <t.Icon strokeWidth={tone === 'success' ? 3 : 2} />}
       </span>
       <div className="min-w-0 flex-1">
-        {title && <p className="text-sm font-medium text-ink">{title}</p>}
+        {title && <p className="text-[13px] font-medium text-ink">{title}</p>}
         {children && (
-          <div className={cn('text-sm leading-relaxed', title ? 'mt-0.5 text-ink-muted' : 'text-ink')} data-selectable>
+          <div className={cn('text-xs leading-relaxed', title ? 'mt-0.5 text-ink-muted' : 'text-ink')} data-selectable>
             {children}
           </div>
         )}
-        {stacked && action && <div className="mt-3 flex flex-wrap gap-2">{action}</div>}
+        {stacked && action && <div className="mt-2.5 flex flex-wrap gap-1.5">{action}</div>}
       </div>
       {!stacked && action && <div className="-my-1 flex shrink-0 items-center gap-2">{action}</div>}
       {onDismiss && (
@@ -84,7 +84,7 @@ export function Callout({
           iconOnly
           aria-label="Dismiss"
           onClick={onDismiss}
-          className="-my-1 -mr-1.5"
+          className="-my-0.5 -mr-1.5"
           icon={<X className="h-3.5 w-3.5" />}
         />
       )}

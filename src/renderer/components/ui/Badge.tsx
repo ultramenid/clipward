@@ -4,11 +4,11 @@ import { cn } from '../../lib/utils'
 export type Tone = 'neutral' | 'accent' | 'success' | 'danger' | 'warning'
 
 const TONES: Record<Tone, string> = {
-  neutral: 'bg-white/[0.06] text-ink-muted shadow-[inset_0_0_0_1px_rgb(255_255_255/0.1),inset_0_1px_0_rgb(255_255_255/0.08)]',
-  accent: 'bg-accent/[0.14] text-accent-hover shadow-[inset_0_0_0_1px_rgb(var(--accent)/0.32),inset_0_1px_0_rgb(255_255_255/0.08)]',
-  success: 'bg-success/[0.12] text-success shadow-[inset_0_0_0_1px_rgb(var(--success)/0.28),inset_0_1px_0_rgb(255_255_255/0.06)]',
-  danger: 'bg-danger/[0.12] text-danger shadow-[inset_0_0_0_1px_rgb(var(--danger)/0.3),inset_0_1px_0_rgb(255_255_255/0.06)]',
-  warning: 'bg-warning/[0.12] text-warning shadow-[inset_0_0_0_1px_rgb(var(--warning)/0.28),inset_0_1px_0_rgb(255_255_255/0.06)]'
+  neutral: 'bg-content/5 text-ink-muted border-content/10',
+  accent: 'bg-accent/10 text-accent-fg border-accent/25',
+  success: 'bg-success/10 text-success border-success/25',
+  danger: 'bg-danger/10 text-danger border-danger/25',
+  warning: 'bg-warning/10 text-warning border-warning/25'
 }
 
 interface BadgeProps {
@@ -18,11 +18,12 @@ interface BadgeProps {
   className?: string
 }
 
+/** A compact status label: tinted fill, hairline border, 18px tall. */
 export function Badge({ tone = 'neutral', icon, children, className }: BadgeProps): React.JSX.Element {
   return (
     <span
       className={cn(
-        'inline-flex h-5 shrink-0 items-center gap-1 rounded-full px-2 text-2xs font-medium',
+        'inline-flex min-h-[18px] shrink-0 items-center gap-1 rounded border px-1.5 py-px text-2xs font-medium',
         TONES[tone],
         className
       )}

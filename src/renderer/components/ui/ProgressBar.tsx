@@ -15,7 +15,7 @@ export function ProgressBar({ value, failed, className }: ProgressBarProps): Rea
       aria-valuemax={100}
       aria-valuenow={Math.round(pct)}
       className={cn(
-        'relative h-1.5 w-full overflow-hidden rounded-full bg-black/35 shadow-[inset_0_1px_1px_rgb(0_0_0/0.4),0_1px_0_rgb(255_255_255/0.04)]',
+        'relative h-1 w-full overflow-hidden rounded-full bg-content/10',
         className
       )}
     >
@@ -53,8 +53,7 @@ export function ProgressRing({ value, size = 200, stroke = 10, className, childr
       style={{ width: size, height: size }}
     >
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="relative -rotate-90">
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgb(0 0 0 / 0.35)" strokeWidth={stroke} />
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgb(255 255 255 / 0.06)" strokeWidth={1} />
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgb(var(--content) / 0.1)" strokeWidth={stroke} />
         <circle
           cx={size / 2}
           cy={size / 2}

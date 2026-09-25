@@ -16,7 +16,7 @@ interface HoverCardProps {
 }
 
 /**
- * A rich tooltip: hovering or focusing the trigger shows a thick-glass card
+ * A rich tooltip: hovering or focusing the trigger shows a popover-surface card
  * under it (above it when there's no room). The card is a top-layer popover,
  * so panels with hidden overflow never clip it. Escape closes it.
  */
@@ -87,7 +87,7 @@ export function HoverCard({ content, children, label, className, cardClassName, 
           id={id}
           role="tooltip"
           popover="manual"
-          className={cn('glass-thick pointer-events-none fixed inset-auto z-[120] m-0 overflow-hidden rounded-2xl border-0 p-0 text-ink animate-menu-in', cardClassName)}
+          className={cn('popover-surface popover-open pointer-events-none fixed inset-auto z-[91] m-0 overflow-hidden rounded-xl p-0 text-ink', cardClassName)}
           style={{ top: -9999, left: -9999 }}
         >
           {content}

@@ -91,7 +91,6 @@ export function LibraryPage({ onNavigate }: { onNavigate: (page: AppPage) => voi
   return (
     <Page width="wide">
       <PageHeader
-        eyebrow="Studio"
         title="Library"
         description={
           entries && entries.length > 0
@@ -100,7 +99,7 @@ export function LibraryPage({ onNavigate }: { onNavigate: (page: AppPage) => voi
         }
         actions={
           <>
-            <Button variant="ghost" icon={<ListVideo className="h-4 w-4" />} onClick={() => onNavigate('jobs')}>
+            <Button variant="ghost" icon={<ListVideo className="h-3.5 w-3.5" />} onClick={() => onNavigate('jobs')}>
               Jobs
             </Button>
             <Button
@@ -110,10 +109,10 @@ export function LibraryPage({ onNavigate }: { onNavigate: (page: AppPage) => voi
               title="Refresh"
               onClick={load}
               disabled={refreshing}
-              icon={<RefreshCw className={cn('h-4 w-4', refreshing && 'animate-spin')} />}
+              icon={<RefreshCw className={cn('h-3.5 w-3.5', refreshing && 'animate-spin')} />}
             />
             {outputDirectory && (
-              <Button icon={<FolderOpen className="h-4 w-4" />} onClick={() => getApi().shell.openPath(outputDirectory)}>
+              <Button icon={<FolderOpen className="h-3.5 w-3.5" />} onClick={() => getApi().shell.openPath(outputDirectory)}>
                 Open folder
               </Button>
             )}
@@ -129,24 +128,24 @@ export function LibraryPage({ onNavigate }: { onNavigate: (page: AppPage) => voi
 
       {entries && entries.length > 0 && (
         <TextInput
-          className="mt-5 max-w-sm rounded-full"
+          className="mt-4 max-w-xs"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search by video title"
-          leading={<Search className="h-3.5 w-3.5" />}
+          leading={<Search strokeWidth={1.75} />}
           aria-label="Search runs"
         />
       )}
 
       <div className="mt-4">
         {entries === null ? (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-4" aria-busy="true" aria-label="Loading library">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-2.5" aria-busy="true" aria-label="Loading library">
             {Array.from({ length: 6 }).map((_, i) => (
-              <div key={i} className="glass rounded-2xl p-1.5">
-                <Skeleton className="aspect-video rounded-xl" />
-                <div className="space-y-2.5 px-2 pb-2 pt-3.5">
-                  <Skeleton className="h-3.5 w-3/4 rounded-full" />
-                  <Skeleton className="h-3 w-1/3 rounded-full" />
+              <div key={i} className="card rounded-xl p-1">
+                <Skeleton className="aspect-video rounded-lg" />
+                <div className="space-y-2 px-1.5 pb-1.5 pt-2.5">
+                  <Skeleton className="h-3.5 w-3/4" />
+                  <Skeleton className="h-3 w-1/3" />
                 </div>
               </div>
             ))}
@@ -157,18 +156,18 @@ export function LibraryPage({ onNavigate }: { onNavigate: (page: AppPage) => voi
             title="No clips yet"
             description="Generate clips from a long video and every run will show up here, newest first."
             action={
-              <Button variant="primary" size="lg" icon={<Sparkles className="h-4 w-4" />} onClick={() => onNavigate('clip')}>
+              <Button variant="primary" icon={<Sparkles className="h-3.5 w-3.5" />} onClick={() => onNavigate('clip')}>
                 Create your first clips
               </Button>
             }
           />
         ) : filtered.length === 0 ? (
-          <div className="glass flex flex-col items-center rounded-3xl px-5 py-10 text-center">
-            <Search className="h-5 w-5 text-ink-subtle" />
-            <p className="mt-3 text-sm text-ink-muted">No runs match “{query}”.</p>
+          <div className="card flex flex-col items-center rounded-xl px-5 py-10 text-center">
+            <Search className="h-4 w-4 text-content/40" strokeWidth={1.75} />
+            <p className="mt-2.5 text-[13px] text-content/60">No runs match “{query}”.</p>
           </div>
         ) : (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-4">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-2.5">
             {filtered.map((entry) => (
               <RunCard
                 key={entry.jobId}
@@ -201,14 +200,15 @@ function RunCard({ entry, onOpen, onOpenFolder }: {
 
   return (
     <button
+      type="button"
       onClick={failed ? onOpenFolder : onOpen}
       aria-label={failed ? `Open folder for ${entry.status === 'incomplete' ? 'unfinished' : 'unreadable'} run` : undefined}
       className={cn(
-        'glass group rounded-2xl p-1.5 text-left transition-[transform,box-shadow] duration-300 ease-out',
-        'hover:-translate-y-1 hover:shadow-[inset_0_1px_0_rgb(255_255_255/0.1),0_0_0_1px_rgb(255_255_255/0.08),0_28px_56px_-24px_rgb(0_0_0/0.8)]'
+        'card group rounded-xl p-1 text-left transition-[border-color,background-color] duration-feedback ease-out',
+        'hover:border-content/15 hover:bg-content/[0.05]'
       )}
     >
-      <div className="relative aspect-video overflow-hidden rounded-xl bg-black/40 shadow-[inset_0_0_0_1px_rgb(255_255_255/0.06)]">
+      <div className="relative aspect-video overflow-hidden rounded-lg bg-black/40">
         {thumb && !previewFailed ? (
           <>
             {/* Vertical clips sit on a blurred copy of themselves to fill the 16:9 frame. */}
@@ -217,33 +217,33 @@ function RunCard({ entry, onOpen, onOpenFolder }: {
               src={localFileUrl(thumb)}
               alt=""
               draggable={false}
-              className="relative h-full w-full object-contain transition-transform duration-500 ease-out group-hover:scale-[1.04]"
+              className="relative h-full w-full object-contain"
               onError={() => setPreviewFailed(true)}
             />
           </>
         ) : failed ? (
           <div className="flex h-full items-center justify-center text-danger/70">
-            <AlertTriangle className="h-6 w-6" />
+            <AlertTriangle className="h-5 w-5" strokeWidth={1.75} />
           </div>
         ) : (
           <Skeleton className="h-full rounded-none" />
         )}
         {!failed && (
-          <span className="glass-chip absolute bottom-2.5 right-2.5 inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-2xs font-medium text-white">
+          <span className="media-chip absolute bottom-2 right-2 inline-flex h-[18px] items-center gap-1 rounded px-1.5 text-2xs font-medium">
             <Clapperboard className="h-3 w-3" />
             {entry.clipCount} clip{entry.clipCount === 1 ? '' : 's'}
           </span>
         )}
       </div>
-      <div className="px-2 pb-2 pt-3.5">
-        <p className="truncate text-sm font-medium text-ink" title={entry.videoTitle}>
+      <div className="px-1.5 pb-1.5 pt-2">
+        <p className="truncate text-[13px] font-medium text-ink" title={entry.videoTitle}>
           {failed ? `${entry.status === 'incomplete' ? 'Unfinished' : 'Unreadable'} run · Open folder` : entry.videoTitle}
         </p>
-        <p className="mt-1 flex items-center gap-1.5 text-xs text-ink-subtle">
+        <p className="mt-0.5 flex items-center gap-1.5 text-2xs text-content/45">
           <span>{formatRelativeDate(entry.date)}</span>
           {entry.totalCostUsd != null && (
             <>
-              <span className="text-ink-faint">·</span>
+              <span className="text-content/25">·</span>
               <span className="font-mono tabular">{formatUsd(entry.totalCostUsd)}</span>
             </>
           )}

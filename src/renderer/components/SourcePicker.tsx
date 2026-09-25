@@ -126,32 +126,23 @@ function DropZone({
       }}
       onDrop={onDrop}
       className={cn(
-        'glass relative rounded-2xl p-3.5 transition-[box-shadow,background-color] duration-200 ease-out',
-        dragging && 'bg-accent/[0.08] shadow-[inset_0_0_0_1px_rgb(var(--accent)/0.75),0_0_0_4px_rgb(var(--accent)/0.12)]',
+        'relative rounded-xl border border-dashed border-content/15 bg-content/[0.02] p-4 transition-[border-color,background-color] duration-feedback ease-out',
+        dragging && 'border-accent/70 bg-accent/[0.06]',
         disabled && 'pointer-events-none opacity-50'
       )}
     >
-      {/* Dashed inner guide: marks the card as a drop target. */}
-      <div
-        aria-hidden
-        className={cn(
-          'pointer-events-none absolute inset-1.5 rounded-xl border border-dashed transition-colors duration-200',
-          dragging ? 'border-accent/60' : 'border-white/[0.08]'
-        )}
-      />
-
       <div className="relative flex items-center gap-3">
         <IconTile tone="accent">
           <UploadCloud strokeWidth={1.75} />
         </IconTile>
         <div className="min-w-0">
-          <h2 className="truncate text-sm font-semibold text-ink">
+          <h2 className="truncate text-[13px] font-semibold text-ink">
             {dragging ? 'Choose this video in the file picker' : 'Add a long video'}
           </h2>
-          <p className="text-xs text-ink-subtle">Drop a video file or link here, or paste a link below.</p>
-          <div role="group" aria-label="Supported video links" className="mt-2 flex flex-wrap items-center gap-2">
-            <Badge icon={<Youtube aria-hidden className="h-3.5 w-3.5 text-[#ff0033]" />}>YouTube</Badge>
-            <Badge icon={<Twitch aria-hidden className="h-3.5 w-3.5 text-[#a970ff]" />}>Twitch VODs</Badge>
+          <p className="text-xs text-content/45">Drop a video file or link here, or paste a link below.</p>
+          <div role="group" aria-label="Supported video links" className="mt-2 flex flex-wrap items-center gap-1.5">
+            <Badge icon={<Youtube aria-hidden className="h-3 w-3 text-[#ff0033]" />}>YouTube</Badge>
+            <Badge icon={<Twitch aria-hidden className="h-3 w-3 text-[#a970ff]" />}>Twitch VODs</Badge>
           </div>
         </div>
       </div>
@@ -163,7 +154,7 @@ function DropZone({
           value={draft}
           placeholder="YouTube, Twitch VOD or direct video link"
           aria-label="Video link"
-          leading={<Link2 className="h-4 w-4" />}
+          leading={<Link2 />}
           onChange={(e) => {
             setDraft(e.target.value)
             if (error) setError(null)
@@ -189,8 +180,8 @@ function DropZone({
             ) : undefined
           }
         />
-        <span className="text-xs text-ink-faint max-sm:hidden">or</span>
-        <Button size="lg" variant="secondary" icon={<FolderOpen className="h-4 w-4" />} onClick={onBrowse} disabled={disabled}>
+        <span className="text-xs text-content/35 max-sm:hidden">or</span>
+        <Button size="lg" variant="secondary" icon={<FolderOpen className="h-3.5 w-3.5" />} onClick={onBrowse} disabled={disabled}>
           Browse
         </Button>
       </div>
@@ -218,8 +209,8 @@ function SourcePreview({
   const [mediaFailed, setMediaFailed] = useState(false)
 
   return (
-    <div className="glass flex items-center gap-3 rounded-2xl p-2.5 pr-3 animate-fade-in">
-      <div className="relative aspect-video h-[72px] shrink-0 overflow-hidden rounded-xl bg-black/40 shadow-[inset_0_0_0_1px_rgb(255_255_255/0.08)]">
+    <div className="card flex items-center gap-3 rounded-xl p-2 pr-3 animate-fade-in">
+      <div className="relative aspect-video h-[72px] shrink-0 overflow-hidden rounded-lg border border-stroke bg-black/40">
         {!mediaFailed && ytId && (
           <img
             src={`https://i.ytimg.com/vi/${ytId}/hqdefault.jpg`}
@@ -248,19 +239,19 @@ function SourcePreview({
           />
         )}
         {(mediaFailed || (link && !ytId)) && (
-          <div className="flex h-full w-full items-center justify-center bg-accent/10 text-ink-subtle">
+          <div className="flex h-full w-full items-center justify-center bg-content/5 text-content/45">
             {twitchId ? <Twitch className="h-5 w-5" /> : link ? <Link2 className="h-5 w-5" /> : <FileVideo className="h-5 w-5" />}
           </div>
         )}
         {durationMs != null && (
-          <span className="glass-chip absolute bottom-1 right-1 rounded-full px-1.5 font-mono text-[10px] tabular text-white">
+          <span className="media-chip absolute bottom-1 right-1 rounded px-1 font-mono text-[10px] tabular">
             {formatTimecode(durationMs)}
           </span>
         )}
       </div>
 
       <div className="min-w-0 flex-1">
-        <p className="truncate text-base font-semibold text-ink" title={displaySource} data-selectable>
+        <p className="truncate text-[13px] font-medium text-ink" title={displaySource} data-selectable>
           {displaySource}
         </p>
         <div className="mt-1.5 flex min-w-0 items-center gap-2">
@@ -269,7 +260,7 @@ function SourcePreview({
           >
             {twitchId ? 'Twitch VOD' : ytId ? 'YouTube' : link ? 'Link' : 'Local file'}
           </Badge>
-          <span className="truncate text-2xs text-ink-subtle">{twitchId ? 'Public, completed videos only' : 'Ready to clip'}</span>
+          <span className="truncate text-xs text-content/45">{twitchId ? 'Public, completed videos only' : 'Ready to clip'}</span>
         </div>
       </div>
 
