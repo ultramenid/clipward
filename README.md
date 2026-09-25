@@ -47,20 +47,20 @@ In **Create → Format → Video speed**, choose **1×** (normal), **1.1×**, **
 
 ## Download
 
-Signed macOS builds for Apple silicon and Intel will appear on [Releases](https://github.com/clipward/clipward/releases) after release testing. Those builds bundle Python, FFmpeg and yt-dlp. Until then, use the development setup below. Windows source builds are experimental and are not part of the supported release workflow.
+Signed macOS builds for Apple silicon and Intel will appear on [Releases](https://github.com/clipward/clipward/releases) after release testing. Those builds bundle FFmpeg and yt-dlp. Until then, use the development setup below. Windows source builds are experimental and are not part of the supported release workflow.
 
 On first launch, the setup card on Create asks for two things:
 
 1. **The AI that picks the clips.** Choose a detected CLI you're logged in to (for example `claude` or `codex`), or pick OpenRouter, Anthropic or OpenAI and paste a key. **Test connection** sends one tiny request to confirm it works.
 2. **A Whisper model.** Large v3 Turbo (compact, 574 MB) is recommended; Base and Small are faster, Medium and Large v3 Turbo are more accurate. Change it later in **Settings → Transcription**.
 
-Keys are encrypted with your operating system's secure storage, and only the selected provider's key is passed to the clipping engine.
+Keys are stored in your operating system's keychain, and only the selected provider's key is passed to the clipping engine.
 
 ### What leaves your computer
 
 For a link, the app downloads the source using your network connection. Audio never leaves your computer: Whisper transcribes it locally. The transcript text and your campaign brief go to the AI provider you chose, through its CLI or its API. With an API-key provider and Smart framing's AI vision check on, a few video frames also go to that provider. CLI providers are text only. The one-time Whisper model download comes from Hugging Face. Provider accounts, charges, retention and data policies are governed by those services.
 
-Downloads and intermediate media are held in a private `work/` directory under Clipward’s per-user application data folder. Clipward removes job work on completion, failure, and cancellation, and clears stale work when it next starts after a forced shutdown. A local video you selected stays where it was. Rendered clips, the transcript, plan and `job_output.json` remain in a run folder under your chosen **Output folder** (by default, `~/Clipward`). Delete the run folder to remove those local outputs. Settings, downloaded Whisper models and diagnostic logs live in the per-user application data and logs folders.
+Downloads and intermediate media are held in a private `work/` directory under Clipward’s per-user application data folder. Clipward removes job work on completion, failure, and cancellation, and clears stale work when it next starts after a forced shutdown. A local video you selected stays where it was. Rendered clips, the transcript, plan and `result.json` remain in a run folder under your chosen **Output folder** (by default, `~/Clipward`). Delete the run folder to remove those local outputs. Settings, downloaded Whisper models and diagnostic logs live in the per-user application data and logs folders.
 
 Only download or clip material you have permission to use, and follow each campaign's rules. Remote sites may limit downloads or change their access rules.
 
@@ -72,69 +72,62 @@ Live channels, Twitch clips, collections, subscriber-only videos and deleted or 
 
 ## Develop
 
-**Prerequisites:** Node.js 22, Python 3.12, and FFmpeg with the libass-backed `ass` filter for captions. The clipping engine, model, fonts, and locked Python dependencies are included in this repository. In development, Clipward uses FFmpeg from `engine-bin/` when it exists, then falls back to your `PATH`. Provider keys are needed for live jobs, not tests.
+Clipward is a [Tauri 2](https://tauri.app) app: a Rust app shell and clipping engine with a React UI.
+
+**Prerequisites:**
+- Node.js 22 and a stable Rust toolchain (`rustup`).
+- A C/C++ toolchain and CMake, which whisper.cpp needs to build.
+- The [Tauri system dependencies](https://tauri.app/start/prerequisites/) for your OS. On Linux that is webkit2gtk-4.1, gtk3, librsvg and libayatana-appindicator.
+- FFmpeg with the libass-backed `ass` filter for captions.
+- yt-dlp for link sources.
+
+Clipward uses FFmpeg and yt-dlp from `engine-bin/` when that folder exists, and otherwise from your `PATH`. Provider keys are only needed for live jobs, not for tests.
 
 ```bash
 git clone https://github.com/clipward/clipward
 cd clipward
-python3.12 -m venv engine/.venv
-engine/.venv/bin/pip install --require-hashes -r engine/requirements.lock
 npm ci
-npm run dev
+npm run dev        # tauri dev: Vite on :1420 plus the Rust app
 ```
 
-Clipward finds its in-repo engine and virtual environment automatically. **Settings → System check** shows the Python, yt-dlp, FFmpeg, and engine checks; set **Python path** in development if you use another interpreter.
+**Settings → System check** shows the FFmpeg, FFprobe, yt-dlp, smart framing and engine checks. The engine's fonts and face detection model are in `crates/engine/assets/` and are bundled with the app.
 
-On Linux, use system FFmpeg with the libass-backed `ass` filter (`ffmpeg -hide_banner -filters | grep -E '[[:space:]]ass[[:space:]]'`) and Python 3.12. Arch: `sudo pacman -S ffmpeg`. Skip `scripts/prepare-resources.sh` during development; it prepares macOS release resources. Linux development and tests are supported, but a self-contained Linux package is not yet available.
+To check that FFmpeg has the caption filter: `ffmpeg -hide_banner -filters | grep -E '[[:space:]]ass[[:space:]]'`. On macOS, `brew install ffmpeg-full` includes libass; on Arch, `sudo pacman -S ffmpeg yt-dlp`.
 
-For experimental Windows development, install Python 3.12 and FFmpeg with the `ass` filter on `PATH`, then use PowerShell:
-
-```powershell
-python -m venv engine/.venv
-engine/.venv/Scripts/python.exe -m pip install --require-hashes -r engine/requirements.lock
-npm ci
-npm run dev
-```
-
-The in-repo Windows virtual environment is detected automatically. Native Windows CI checks the engine, desktop modules, renderer, and production build. Tests that create file symlinks report a skip if Windows denies symlink creation; they run when the account has the required capability. Release-helper tests use Git Bash. Windows installers and signed updates remain outside the supported release workflow.
-
-The release workflow packages the in-repo engine and media tools into signed macOS builds. For local packaging, first run `bash scripts/prepare-resources.sh arm64` (or `x64` on Intel), then follow [the release guide](docs/RELEASING.md). Signing credentials are still required for a distributable build.
+`npm run build` produces installers for the current platform in `target/release/bundle/`. Distributable macOS builds also need signing credentials; see [the release guide](docs/RELEASING.md).
 
 ### First run and troubleshooting
 
 1. In the setup card, pick an AI provider (a logged-in CLI or an API key) and download a Whisper model. If a CLI isn't detected, run it once in a terminal to sign in, then choose **Detect again**.
-2. Run **Settings → System check**. In development, set the Python path if your local virtual environment is not detected. Captions need an FFmpeg build with libass (`brew install ffmpeg-full` on macOS, or stage one in `engine-bin/`).
+2. Run **Settings → System check**. Captions need an FFmpeg build with libass (`brew install ffmpeg-full` on macOS, or stage one in `engine-bin/`).
 3. Paste a video link or choose a file, paste the campaign brief, pick clip lengths, framing and caption style, then generate. Smart framing follows faces and arranges screen shares with facecams shot by shot. Completed runs appear in Library and in your output folder.
-4. If a link fails, check it in a signed-out browser or download it yourself and select the local file. If a run fails, use the in-app error and System check first; logs intentionally omit raw provider responses and private source details.
+4. If a link fails, check it in a signed-out browser, or download the video yourself and select the local file. If a run fails, start with the in-app error and System check. Logs intentionally leave out raw provider responses and private source details.
 
 | Script | What it does |
 | --- | --- |
-| `npm run dev` | Run the app with hot reload |
-| `npm run typecheck` | Type-check the main process and renderer |
+| `npm run dev` | Run the app with hot reload (`tauri dev`) |
+| `npm run build` | Build installers for this platform (`tauri build`) |
+| `npm run dev:web` / `npm run build:web` | Run or build the React UI alone with Vite |
+| `npm run typecheck` | Type-check the renderer and build configs |
 | `npm run lint` | Check TypeScript and JavaScript source with ESLint |
-| `npm run build` | Production build into `out/` |
-| `npm run test:bridge` | Run Python bridge regression tests |
-| `engine/.venv/bin/python -m pytest -q engine/tests` | Run the clipping engine tests after installing pytest |
-| `npm run test:release` | Check macOS updater metadata merging |
-| `npm run test:renderer` | Check renderer state and parsing regressions |
-| `npm run test:main` | Check desktop security and pipeline regressions |
-| `npm run dist:mac` | Package the current Mac architecture into `dist/` after preparing matching resources (signing needs a Developer ID) |
-| `npm run icons` | Render app icons from the vector master `resources/clipward-icon.svg` (macOS; see `scripts/icon/README.md`) |
+| `npm test` | Run the renderer, release-script and Rust tests |
+| `npm run test:renderer` | Check renderer state, forms and appearance |
+| `npm run test:rust` | `cargo test --workspace`. Engine tests that need FFmpeg skip when it isn't installed |
+| `npm run icons` | Generate the bundle icons in `src-tauri/icons/` from `resources/clipward-icon.svg` (see `scripts/icon/README.md`) |
 
 ### Project layout
 
 ```
-src/main/        Electron main process: settings, AI provider detection, Whisper downloads, pipeline runner, IPC
-src/preload/     The typed window.clipward API exposed to the renderer
-src/renderer/    React UI (Create, Library, Jobs, Settings)
-src/shared/      Product constants shared by main and renderer
-bridge/          Python worker protocol, provider check and network guard
-engine/          Clipward clipping engine, assets, locked Python dependencies, and tests
-scripts/icon/    Icon and logo generators
+src-tauri/        Tauri app shell: window, menu, commands, settings, job queue, Whisper downloads
+crates/engine/    Rust clipping engine: download, transcribe, plan, layout, render, pipeline
+crates/engine/assets/  Caption fonts and the YuNet face detection model
+src/renderer/     React UI (Create, Library, Jobs, Settings)
+src/shared/       Types and product constants shared by the UI and the bridge
+scripts/          Release helpers and icon/logo generators
 ```
 
 The visual system (tokens, components and rules) is documented in [DESIGN.md](DESIGN.md).
-The desktop trust boundaries and bridge protocol are described in [Architecture](docs/ARCHITECTURE.md).
+The desktop trust boundaries and the engine pipeline are described in [Architecture](docs/ARCHITECTURE.md).
 The [open-source readiness checklist](docs/OPEN_SOURCE_READINESS.md) tracks the remaining release gates and maintenance priorities.
 
 ## Contributing

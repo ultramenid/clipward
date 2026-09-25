@@ -15,8 +15,8 @@ The engine runs whisper.cpp with token timestamps and one word per segment (`max
 - **A logged-in coding CLI**, billed to that CLI's plan: Claude Code (`claude`), Codex (`codex`), Antigravity (`agy`), Grok (`grok`), Cursor (`cursor-agent`), OpenCode (`opencode`) or Gemini CLI (`gemini`). The app finds them on `PATH` and in the usual per-user install folders. Each runs non-interactively in an empty temporary folder, with tools off or read-only where the CLI allows, and the clip-plan JSON schema is enforced by the CLI's own schema flag when it has one. CLIs are text only, so layout vision is off and silent videos cannot be planned. Runs report $0 because the CLI bills the user's plan.
 - **Your own API key** for OpenRouter, Anthropic or OpenAI. Only the selected provider's key reaches the engine. An `ANTHROPIC_API_KEY` is never passed to a CLI, so Claude Code keeps using the logged-in plan.
 
-**Test connection** sends one tiny structured-output request through the same engine gateway a job uses (`bridge/provider_check.py`).
+**Test connection** sends one tiny structured-output request through the same engine gateway a job uses (`clip_engine::llm`).
 
-Every planner and layout-vision request still goes through `chat_completion` in `engine/clip_engine/services/openrouter.py`, and `llm_gateway.py` routes it to the selected provider. The **campaign brief** from the Create wizard is added to the planner prompt as hard requirements. Clips that break a rule are left out, so a strict brief can return fewer clips.
+Every planner and layout-vision request goes through `clip_engine::llm` (`crates/engine/src/llm.rs`), which routes it to the selected provider. The **campaign brief** from the Create wizard is added to the planner prompt as hard requirements. Clips that break a rule are left out, so a strict brief can return fewer clips.
 
-Tests: `engine/tests/test_transcription.py` (word timing, grouping, failures), `bridge/test_bridge_runner.py` (provider, Whisper and brief validation) and `tests/main/security.test.cjs` (provider key isolation, job config).
+Tests: `crates/engine/src/transcribe.rs` (word timing, grouping, failures), `crates/engine/src/planner/tests.rs` (prompts, brief and parsing), and `src-tauri/src/settings.rs` and `validation.rs` (provider key isolation, job config).

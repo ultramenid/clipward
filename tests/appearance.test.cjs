@@ -107,7 +107,7 @@ function deferred() {
   return { promise, resolve }
 }
 
-const settings = { openrouterConfigured: false, outputDirectory: '/clips', pythonPath: 'python3' }
+const settings = { openrouterConfigured: false, outputDirectory: '/clips' }
 
 test('a shell without appearance settings reads as the defaults, scaled by the page', async () => {
   const { useSettingsStore, APPEARANCE_DEFAULTS } = load({ settings: { load: async () => settings } })

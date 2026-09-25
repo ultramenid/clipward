@@ -1,7 +1,6 @@
 // Vite config for the Tauri app's renderer (src/renderer → dist/).
 // `npm run dev` (tauri dev) starts this dev server through beforeDevCommand;
-// `npm run build` (tauri build) runs `vite build` first. electron.vite.config.ts
-// remains only for the legacy Electron shell until it is removed.
+// `npm run build` (tauri build) runs `vite build` first.
 import { readFileSync, readdirSync, statSync } from 'fs'
 import { resolve } from 'path'
 import { defineConfig, type Plugin } from 'vite'

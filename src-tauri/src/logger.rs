@@ -1,4 +1,4 @@
-//! Structured JSON-lines logger (port of src/main/logger.ts).
+//! Structured JSON-lines logger.
 //!
 //! Context values are sanitized before they are written: keys that tend to carry
 //! paths, URLs, secrets or untrusted text are replaced with "[omitted]", as are

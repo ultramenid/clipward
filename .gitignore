@@ -1,5 +1,4 @@
 node_modules/
-out/
 dist/
 .env
 .env.local
@@ -11,14 +10,10 @@ dist/
 *.key
 *.log
 .DS_Store
-engine-venv/
 engine-bin/
-engine/.venv/
 *.tsbuildinfo
 
 __pycache__/
 *.py[cod]
-__pycache__/
-.pytest_cache/
 target/
-dist/
+src-tauri/gen/

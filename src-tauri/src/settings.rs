@@ -1,4 +1,4 @@
-//! Settings store (port of src/main/settings-store.ts).
+//! Settings store.
 //!
 //! Clipward is bring-your-own-key: every provider call is made from this machine
 //! with the user's own keys. Keys never touch settings.json: they live in the OS
@@ -37,8 +37,6 @@ pub struct AppSettings {
     pub ai_model: String,
     pub whisper_model: String,
     pub output_directory: String,
-    /// Kept for the renderer's settings shape; the Rust engine runs in-process.
-    pub python_path: String,
     /// Names and jargon the speech-to-text should spell correctly, one per line.
     pub custom_vocabulary: String,
     /// Native window glass (macOS vibrancy, Windows Mica/acrylic). Not a secret;
@@ -103,7 +101,6 @@ impl AppSettings {
 #[serde(rename_all = "camelCase")]
 pub struct PublicSettings {
     pub output_directory: String,
-    pub python_path: String,
     pub custom_vocabulary: String,
     pub ai_provider: String,
     pub ai_model: String,
@@ -127,7 +124,6 @@ pub struct PublicSettings {
 #[serde(rename_all = "camelCase")]
 pub struct EditableSettings {
     pub output_directory: String,
-    pub python_path: String,
     pub custom_vocabulary: String,
     pub ai_provider: String,
     pub ai_model: String,
@@ -142,7 +138,6 @@ struct PersistedSettings {
     ai_model: String,
     whisper_model: String,
     output_directory: String,
-    python_path: String,
     #[serde(default)]
     custom_vocabulary: String,
     /// Which API keys are saved in the keychain, so loading never touches the
@@ -164,7 +159,6 @@ fn default_window_glass() -> bool {
 pub fn public_settings(settings: &AppSettings) -> PublicSettings {
     PublicSettings {
         output_directory: settings.output_directory.clone(),
-        python_path: settings.python_path.clone(),
         custom_vocabulary: settings.custom_vocabulary.clone(),
         ai_provider: settings.ai_provider.clone(),
         ai_model: settings.ai_model.clone(),
@@ -226,11 +220,6 @@ impl SettingsStore {
                 ai_model: String::new(),
                 whisper_model: DEFAULT_WHISPER_MODEL.into(),
                 output_directory: home.join("Clipward").to_string_lossy().into_owned(),
-                python_path: if cfg!(windows) {
-                    "python".into()
-                } else {
-                    "python3".into()
-                },
                 custom_vocabulary: String::new(),
                 window_glass: default_window_glass(),
                 appearance: Appearance::default(),
@@ -248,7 +237,6 @@ impl SettingsStore {
             ("aiModel", &settings.ai_model),
             ("whisperModel", &settings.whisper_model),
             ("outputDirectory", &settings.output_directory),
-            ("pythonPath", &settings.python_path),
             ("customVocabulary", &settings.custom_vocabulary),
         ];
         for (name, value) in fields {
@@ -280,7 +268,6 @@ impl SettingsStore {
                 &settings.output_directory,
                 &self.defaults.output_directory,
             ),
-            python_path: or_default(&settings.python_path, &self.defaults.python_path),
             custom_vocabulary: vocabulary_terms(&settings.custom_vocabulary).join("\n"),
             window_glass: settings.window_glass,
             appearance: settings.appearance.normalized(),
@@ -332,7 +319,6 @@ impl SettingsStore {
             ai_model: persisted.ai_model,
             whisper_model: persisted.whisper_model,
             output_directory: persisted.output_directory,
-            python_path: persisted.python_path,
             custom_vocabulary: persisted.custom_vocabulary,
             window_glass: persisted.window_glass,
             appearance: persisted.appearance,
@@ -402,7 +388,6 @@ impl SettingsStore {
             ai_model: settings.ai_model.clone(),
             whisper_model: settings.whisper_model.clone(),
             output_directory: settings.output_directory.clone(),
-            python_path: settings.python_path.clone(),
             custom_vocabulary: settings.custom_vocabulary.clone(),
             window_glass: settings.window_glass,
             appearance: settings.appearance.clone(),
@@ -435,7 +420,6 @@ impl SettingsStore {
         let current = self.load()?;
         let saved = self.save(AppSettings {
             output_directory: update.output_directory,
-            python_path: update.python_path,
             custom_vocabulary: update.custom_vocabulary,
             ai_provider: update.ai_provider,
             ai_model: update.ai_model,

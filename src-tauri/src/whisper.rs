@@ -1,4 +1,4 @@
-//! Offline Whisper model downloads (port of src/main/whisper-models.ts).
+//! Offline Whisper model downloads.
 use crate::logger;
 use crate::shared::{is_whisper_model_id, WHISPER_MODEL_IDS};
 use serde::Serialize;

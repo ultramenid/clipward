@@ -1,5 +1,4 @@
-//! Only publicly routable destinations are valid download and banner sources
-//! (port of src/main/network-policy.ts).
+//! Only publicly routable destinations are valid download and banner sources.
 use crate::security::is_web_url;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;

@@ -94,8 +94,8 @@ function DropZone({
 
     if (e.dataTransfer.files?.length) {
       try {
-        // A renderer-supplied path cannot grant file access. Let Electron's
-        // native picker make the local selection in the main process.
+        // A renderer-supplied path cannot grant file access. Let the native
+        // picker make the local selection in the app shell.
         const path = await getApi().dialog.selectVideo()
         if (!path) return
         setError(null)

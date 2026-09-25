@@ -1,5 +1,4 @@
-//! AI provider readiness: logged-in CLI detection and a one-request provider test
-//! (port of src/main/ai-providers.ts).
+//! AI provider readiness: logged-in CLI detection and a one-request provider test.
 use crate::settings::AppSettings;
 use crate::shared::AI_CLIS;
 use crate::tools::find_binary;

@@ -64,8 +64,8 @@
     "targets": "all",
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
     "resources": {
-      "../engine/assets/fonts/": "assets/fonts/",
-      "../engine/assets/models/": "assets/models/"
+      "../crates/engine/assets/fonts/": "assets/fonts/",
+      "../crates/engine/assets/models/": "assets/models/"
     },
     "copyright": "MIT License",
     "category": "Video",

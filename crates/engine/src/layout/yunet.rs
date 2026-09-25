@@ -217,7 +217,7 @@ mod tests {
     }
 
     fn model_path() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../engine/assets/models/face_detection_yunet_2023mar.onnx")
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/models/face_detection_yunet_2023mar.onnx")
     }
 
     /// Set YUNET_TEST_BGR=<file>:<width>:<height> (raw bgr24 of a portrait) to

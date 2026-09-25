@@ -1,4 +1,4 @@
-//! Per-run status records kept in each run folder (port of src/main/run-history.ts).
+//! Per-run status records kept in each run folder.
 use crate::paths::{iso_now, open_no_follow, write_atomic};
 use crate::validation::twitch_vod_id;
 use regex::Regex;

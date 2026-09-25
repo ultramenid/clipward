@@ -1,7 +1,6 @@
 /**
- * The API the renderer uses to reach the app shell. In the Tauri app it is
- * implemented by src/renderer/lib/bridge.ts over `invoke`/`listen`; the shape is
- * the one the Electron preload exposed as `window.clipward`.
+ * The API the renderer uses to reach the app shell, implemented by
+ * src/renderer/lib/bridge.ts over Tauri `invoke`/`listen`.
  */
 import type { ClipJobRequest, JobSnapshot } from './jobs'
 import type { ApiKeyName, DetectedCli, ProviderTestResult } from './ai-providers'
@@ -19,7 +18,6 @@ export interface ClipSettings {
   aiModel: string
   whisperModel: string
   outputDirectory: string
-  pythonPath: string
   customVocabulary: string
   /** Native window glass (macOS vibrancy, Windows Mica/acrylic). Change it with settings.setWindowGlass. */
   windowGlass: boolean
@@ -52,18 +50,15 @@ export interface HistoryEntry {
  * `engine`/`enginePath` the bundled fonts and models; `bridgeRunner` is always true.
  */
 export interface ToolStatus {
-  python: boolean
-  pythonDeps: boolean
-  pythonPath: string
-  pythonError: string | null
+  /** The bundled face detection model used for smart framing. */
+  smartFraming: boolean
+  smartFramingError: string | null
   ffmpeg: boolean
   ffmpegCaptions: boolean
   ffprobe: boolean
   ytdlp: boolean
   engine: boolean
   enginePath: string
-  bridgeRunner: boolean
-  bridgePath: string
 }
 
 export interface ClipwardAPI {

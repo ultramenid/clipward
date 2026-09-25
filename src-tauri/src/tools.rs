@@ -1,4 +1,4 @@
-//! ffmpeg / ffprobe / yt-dlp discovery (port of src/main/tools.ts) and the helpers
+//! ffmpeg / ffprobe / yt-dlp discovery and the helpers
 //! for running them.
 use crate::paths::AppPaths;
 use regex::Regex;

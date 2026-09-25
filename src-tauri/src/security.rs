@@ -1,4 +1,4 @@
-//! Path and URL checks (port of src/main/security.ts).
+//! Path and URL checks.
 //!
 //! The renderer can only name media files that are inside the library (the output
 //! folder) or that the user picked with a native dialog in this session; every

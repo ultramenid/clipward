@@ -27,14 +27,13 @@ and saved results identify faster exports. The draft retains it across navigatio
 
 ## Compatibility and verification
 
-`videoSpeed` crosses desktop IPC as a number and becomes `video_speed` in the
-bridge/engine request. Missing values default to 1; malformed, non-finite,
-slower-than-1, and faster-than-2 values are rejected. The bridge contract is
-version 2 so older engines cannot silently ignore the option. Saved metrics
-include `requested_settings.video_speed`; older results still load normally.
+`videoSpeed` crosses the Tauri command boundary as a number and becomes
+`ClipJobRequest.video_speed` in the engine. Missing values default to 1;
+malformed, non-finite, slower-than-1, and faster-than-2 values are rejected.
+Saved metrics include `requested_settings.video_speed`; older results still
+load normally.
 
-Tests cover keyboard selection and submission in Electron, default and invalid
-values, bridge forwarding, draft retention, render fallbacks, sidecars, chapters,
+Tests cover default and invalid values, job validation, draft retention, render fallbacks, sidecars, chapters,
 and real exports at every preset. The media tests measure flash/beep timing,
 audio frequency, exported duration, and burned captions, including silent input,
 nonzero source seeks, delayed audio, cuts, and overlays.

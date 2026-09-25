@@ -83,7 +83,7 @@ pub fn fail(stderr: &[u8]) -> Result<MediaOutput> {
 }
 
 pub fn fonts_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../engine/assets/fonts")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts")
 }
 
 /// A renderer with the given runner, no analyzer and libx264 args.

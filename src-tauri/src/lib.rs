@@ -1,4 +1,4 @@
-//! Clipward app shell: the Tauri port of the Electron main process (src/main).
+//! Clipward app shell: window, menu, commands and the job queue.
 //!
 //! The renderer talks to this shell through the commands in `commands.rs` and
 //! listens for `jobs:update` and `whisper:progress` events. Clipping runs

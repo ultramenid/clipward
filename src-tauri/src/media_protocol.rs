@@ -1,5 +1,4 @@
-//! The `local-file:` protocol that serves library media to <video> and <img>
-//! (port of the protocol.handle('local-file') handler in src/main/index.ts).
+//! The `local-file:` protocol that serves library media to <video> and <img>.
 //!
 //! The renderer builds URLs with `convertFileSrc(path, 'local-file')`. Only files the
 //! security checks authorize are served, byte ranges are honored, and an open-ended

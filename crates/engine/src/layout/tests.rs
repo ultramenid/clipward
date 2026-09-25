@@ -387,7 +387,7 @@ async fn fit_style_and_missing_model_skip_analysis() {
 }
 
 fn repo_assets() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../engine/assets")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("assets")
 }
 
 #[tokio::test]

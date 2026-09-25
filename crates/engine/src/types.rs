@@ -94,7 +94,7 @@ pub struct EngineConfig {
     pub ffprobe: PathBuf,
     /// yt-dlp binary for link sources; None when not installed.
     pub ytdlp: Option<PathBuf>,
-    /// Directory holding fonts/ and models/ (was engine/assets).
+    /// Directory holding fonts/ and models/ (crates/engine/assets in the repo).
     pub assets_dir: PathBuf,
     /// Downloaded ggml model file.
     pub whisper_model_path: PathBuf,

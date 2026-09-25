@@ -1,4 +1,4 @@
-//! Job option validation (port of src/main/validation.ts and src/shared/video-source.ts).
+//! Job option validation.
 use crate::security::is_web_url;
 use crate::shared::{DURATION_IDS, MAX_REQUIREMENTS_CHARS};
 use clip_engine::ClipJobRequest;

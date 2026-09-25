@@ -33,7 +33,7 @@ function deferred() {
 
 const settings = {
   openrouterConfigured: false, outputDirectory: '/clips',
-  pythonPath: 'python3', 
+  customVocabulary: '',
 }
 
 function snapshot(id, revision, patch = {}) {
@@ -104,14 +104,14 @@ test('overlapping settings writes merge at dispatch and retain saving state', as
     }
   } })
   await useSettingsStore.getState().load()
-  const a = useSettingsStore.getState().save({ pythonPath: '/usr/bin/python3' })
+  const a = useSettingsStore.getState().save({ customVocabulary: 'Clipward' })
   const b = useSettingsStore.getState().save({ outputDirectory: '/new-clips' })
   await Promise.resolve()
   assert.equal(writes.length, 1)
   assert.equal(useSettingsStore.getState().saving, true)
   first.resolve()
   await Promise.all([a, b])
-  assert.equal(writes[1].pythonPath, '/usr/bin/python3')
+  assert.equal(writes[1].customVocabulary, 'Clipward')
   assert.equal(useSettingsStore.getState().outputDirectory, '/new-clips')
   assert.equal(useSettingsStore.getState().saving, false)
 })
@@ -127,11 +127,11 @@ test('failed settings write does not poison subsequent writes', async () => {
   } })
   await useSettingsStore.getState().load()
   const a = useSettingsStore.getState().save({ outputDirectory: '/failed' })
-  const b = useSettingsStore.getState().save({ pythonPath: '/usr/bin/python3' })
+  const b = useSettingsStore.getState().save({ customVocabulary: 'Clipward' })
   await assert.rejects(a, /Unavailable/)
   await b
   assert.equal(useSettingsStore.getState().outputDirectory, '/clips')
-  assert.equal(useSettingsStore.getState().pythonPath, '/usr/bin/python3')
+  assert.equal(useSettingsStore.getState().customVocabulary, 'Clipward')
   assert.equal(useSettingsStore.getState().saving, false)
 })
 

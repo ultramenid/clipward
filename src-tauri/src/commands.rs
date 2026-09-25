@@ -1,4 +1,4 @@
-//! Tauri commands: the renderer-facing API (port of src/main/ipc-handlers.ts).
+//! Tauri commands: the renderer-facing API.
 //! src/renderer/lib/bridge.ts maps the old `window.clipward` API onto these.
 //!
 //! Only the main window may call them: build.rs declares each command and
@@ -85,9 +85,6 @@ pub fn settings_save(
         return Err("Choose the output folder with the folder picker".into());
     }
     drop(selected);
-    if state.paths.packaged && settings.python_path != current.python_path {
-        return Err("Runtime paths cannot be changed in packaged builds".into());
-    }
     state.settings.save_public(settings)
 }
 
@@ -582,24 +579,19 @@ pub fn system_is_packaged(window: WebviewWindow, state: State<'_, AppState>) -> 
     Ok(state.paths.packaged)
 }
 
-/// ToolStatus in src/shared/api.ts. The engine is now built into the app, so the
-/// Python rows report the built-in engine: `pythonDeps` is the smart framing model
-/// and `engine` the bundled fonts and models.
+/// ToolStatus in src/shared/api.ts: external tools plus the bundled engine assets
+/// (`engine`: fonts and models; `smart_framing`: the face detection model).
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolStatus {
-    python: bool,
-    python_deps: bool,
-    python_path: String,
-    python_error: Option<String>,
+    smart_framing: bool,
+    smart_framing_error: Option<String>,
     ffmpeg: bool,
     ffmpeg_captions: bool,
     ffprobe: bool,
     ytdlp: bool,
     engine: bool,
     engine_path: String,
-    bridge_runner: bool,
-    bridge_path: String,
 }
 
 #[tauri::command]
@@ -624,10 +616,8 @@ pub async fn system_check_tools(
         check_runs(&ytdlp_bin, "--version"),
     );
     let status = ToolStatus {
-        python: true,
-        python_deps: framing_model,
-        python_path: "Built into Clipward".into(),
-        python_error: (!framing_model)
+        smart_framing: framing_model,
+        smart_framing_error: (!framing_model)
             .then(|| "The smart framing model is missing from this installation.".into()),
         ffmpeg,
         ffmpeg_captions,
@@ -635,8 +625,6 @@ pub async fn system_check_tools(
         ytdlp,
         engine: assets.join("fonts").is_dir() && assets.join("models").is_dir(),
         engine_path: assets.to_string_lossy().into_owned(),
-        bridge_runner: true,
-        bridge_path: "Built into Clipward".into(),
     };
     logger::info(
         "system.checkTools",

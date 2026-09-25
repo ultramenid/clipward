@@ -75,7 +75,7 @@ impl AppPaths {
     pub fn assets_dir(&self) -> PathBuf {
         match (&self.resources, &self.dev_root) {
             (Some(resources), _) => resources.join("assets"),
-            (None, Some(root)) => root.join("engine").join("assets"),
+            (None, Some(root)) => root.join("crates").join("engine").join("assets"),
             (None, None) => PathBuf::from("assets"),
         }
     }

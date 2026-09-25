@@ -1,4 +1,4 @@
-//! Application menu (port of src/main/menu.ts).
+//! Application menu.
 use crate::shared::{ISSUES_URL, REPO_URL};
 use tauri::menu::{IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Manager, Wry};

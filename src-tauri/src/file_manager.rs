@@ -1,5 +1,4 @@
-//! Library reads, thumbnails and clip export (port of src/main/file-manager.ts and
-//! the clips:bulkExport handler).
+//! Library reads, thumbnails and clip export.
 use crate::job_output::parse_job_output;
 use crate::paths::AppPaths;
 use crate::paths::{iso_from, open_no_follow};

@@ -63,7 +63,7 @@ fn i(v: &Value) -> i64 {
 }
 
 fn fonts_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../engine/assets/fonts")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts")
 }
 
 fn fonts_dir_canonical() -> PathBuf {

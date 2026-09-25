@@ -6,7 +6,7 @@ import { cn, errorMessage, MOD_KEY } from '../lib/utils'
 import { APP_NAME, APP_VERSION, CLIPWARD_URL, ISSUES_URL, LICENSE_NAME, REPO_URL } from '../config/brand'
 import { providerLabel } from '../../shared/ai-providers'
 import { WHISPER_MODELS } from '../../shared/whisper-models'
-import type { ClipSettings, ToolStatus } from '../../preload/index'
+import type { ClipSettings, ToolStatus } from '../../shared/api'
 import { ProviderSetup } from '../components/ProviderSetup'
 import { WhisperModels } from '../components/WhisperModels'
 import { ClipwardLogo } from '../components/brand/ClipwardLogo'
@@ -14,7 +14,7 @@ import { Page } from '../components/ui/Page'
 import { PageHeader } from '../components/ui/PageHeader'
 import { Panel, PanelHeader } from '../components/ui/Panel'
 import { Button } from '../components/ui/Button'
-import { Field, TextArea, TextInput } from '../components/ui/Field'
+import { TextArea, TextInput } from '../components/ui/Field'
 import { Badge, StatusDot } from '../components/ui/Badge'
 import { IconTile } from '../components/ui/IconTile'
 import { Callout } from '../components/ui/Callout'
@@ -51,16 +51,11 @@ type SectionId = 'ai' | 'transcription' | 'vocabulary' | 'output' | 'appearance'
 type SectionTone = 'success' | 'warning' | 'danger' | 'idle'
 
 export function SettingsPage(): React.JSX.Element {
-  const { outputDirectory, pythonPath, customVocabulary, aiProvider, whisperModel, saving, save, toolStatus, toolError, checkTools, checkingTools } =
+  const { outputDirectory, customVocabulary, aiProvider, whisperModel, saving, save, toolStatus, toolError, checkTools, checkingTools } =
     useSettingsStore()
   const { providerReady, whisperReady } = useSetupState()
-  const [isPackaged, setIsPackaged] = useState(true)
   const [savedAt, setSavedAt] = useState<number | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
-
-  useEffect(() => {
-    getApi().system.isPackaged().then(setIsPackaged).catch(() => {})
-  }, [])
 
   const commit = async (patch: Partial<ClipSettings>, recheck = false): Promise<void> => {
     try {
@@ -215,16 +210,6 @@ export function SettingsPage(): React.JSX.Element {
             />
             <ToolList rows={tools} checking={checkingTools} />
             {toolError && <Callout tone="danger" className="mt-3">{toolError}</Callout>}
-            {!isPackaged && (
-              <div className="mt-4 grid gap-4 border-t border-stroke pt-4">
-                <DevPathField
-                  label="Python path"
-                  value={pythonPath}
-                  placeholder="python3"
-                  onCommit={(v) => commit({ pythonPath: v }, true)}
-                />
-              </div>
-            )}
           </Section>
 
           <Section id="about" className="overflow-hidden">
@@ -729,42 +714,15 @@ function VocabularyField({ value, onCommit }: { value: string; onCommit: (value:
   )
 }
 
-function DevPathField({
-  label,
-  value,
-  placeholder,
-  onCommit
-}: {
-  label: string
-  value: string
-  placeholder: string
-  onCommit: (value: string) => void
-}): React.JSX.Element {
-  const [draft, setDraft] = useState(value)
-  useEffect(() => setDraft(value), [value])
-  return (
-    <Field label={label} hint="Developer builds only">
-      <TextInput
-        mono
-        value={draft}
-        placeholder={placeholder}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={() => draft.trim() !== value && onCommit(draft.trim())}
-        onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
-      />
-    </Field>
-  )
-}
 
 interface ToolRow { name: string; ok: boolean | null; detail?: ReactNode; optional?: boolean }
 
 function toolRows(status: ToolStatus | null): ToolRow[] {
   return [
-    { name: 'Python', ok: status?.python ?? null, detail: status?.pythonPath },
     {
-      name: 'Clipping dependencies and smart framing',
-      ok: status?.pythonDeps ?? null,
-      detail: status && !status.pythonDeps ? status.pythonError : 'Includes OpenCV and the smart framing model'
+      name: 'Smart framing',
+      ok: status?.smartFraming ?? null,
+      detail: status && !status.smartFraming ? status.smartFramingError : 'Face detection model for vertical framing'
     },
     { name: 'FFmpeg', ok: status?.ffmpeg ?? null },
     {
@@ -775,8 +733,7 @@ function toolRows(status: ToolStatus | null): ToolRow[] {
     },
     { name: 'FFprobe', ok: status?.ffprobe ?? null },
     { name: 'yt-dlp', ok: status?.ytdlp ?? null, detail: 'Downloads from YouTube, Twitch, Kick, X and other sites' },
-    { name: 'Clipward clipping engine', ok: status?.engine ?? null, detail: status?.enginePath },
-    { name: 'Bridge runner', ok: status?.bridgeRunner ?? null, detail: status?.bridgePath }
+    { name: 'Clipward clipping engine', ok: status?.engine ?? null, detail: status?.enginePath }
   ]
 }
 

@@ -17,13 +17,11 @@ export function SetupCard({ onOpenSettings, className }: { onOpenSettings: () =>
   const toolError = useSettingsStore((s) => s.toolError)
   const missingTools = toolStatus
     ? [
-        !toolStatus.python && 'Python',
-        !toolStatus.pythonDeps && 'Clipping dependencies or smart framing',
+        !toolStatus.smartFraming && 'Smart framing model',
         !toolStatus.ffmpeg && 'FFmpeg',
         !toolStatus.ffprobe && 'FFprobe',
         !toolStatus.ytdlp && 'yt-dlp',
-        !toolStatus.engine && 'Clipward clipping engine',
-        !toolStatus.bridgeRunner && 'Bridge runner'
+        !toolStatus.engine && 'Clipward clipping engine'
       ].filter(Boolean).join(', ')
     : ''
 

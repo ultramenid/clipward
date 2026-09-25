@@ -1,5 +1,4 @@
-//! Every clipping job in this app session: queued, running and finished (port of
-//! src/main/job-manager.ts and src/main/pipeline-runner.ts).
+//! Every clipping job in this app session: queued, running and finished.
 //!
 //! Up to MAX_PARALLEL_JOBS run at once, each as an in-process tokio task calling
 //! `clip_engine::pipeline::run_job`; the rest wait in FIFO order. The renderer

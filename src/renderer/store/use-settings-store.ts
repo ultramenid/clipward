@@ -48,7 +48,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   aiModel: '',
   whisperModel: 'large-v3-turbo-q5_0',
   outputDirectory: '',
-  pythonPath: 'python3',
   customVocabulary: '',
   windowGlass: false,
   windowGlassSupported: false,
@@ -165,7 +164,6 @@ function pickSettings(s: ClipSettings): ClipSettings {
     aiModel: s.aiModel,
     whisperModel: s.whisperModel,
     outputDirectory: s.outputDirectory,
-    pythonPath: s.pythonPath,
     customVocabulary: s.customVocabulary,
     windowGlass: s.windowGlass ?? false,
     windowGlassSupported: s.windowGlassSupported ?? false,
@@ -200,7 +198,7 @@ export function useSetupState(): SetupState {
   const toolError = useSettingsStore((s) => s.toolError)
   const checkingTools = useSettingsStore((s) => s.checkingTools)
   const toolsOk = toolError ? false : tools
-    ? tools.python && tools.pythonDeps && tools.ffmpeg && tools.ffprobe && tools.ytdlp && tools.engine && tools.bridgeRunner
+    ? tools.smartFraming && tools.ffmpeg && tools.ffprobe && tools.ytdlp && tools.engine
     : null
   return { ready: providerReady && whisperReady && toolsOk === true && !checkingTools, providerReady, whisperReady, toolsOk }
 }

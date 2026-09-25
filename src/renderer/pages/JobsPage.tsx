@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Ban, FolderOpen, ListVideo, Plus, RefreshCw, RotateCcw, Search, X } from 'lucide-react'
-import type { HistoryEntry } from '../../preload/index'
+import type { HistoryEntry } from '../../shared/api'
 import { parseJobOutput } from '../../shared/job-output'
 import { MAX_PARALLEL_JOBS } from '../../shared/jobs'
 import { BackLink, ClipList } from '../components/ClipList'

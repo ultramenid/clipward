@@ -1,7 +1,6 @@
 /**
- * The renderer's API to the Tauri app shell (src-tauri/src/commands.rs), with the
- * same shape the Electron preload exposed as `window.clipward`, so components
- * call `getApi()` exactly as before.
+ * The renderer's API to the Tauri app shell (src-tauri/src/commands.rs) over
+ * `invoke`/`listen`. Components reach it through `getApi()`.
  */
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
