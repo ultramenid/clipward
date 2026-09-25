@@ -1,10 +1,7 @@
 //! Subprocess helpers shared by every module that runs ffmpeg/ffprobe/yt-dlp or AI CLIs.
 use crate::error::{EngineError, Result};
-use std::ffi::OsString;
 use std::path::Path;
 use std::process::{Output, Stdio};
-use std::time::Duration;
-use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
@@ -37,54 +34,26 @@ pub async fn probe(ffprobe: &Path, file: &Path, cancel: &CancellationToken) -> R
     serde_json::from_slice(&out.stdout).map_err(|_| EngineError::msg("ffprobe returned invalid json"))
 }
 
-// ---- Untrusted media (port of services/media_process.py) ----
+// ------------------------------------------------------------------
+// Untrusted-input media tools (port of services/media_process.py)
+// ------------------------------------------------------------------
 
-/// Input options for every ffmpeg/ffprobe run on caller-supplied media: only local
-/// file protocols and container demuxers, so a disguised playlist (ffconcat, HLS)
-/// cannot make the tool read other files or open network connections.
-pub const MEDIA_INPUT_OPTIONS: [&str; 4] = [
-    "-protocol_whitelist",
-    "file,pipe,fd",
-    "-format_whitelist",
-    "mov,matroska,webm,avi,flv,mpegts",
-];
-pub const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Input options for FFmpeg reading untrusted media: local files/pipes only,
+/// and only container demuxers the app actually produces or accepts.
+pub const MEDIA_INPUT_OPTIONS: [&str; 4] =
+    ["-protocol_whitelist", "file,pipe,fd", "-format_whitelist", "mov,matroska,webm,avi,flv,mpegts"];
+/// Cap on diagnostics (stderr) or small stdout captured from a media tool.
 pub const MAX_TOOL_OUTPUT_BYTES: usize = 1024 * 1024;
-pub const MAX_VIDEO_EDGE: u32 = 16384;
+pub const MAX_VIDEO_EDGE: u64 = 16384;
 pub const MAX_VIDEO_PIXELS: u64 = 64 * 1024 * 1024;
 pub const MAX_VIDEO_ASPECT: u64 = 32;
 
-/// Environment variables media tools (and yt-dlp) may inherit. Provider keys never pass.
-const ALLOWED_ENV: &[&str] = &[
-    "PATH", "HOME", "TMPDIR", "TEMP", "TMP", "SYSTEMROOT", "WINDIR", "USERPROFILE",
-    "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "FONTCONFIG_PATH", "FONTCONFIG_FILE",
-    "LANG", "LC_ALL", "LC_CTYPE", "TZ",
-];
-
-/// Keeps only the allowlisted variables (case-insensitive names, as on Windows).
-pub fn filter_child_env<I>(vars: I) -> Vec<(OsString, OsString)>
-where
-    I: IntoIterator<Item = (OsString, OsString)>,
-{
-    vars.into_iter()
-        .filter(|(key, _)| {
-            key.to_str()
-                .is_some_and(|k| ALLOWED_ENV.iter().any(|allowed| allowed.eq_ignore_ascii_case(k)))
-        })
-        .collect()
-}
-
-/// Minimal environment for a media child: use with `Command::env_clear().envs(..)`.
-pub fn child_env() -> Vec<(OsString, OsString)> {
-    filter_child_env(std::env::vars_os())
-}
-
-/// Rejects zero, huge, or extremely thin frames before any decoder allocates for them.
+/// Rejects dimensions that would blow up decode buffers or filter graphs.
 pub fn validate_video_dimensions(width: u32, height: u32) -> Result<()> {
-    let (w, h) = (u64::from(width), u64::from(height));
+    let (w, h) = (width as u64, height as u64);
     if w == 0
         || h == 0
-        || w.max(h) > u64::from(MAX_VIDEO_EDGE)
+        || w.max(h) > MAX_VIDEO_EDGE
         || w * h > MAX_VIDEO_PIXELS
         || w.max(h) > w.min(h) * MAX_VIDEO_ASPECT
     {
@@ -93,7 +62,31 @@ pub fn validate_video_dimensions(width: u32, height: u32) -> Result<()> {
     Ok(())
 }
 
+const MEDIA_ALLOWED_ENV: [&str; 16] = [
+    "PATH", "HOME", "TMPDIR", "TEMP", "TMP", "SYSTEMROOT", "WINDIR", "USERPROFILE", "LD_LIBRARY_PATH",
+    "DYLD_LIBRARY_PATH", "FONTCONFIG_PATH", "FONTCONFIG_FILE", "LANG", "LC_ALL", "LC_CTYPE", "TZ",
+];
+
+/// A command for a media tool with a minimal environment (no provider keys),
+/// null stdin and kill-on-drop. Callers set stdout/stderr.
+pub fn media_command(program: &Path) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.env_clear();
+    for (key, value) in std::env::vars_os() {
+        let upper = key.to_string_lossy().to_uppercase();
+        if MEDIA_ALLOWED_ENV.contains(&upper.as_str()) {
+            cmd.env(key, value);
+        }
+    }
+    cmd.stdin(Stdio::null()).kill_on_drop(true);
+    cmd
+}
+
+/// Time limit for probing one untrusted file.
+pub const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 async fn read_capped<R: tokio::io::AsyncRead + Unpin>(reader: R, max: usize) -> std::io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
     let mut buf = Vec::new();
     reader.take(max as u64 + 1).read_to_end(&mut buf).await?;
     if buf.len() > max {
@@ -102,25 +95,17 @@ async fn read_capped<R: tokio::io::AsyncRead + Unpin>(reader: R, max: usize) -> 
     Ok(buf)
 }
 
-/// Like [`run`], but with a minimal environment, a wall-clock limit and a cap on
-/// stdout and stderr. The child is killed and reaped when any limit trips.
+/// Like [`run`], but through [`media_command`] (minimal environment) with a wall-clock
+/// limit and a cap on stdout and stderr. The child is killed and reaped when any limit trips.
 pub async fn run_bounded(
     program: &Path,
     args: &[String],
-    timeout: Duration,
+    timeout: std::time::Duration,
     max_output: usize,
     cancel: &CancellationToken,
 ) -> Result<Output> {
     let deadline = tokio::time::Instant::now() + timeout;
-    let mut child = Command::new(program)
-        .args(args)
-        .env_clear()
-        .envs(child_env())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()?;
+    let mut child = media_command(program).args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
     let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
         return Err(EngineError::msg("media tool output is unavailable"));
     };

@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -980,15 +980,9 @@ async fn run_ytdlp(
     cancel: &CancellationToken,
     mut monitor: Option<&mut DownloadMonitor<'_>>,
 ) -> Result<YtdlpRun> {
-    let mut cmd = Command::new(tool_path(program));
-    cmd.args(args)
-        .current_dir(cwd)
-        .env_clear()
-        .envs(media::child_env())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+    // Minimal environment (no provider keys, no *_PROXY), null stdin, kill-on-drop.
+    let mut cmd = media::media_command(&tool_path(program));
+    cmd.args(args).current_dir(cwd).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(unix)]
     cmd.process_group(0);
     let mut child = cmd.spawn().map_err(|e| {
@@ -1410,13 +1404,6 @@ mod tests {
         assert_eq!(message(ytdlp_error(&classify_ytdlp_failure("boom /home/me"), false)), "video download failed");
     }
 
-    #[test]
-    fn download_media_child_does_not_inherit_provider_keys() {
-        let vars = [("OPENROUTER_API_KEY", "dummy"), ("PATH", "/bin"), ("https_proxy", "http://p"), ("Path", "C:\\")]
-            .map(|(k, v)| (k.into(), v.into()));
-        let kept: Vec<String> = media::filter_child_env(vars).into_iter().map(|(k, _)| k.into_string().unwrap()).collect();
-        assert_eq!(kept, ["PATH", "Path"]);
-    }
 
     #[test]
     fn download_line_splitter_and_progress() {
@@ -1564,6 +1551,7 @@ mod tests {
             "printf partial > source.mp4.part\necho 'clipward-progress 7 NA NA' >&2\nprintf media > source.mp4\nrm -f source.mp4.part\n",
         );
         std::env::set_var("OPENROUTER_API_KEY", "dummy-test-secret");
+        std::env::set_var("HTTPS_PROXY", "http://proxy.invalid");
         let result = run(&fx, Source::Twitch(URL.into())).await.unwrap();
         assert!(!result.is_local);
         assert_eq!(result.path, fx.cfg.work_dir.join("source.mp4"));
@@ -1579,7 +1567,7 @@ mod tests {
         }
         assert!(calls[1].contains("--format b[vcodec!^=av01]") && calls[1].contains("--abort-on-unavailable-fragments"));
         let env = std::fs::read_to_string(fx.bin.join("env.log")).unwrap();
-        assert!(!env.contains("OPENROUTER_API_KEY"));
+        assert!(!env.contains("OPENROUTER_API_KEY") && !env.contains("proxy.invalid"));
         assert_eq!(work_files(&fx), ["source.mp4"]);
     }
 
