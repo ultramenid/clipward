@@ -12,6 +12,7 @@ import { useJobStore } from './store/use-job-store'
 import { useSidebarStore } from './store/use-sidebar-store'
 import { Button } from './components/ui/Button'
 import { getApi } from './lib/ipc'
+import { useWindowGlass } from './lib/glass'
 
 export default function App(): React.JSX.Element {
   const [loadError, setLoadError] = useState(false)
@@ -21,6 +22,7 @@ export default function App(): React.JSX.Element {
   const loadSettings = useSettingsStore((s) => s.load)
   const checkTools = useSettingsStore((s) => s.checkTools)
   const settingsLoaded = useSettingsStore((s) => s.loaded)
+  useWindowGlass()
 
   useEffect(() => {
     setLoadError(false)
@@ -73,7 +75,7 @@ export default function App(): React.JSX.Element {
           {page === 'settings' && <SettingsPage />}
         </Layout>
       ) : (
-        <div data-tauri-drag-region="deep" className="app-bg flex h-screen items-center justify-center">
+        <div data-tauri-drag-region="deep" className="window-bg flex h-screen items-center justify-center">
           {loadError ? (
             <div className="card modal-panel space-y-3 rounded-xl px-5 py-4 text-center">
               <p role="alert" className="text-[13px] text-danger">Could not load settings. Please try again.</p>

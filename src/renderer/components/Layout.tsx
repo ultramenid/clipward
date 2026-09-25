@@ -14,11 +14,12 @@ interface LayoutProps {
  * Sidebar on the left; on the right a 40px title bar over the page, which
  * scrolls on its own. The window uses an overlay title bar with a hidden
  * title, so both top strips are drag regions and the sidebar's strip holds
- * the macOS traffic lights.
+ * the macOS traffic lights. In glass mode (see lib/glass.ts) the backdrop,
+ * and so the title bar, is a tint over the native window material.
  */
 export function Layout({ children, currentPage, onNavigate }: LayoutProps): React.JSX.Element {
   return (
-    <div className="app-bg flex h-screen w-screen overflow-hidden text-ink">
+    <div className="window-bg flex h-screen w-screen overflow-hidden text-ink">
       <Sidebar currentPage={currentPage} onNavigate={onNavigate} />
       <main className="flex min-w-0 flex-1 flex-col">
         <TitleBar currentPage={currentPage} />

@@ -102,6 +102,22 @@ pub fn settings_replace_api_key(
     state.settings.replace_api_key(&key, &value)
 }
 
+/// Switch native window glass on or off now and remember the choice.
+#[tauri::command]
+pub fn window_set_glass(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> CmdResult<PublicSettings> {
+    assert_main(&window)?;
+    if !crate::window_glass::SUPPORTED {
+        return Err("Window transparency is available on macOS and Windows".into());
+    }
+    let saved = state.settings.set_window_glass(enabled)?;
+    crate::window_glass::apply(&window, enabled);
+    Ok(saved)
+}
+
 #[tauri::command]
 pub async fn settings_select_output_dir(
     window: WebviewWindow,

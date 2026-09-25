@@ -13,7 +13,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 clip_engine = { path = "../crates/engine" }
-tauri = { version = "2", features = [] }
+# macos-private-api: a transparent WKWebView, so window glass shows through.
+tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
@@ -33,6 +34,8 @@ sha2 = "0.10"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 which = "7"
+# Native window glass (macOS vibrancy, Windows Mica/acrylic); a no-op on Linux.
+window-vibrancy = "0.6"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"] }
 
 [target.'cfg(unix)'.dependencies]

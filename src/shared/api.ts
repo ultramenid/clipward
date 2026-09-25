@@ -20,6 +20,10 @@ export interface ClipSettings {
   outputDirectory: string
   pythonPath: string
   customVocabulary: string
+  /** Native window glass (macOS vibrancy, Windows Mica/acrylic). Change it with settings.setWindowGlass. */
+  windowGlass: boolean
+  /** Whether this platform draws window glass; Linux stays opaque. */
+  windowGlassSupported: boolean
 }
 
 export interface HistoryEntry {
@@ -75,6 +79,8 @@ export interface ClipwardAPI {
     save: (settings: ClipSettings) => Promise<ClipSettings>
     replaceApiKey: (key: ApiKeyName, value: string) => Promise<ClipSettings>
     selectOutputDir: () => Promise<string | null>
+    /** Switches native window glass now and remembers the choice. */
+    setWindowGlass: (enabled: boolean) => Promise<ClipSettings>
   }
   job: {
     /** Queues a clipping run; it starts right away when a slot is free (`queued: false`). */

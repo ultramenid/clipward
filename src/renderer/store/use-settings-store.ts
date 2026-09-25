@@ -17,6 +17,7 @@ interface SettingsState extends ClipSettings {
   load: () => Promise<void>
   save: (settings: Partial<ClipSettings>) => Promise<void>
   replaceApiKey: (key: ApiKeyName, value: string) => Promise<void>
+  setWindowGlass: (enabled: boolean) => Promise<void>
   checkTools: () => Promise<void>
   detectClis: () => Promise<void>
   loadWhisperModels: () => Promise<void>
@@ -38,6 +39,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   outputDirectory: '',
   pythonPath: 'python3',
   customVocabulary: '',
+  windowGlass: false,
+  windowGlassSupported: false,
   loaded: false,
   saving: false,
   toolStatus: null,
@@ -86,6 +89,20 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     })
   },
 
+  setWindowGlass: (enabled) => {
+    pendingSaves += 1
+    set({ saving: true })
+    const task = saveQueue.then(async () => {
+      const saved = await getApi().settings.setWindowGlass(enabled)
+      set({ ...pickSettings(saved), loaded: true })
+    })
+    saveQueue = task.catch(() => {})
+    return task.finally(() => {
+      pendingSaves -= 1
+      set({ saving: pendingSaves > 0 })
+    })
+  },
+
   checkTools: async () => {
     const request = ++latestToolCheck
     set({ checkingTools: true, toolError: null })
@@ -112,7 +129,9 @@ function pickSettings(s: ClipSettings): ClipSettings {
     whisperModel: s.whisperModel,
     outputDirectory: s.outputDirectory,
     pythonPath: s.pythonPath,
-    customVocabulary: s.customVocabulary
+    customVocabulary: s.customVocabulary,
+    windowGlass: s.windowGlass ?? false,
+    windowGlassSupported: s.windowGlassSupported ?? false
   }
 }
 

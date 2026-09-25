@@ -27,7 +27,9 @@ const api: ClipwardAPI = {
     load: () => ipcRenderer.invoke('settings:load'),
     save: (settings) => ipcRenderer.invoke('settings:save', settings),
     replaceApiKey: (key, value) => ipcRenderer.invoke('settings:replaceApiKey', key, value),
-    selectOutputDir: () => ipcRenderer.invoke('settings:selectOutputDir')
+    selectOutputDir: () => ipcRenderer.invoke('settings:selectOutputDir'),
+    // The Electron shell draws no window glass (settings leave windowGlassSupported unset).
+    setWindowGlass: () => Promise.reject(new Error('Window transparency needs the Tauri app'))
   },
   job: {
     start: (config) => ipcRenderer.invoke('job:start', config),
