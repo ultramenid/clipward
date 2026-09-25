@@ -1,0 +1,334 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Geist is vendored (SIL OFL 1.1, see assets/fonts/Geist-OFL.txt) so the app
+   renders identically offline. */
+@font-face {
+  font-family: 'Geist';
+  src: url('./assets/fonts/Geist-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('./assets/fonts/GeistMono-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Clipward glass. Surfaces are flat translucent layers over one solid dark
+   backdrop. No gradients anywhere: every fill is a single colour. Ink stays
+   opaque; colour comes from the video, the one primary action, chosen options
+   and status. */
+@layer base {
+  :root {
+    --canvas: 7 8 12;          /* backdrop base under the ambient light */
+    --surface: 14 15 21;
+    --raised: 22 24 31;
+    --overlay: 26 28 36;
+
+    --ink: 247 248 252;
+    --ink-muted: 170 174 188;
+    --ink-subtle: 124 129 144;
+    --ink-faint: 84 89 103;
+
+    --accent: 92 143 255;
+    --accent-hover: 134 176 255;
+    --accent-ink: 255 255 255;
+    --accent-cyan: 56 204 255;  /* Clipward mark */
+
+    --success: 74 222 128;
+    --danger: 255 107 110;
+    --warning: 251 191 36;
+
+    color-scheme: dark;
+  }
+
+  * {
+    @apply border-line;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-canvas font-sans text-sm text-ink antialiased;
+    font-feature-settings: 'cv11', 'ss01';
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    -webkit-app-region: no-drag;
+    overflow: hidden;
+    -webkit-user-select: text;
+    user-select: text;
+  }
+
+  /* macOS: the window has native vibrancy (see main/index.ts); the opaque
+     .app-backdrop covers it so the blurred wallpaper never tints the UI. */
+  html.vibrant,
+  html.vibrant body {
+    background: transparent;
+  }
+
+  input,
+  textarea,
+  [data-selectable] {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+
+  button,
+  select,
+  summary,
+  [role='button'] {
+    cursor: pointer;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  a {
+    cursor: pointer;
+  }
+
+  button:disabled {
+    cursor: not-allowed;
+  }
+
+  :focus-visible {
+    outline: 2px solid rgb(var(--accent) / 0.75);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: rgb(var(--accent) / 0.35);
+  }
+
+  select option {
+    background: rgb(var(--overlay));
+    color: rgb(var(--ink));
+  }
+
+  input[type='number']::-webkit-inner-spin-button,
+  input[type='number']::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
+  input[type='datetime-local']::-webkit-calendar-picker-indicator {
+    filter: invert(0.8);
+    opacity: 0.6;
+    cursor: pointer;
+  }
+}
+
+@layer components {
+  .drag {
+    -webkit-app-region: drag;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  .no-drag {
+    -webkit-app-region: no-drag;
+    -webkit-user-select: text;
+    user-select: text;
+  }
+
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Uppercase micro-label used above groups of controls. */
+  .eyebrow {
+    @apply text-2xs font-semibold uppercase tracking-[0.1em] text-ink-subtle;
+  }
+
+  /* ─── Backdrop ───────────────────────────────────────────────────────── */
+
+  /* Window background: one solid colour shared by the sidebar and the page. */
+  .app-backdrop {
+    background: rgb(var(--canvas));
+  }
+
+  /* Title bar: content scrolls under a solid strip in the backdrop colour. */
+  .scroll-edge {
+    background: rgb(var(--canvas));
+  }
+
+  /* ─── Materials ──────────────────────────────────────────────────────── */
+
+  /* Panel glass: flat translucent fill, a 1px rim drawn as an inset ring, and
+     a soft floating shadow. Don't add a `border` utility; the rim is the edge.
+     Needs a rounded-* class. */
+  .glass {
+    position: relative;
+    background: rgb(255 255 255 / 0.045);
+    box-shadow:
+      inset 0 0 0 1px rgb(255 255 255 / 0.08),
+      0 1px 2px rgb(0 0 0 / 0.25),
+      0 18px 48px -24px rgb(0 0 0 / 0.6);
+  }
+
+  /* Heavier glass for surfaces that float over content: dialogs, sticky
+     toolbars, popovers. Blurs whatever scrolls beneath it. */
+  .glass-thick {
+    position: relative;
+    background: rgb(25 27 36 / 0.8);
+    -webkit-backdrop-filter: blur(40px) saturate(170%);
+    backdrop-filter: blur(40px) saturate(170%);
+    box-shadow:
+      inset 0 0 0 1px rgb(255 255 255 / 0.1),
+      0 40px 100px -24px rgb(0 0 0 / 0.8),
+      0 12px 32px -12px rgb(0 0 0 / 0.55);
+  }
+
+  /* Nested tile inside a panel: rows, option cards, sub-sections. */
+  .glass-tile {
+    background: rgb(255 255 255 / 0.033);
+    border: 1px solid rgb(255 255 255 / 0.08);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05);
+  }
+
+  .glass-tile-hover {
+    transition-property: background-color, border-color, box-shadow, transform;
+    transition-duration: 180ms;
+    transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .glass-tile-hover:hover {
+    background: rgb(255 255 255 / 0.055);
+    border-color: rgb(255 255 255 / 0.14);
+  }
+
+  /* Chosen option: accent-tinted glass with a soft halo. */
+  .glass-selected,
+  .glass-selected:hover {
+    background: rgb(var(--accent) / 0.12);
+    border-color: rgb(var(--accent) / 0.7);
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.12),
+      0 0 0 3px rgb(var(--accent) / 0.14);
+  }
+
+  /* Recessed well for text inputs and inset lists. */
+  .glass-well {
+    background: rgb(0 0 0 / 0.26);
+    border: 1px solid rgb(255 255 255 / 0.085);
+    box-shadow:
+      inset 0 1px 2px rgb(0 0 0 / 0.35),
+      0 1px 0 rgb(255 255 255 / 0.035);
+  }
+
+  /* Small label floating over video or artwork. */
+  .glass-chip {
+    background: rgb(10 12 18 / 0.45);
+    border: 1px solid rgb(255 255 255 / 0.14);
+    -webkit-backdrop-filter: blur(14px) saturate(160%);
+    backdrop-filter: blur(14px) saturate(160%);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.12);
+  }
+
+  /* ─── Controls ───────────────────────────────────────────────────────── */
+
+  /* The one primary action: a solid accent capsule. */
+  .btn-primary {
+    color: rgb(var(--accent-ink));
+    background: rgb(var(--accent));
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.4),
+      inset 0 -1px 0 rgb(0 0 0 / 0.14),
+      0 0 0 1px rgb(var(--accent) / 0.6);
+    text-shadow: 0 1px 1px rgb(0 0 0 / 0.18);
+  }
+
+  .btn-primary:hover:not(:disabled) {
+    filter: brightness(1.08) saturate(1.05);
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.45),
+      inset 0 -1px 0 rgb(0 0 0 / 0.14),
+      0 0 0 1px rgb(var(--accent) / 0.7);
+  }
+
+  .btn-primary:disabled {
+    color: rgb(255 255 255 / 0.45);
+    background: rgb(var(--accent) / 0.22);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.08), 0 0 0 1px rgb(var(--accent) / 0.25);
+    text-shadow: none;
+  }
+
+  /* Glass capsule for secondary actions. */
+  .btn-glass {
+    background: rgb(255 255 255 / 0.075);
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.14),
+      inset 0 0 0 1px rgb(255 255 255 / 0.09),
+      0 1px 2px rgb(0 0 0 / 0.3);
+  }
+
+  .btn-glass:hover:not(:disabled) {
+    background: rgb(255 255 255 / 0.11);
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.18),
+      inset 0 0 0 1px rgb(255 255 255 / 0.14),
+      0 4px 12px -4px rgb(0 0 0 / 0.4);
+  }
+}
+
+/* Scrollbars: thin, neutral, invisible until hovered. */
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgb(255 255 255 / 0.1);
+  border: 4px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(255 255 255 / 0.2);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Reduce transparency (macOS accessibility): solid materials, no blur. */
+@media (prefers-reduced-transparency: reduce) {
+  html.vibrant,
+  html.vibrant body {
+    background: rgb(var(--canvas));
+  }
+
+  .glass-thick,
+  .glass-chip {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+
+  .glass-thick {
+    background: rgb(var(--overlay));
+  }
+}

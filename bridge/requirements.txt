@@ -1,0 +1,4 @@
+# The Python worker and clipping engine share the locked dependencies at
+# engine/requirements.lock. Install with:
+#   python3.12 -m venv engine/.venv
+#   engine/.venv/bin/pip install --require-hashes -r engine/requirements.lock

@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="Clipward">
+  <title>Clipward</title>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1C1F2A"/><stop offset="1" stop-color="#0B0C11"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.16"/><stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect x="84" y="84" width="856" height="856" rx="196" fill="url(#tile)"/>
+  <rect x="85.5" y="85.5" width="853" height="853" rx="194.5" fill="none" stroke="url(#rim)" stroke-width="3"/>
+  <defs>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5C8FFF"/><stop offset="1" stop-color="#38CCFF"/>
+    </linearGradient>
+    <clipPath id="accent-rear"><polygon points="0,0 590,0 462,1024 0,1024"/></clipPath>
+    <clipPath id="accent-front"><polygon points="626,0 1024,0 1024,1024 498,1024"/></clipPath>
+  </defs>
+  <polygon points="360,318 360,706 696,512" stroke-width="56" stroke-linejoin="round" fill="#F4F6FF" stroke="#F4F6FF" clip-path="url(#accent-rear)"/>
+  <g transform="translate(34 0)">
+    <polygon points="360,318 360,706 696,512" stroke-width="56" stroke-linejoin="round" fill="url(#accent)" stroke="url(#accent)" clip-path="url(#accent-front)"/>
+  </g>
+</svg>
