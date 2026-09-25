@@ -112,7 +112,7 @@ function dayLabel(date: Date): string {
 }
 
 function Num({ children }: { children: ReactNode }): React.JSX.Element {
-  return <span className="font-mono tabular text-ink-muted">{children}</span>
+  return <span className="tabular-nums text-content/80">{children}</span>
 }
 
 function StatCell({ index, icon, label, value, final, sub }: {
@@ -131,7 +131,7 @@ function StatCell({ index, icon, label, value, final, sub }: {
       <IconTile size="sm">{icon}</IconTile>
       <dl className="min-w-0 flex-1">
         <dt className="eyebrow flex items-center gap-1.5">{label}</dt>
-        <dd className="mt-1 truncate font-mono text-xl font-medium leading-6 tabular tracking-[-0.02em] text-ink">
+        <dd className="mt-1 truncate text-title tabular-nums text-ink">
           {final ? (
             <>
               <span aria-hidden>{value}</span>
@@ -139,7 +139,7 @@ function StatCell({ index, icon, label, value, final, sub }: {
             </>
           ) : value}
         </dd>
-        {sub && <dd className="mt-1 truncate text-xs text-content/45">{sub}</dd>}
+        {sub && <dd className="mt-1 truncate text-caption text-ink-secondary">{sub}</dd>}
       </dl>
     </div>
   )

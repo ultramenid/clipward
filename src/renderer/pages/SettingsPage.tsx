@@ -103,7 +103,7 @@ export function SettingsPage(): React.JSX.Element {
 
       <div className="mt-5 grid items-start gap-6 lg:grid-cols-[176px_minmax(0,1fr)]">
         <nav aria-label="Settings sections" className="hidden flex-col gap-px lg:sticky lg:top-6 lg:flex">
-          <p aria-hidden className="px-2 pb-1 text-xs font-semibold text-content/35">Sections</p>
+          <p aria-hidden className="px-2 pb-1 text-caption font-semibold text-ink-tertiary">Sections</p>
           {sections.map((section) => (
             <button
               key={section.id}
@@ -111,8 +111,8 @@ export function SettingsPage(): React.JSX.Element {
               onClick={() => jump(section.id)}
               aria-current={active === section.id ? 'true' : undefined}
               className={cn(
-                'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium leading-tight transition-colors duration-feedback [&_svg]:h-4 [&_svg]:w-4 [&_svg]:shrink-0 [&_svg]:opacity-70',
-                active === section.id ? 'bg-selection text-content' : 'text-content/50 hover:bg-content/5 hover:text-content'
+                'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-label transition-colors duration-feedback [&_svg]:h-4 [&_svg]:w-4 [&_svg]:shrink-0 [&_svg]:opacity-70',
+                active === section.id ? 'bg-selection text-content' : 'text-ink-secondary hover:bg-content/5 hover:text-content'
               )}
             >
               {section.icon}
@@ -128,8 +128,8 @@ export function SettingsPage(): React.JSX.Element {
               <div className="flex items-center gap-3">
                 <IconTile tone={blocking ? 'warning' : 'success'} size="md">{blocking ? <Sparkles /> : <Check strokeWidth={3} />}</IconTile>
                 <div>
-                  <h2 className="text-[13px] font-semibold text-ink">{blocking ? `${blocking} thing${blocking === 1 ? '' : 's'} to set up before clipping` : 'Ready to clip'}</h2>
-                  <p className="mt-0.5 text-xs leading-relaxed text-content/45">{APP_NAME} runs on this computer. Whisper transcribes offline; your CLI plan or API key picks the clips.</p>
+                  <h2 className="text-section text-ink">{blocking ? `${blocking} thing${blocking === 1 ? '' : 's'} to set up before clipping` : 'Ready to clip'}</h2>
+                  <p className="mt-0.5 text-caption text-ink-secondary">{APP_NAME} runs on this computer. Whisper transcribes offline; your CLI plan or API key picks the clips.</p>
                 </div>
               </div>
             </div>
@@ -143,8 +143,8 @@ export function SettingsPage(): React.JSX.Element {
                 >
                   <StatusDot className="mt-1.5" tone={check.ok == null || check.optional && !check.ok ? 'idle' : check.ok ? 'success' : check.tone ?? 'warning'} />
                   <span className="min-w-0">
-                    <span className="block text-[13px] font-medium text-ink">{check.label}</span>
-                    <span className={cn('block truncate text-2xs', check.ok === false && !check.optional ? (check.tone === 'danger' ? 'text-danger' : 'text-warning') : 'text-content/45')}>{check.detail}</span>
+                    <span className="block text-label text-ink">{check.label}</span>
+                    <span className={cn('block truncate text-meta', check.ok === false && !check.optional ? (check.tone === 'danger' ? 'text-danger' : 'text-warning') : 'text-ink-secondary')}>{check.detail}</span>
                   </span>
                 </button>
               ))}
@@ -174,7 +174,7 @@ export function SettingsPage(): React.JSX.Element {
               icon={<IconTile size="sm"><BookA /></IconTile>}
               title="Custom vocabulary"
               description="Names, products and jargon Whisper should spell exactly, one per line. Put the campaign's brand and creator names here."
-              action={vocabularyTerms > 0 && <Badge className="font-mono tabular">{vocabularyTerms} term{vocabularyTerms === 1 ? '' : 's'}</Badge>}
+              action={vocabularyTerms > 0 && <Badge className="tabular-nums">{vocabularyTerms} term{vocabularyTerms === 1 ? '' : 's'}</Badge>}
             />
             <VocabularyField value={customVocabulary} onCommit={(value) => commit({ customVocabulary: value })} />
           </Section>
@@ -217,10 +217,10 @@ export function SettingsPage(): React.JSX.Element {
               <ClipwardLogo variant="icon" className="-m-1 h-10" />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2.5">
-                  <h2 className="text-[15px] font-medium text-ink">{APP_NAME}</h2>
-                  <Badge className="font-mono tabular">v{APP_VERSION}</Badge>
+                  <h2 className="text-heading text-ink">{APP_NAME}</h2>
+                  <Badge className="font-mono tabular-nums">v{APP_VERSION}</Badge>
                 </div>
-                <p className="mt-1 text-xs leading-relaxed text-content/50">
+                <p className="mt-1 text-caption text-ink-secondary">
                   Released under the {LICENSE_NAME} license.{' '}
                   <button
                     type="button"
@@ -524,7 +524,7 @@ function AppearanceGroup({ title, description, children }: { title: string; desc
   return (
     <div className="mt-5">
       <h3 className="eyebrow">{title}</h3>
-      {description && <p className="mt-0.5 text-xs leading-relaxed text-content/45">{description}</p>}
+      {description && <p className="mt-0.5 max-w-[70ch] text-caption text-ink-secondary">{description}</p>}
       <div className="mt-2 space-y-1.5">{children}</div>
     </div>
   )
@@ -691,7 +691,7 @@ function OutputFolder({ value, onCommit }: { value: string; onCommit: (dir: stri
           Open
         </Button>
       </div>
-      {error && <p role="alert" className="mt-2 text-xs text-danger">{error}</p>}
+      {error && <p role="alert" className="mt-2 text-caption text-danger">{error}</p>}
     </div>
   )
 }
@@ -709,7 +709,7 @@ function VocabularyField({ value, onCommit }: { value: string; onCommit: (value:
         onChange={(e) => setDraft(e.target.value)}
         onBlur={() => draft !== value && onCommit(draft)}
       />
-      <p className="mt-2 text-xs leading-relaxed text-content/45">Up to five words per term. Applies to new transcriptions; generated metadata uses it right away.</p>
+      <p className="mt-2 text-caption text-ink-secondary">Up to five words per term. Applies to new transcriptions; generated metadata uses it right away.</p>
     </div>
   )
 }
@@ -746,9 +746,9 @@ function ToolList({ rows, checking }: { rows: ToolRow[]; checking: boolean }): R
   return (
     <div className="mt-4">
       {checked && (
-        <div className="mb-2 flex items-center gap-2 text-xs">
+        <div className="mb-2 flex items-center gap-2 text-caption">
           <StatusDot tone={missing > 0 ? 'danger' : 'success'} />
-          <span className={cn('flex-1', missing > 0 ? 'text-danger' : 'text-content/60')}>
+          <span className={cn('flex-1', missing > 0 ? 'text-danger' : 'text-ink-secondary')}>
             {missing > 0 ? `${missing} required tool${missing === 1 ? '' : 's'} missing` : `Everything Clipward needs is installed (${rows.filter((row) => row.ok).length} tools)`}
           </span>
           {missing === 0 && (
@@ -771,15 +771,15 @@ function ToolList({ rows, checking }: { rows: ToolRow[]; checking: boolean }): R
             <div key={row.name} className="flex items-center gap-3 px-3 py-2">
               <StatusDot tone={tone} />
               <div className="min-w-0 flex-1">
-                <p className="text-[13px] text-ink">{row.name}</p>
+                <p className="text-body text-ink">{row.name}</p>
                 {row.detail && (
-                  <p className="mt-0.5 break-words font-mono text-2xs text-content/40" data-selectable>
+                  <p className="mt-0.5 break-words font-mono text-meta text-ink-tertiary" data-selectable>
                     {row.detail}
                   </p>
                 )}
               </div>
               {row.ok == null ? (
-                <span className="shrink-0 text-xs text-content/35">{checking ? 'Checking…' : 'Not checked'}</span>
+                <span className="shrink-0 text-caption text-ink-tertiary">{checking ? 'Checking…' : 'Not checked'}</span>
               ) : (
                 <Badge tone={row.ok ? 'neutral' : row.optional ? 'warning' : 'danger'} className="shrink-0">
                   {row.ok ? 'Found' : row.optional ? 'Unavailable' : 'Missing'}

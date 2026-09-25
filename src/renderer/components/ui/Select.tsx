@@ -12,13 +12,13 @@ export interface SelectOption {
 }
 
 /** Floating menu surface shared by dropdowns: a blurred popover over whatever it covers. */
-export const MENU_SURFACE = 'popover-surface rounded-xl p-1 text-xs text-ink'
+export const MENU_SURFACE = 'popover-surface rounded-xl p-1 text-caption text-ink'
 
 /** One row of a dropdown menu. `active` is the keyboard or pointer highlight. */
 export function menuOptionClass(active: boolean, disabled = false): string {
   return cn(
     'flex w-full cursor-default select-none items-center gap-2 rounded-lg px-2 py-1.5 text-left',
-    disabled ? 'text-content/40' : active ? 'bg-selection text-content' : 'text-content/75'
+    disabled ? 'text-ink-tertiary' : active ? 'bg-selection text-content' : 'text-content/80'
   )
 }
 
@@ -315,7 +315,7 @@ export function Select({
         onKeyDown={onTriggerKeyDown}
         data-open={open || undefined}
         className={cn(
-          'relative flex w-full min-w-0 items-center rounded-md pl-2 pr-7 text-left text-xs',
+          'relative flex w-full min-w-0 items-center rounded-md pl-2 pr-7 text-left text-caption',
           size === 'sm' ? 'h-6' : 'h-7',
           WELL,
           'data-[open]:border-content/25',
@@ -323,8 +323,8 @@ export function Select({
           className
         )}
       >
-        <span className={cn('min-w-0 truncate', selected ? 'text-ink' : 'text-ink-faint')}>{selected?.label ?? placeholder}</span>
-        <ChevronDown aria-hidden className={cn('pointer-events-none absolute right-2 h-3.5 w-3.5 text-content/45 transition-transform duration-150', open && 'rotate-180')} strokeWidth={1.75} />
+        <span className={cn('min-w-0 truncate', selected ? 'text-ink' : 'text-ink-tertiary')}>{selected?.label ?? placeholder}</span>
+        <ChevronDown aria-hidden className={cn('pointer-events-none absolute right-2 h-3.5 w-3.5 text-ink-secondary transition-transform duration-150', open && 'rotate-180')} strokeWidth={1.75} />
       </button>
 
       {open && (
@@ -336,7 +336,7 @@ export function Select({
         >
           {searchable && (
             <div className="mb-1 flex shrink-0 items-center gap-2 border-b border-stroke px-2 pb-1">
-              <Search aria-hidden className="h-3.5 w-3.5 shrink-0 text-content/45" strokeWidth={1.75} />
+              <Search aria-hidden className="h-3.5 w-3.5 shrink-0 text-ink-secondary" strokeWidth={1.75} />
               <input
                 ref={searchRef}
                 type="search"
@@ -355,7 +355,7 @@ export function Select({
                 aria-activedescendant={active >= 0 ? optionId(active) : undefined}
                 spellCheck={false}
                 autoComplete="off"
-                className="h-7 w-full min-w-0 bg-transparent text-xs text-ink placeholder:text-content/35 focus:outline-none focus-visible:outline-none [&::-webkit-search-cancel-button]:hidden"
+                className="h-7 w-full min-w-0 bg-transparent text-caption text-ink placeholder:text-ink-tertiary focus:outline-none focus-visible:outline-none [&::-webkit-search-cancel-button]:hidden"
               />
             </div>
           )}
@@ -382,14 +382,14 @@ export function Select({
               >
                 <span className="min-w-0 flex-1 truncate">
                   {option.label}
-                  {option.detail && <span className="text-content/40"> · {option.detail}</span>}
+                  {option.detail && <span className="text-ink-secondary"> · {option.detail}</span>}
                 </span>
                 {option.value === value && <Check aria-hidden className="h-3.5 w-3.5 shrink-0 text-content/70" strokeWidth={2} />}
               </li>
             ))}
           </ul>
           {visible.length === 0 && (
-            <p className="px-2 py-1.5 text-xs text-content/45">{query ? 'No matches' : emptyText}</p>
+            <p className="px-2 py-1.5 text-caption text-ink-secondary">{query ? 'No matches' : emptyText}</p>
           )}
         </div>
       )}

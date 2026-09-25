@@ -357,7 +357,7 @@ export function CaptionPresetPicker({ value, onChange, disabled }: CaptionPreset
                 </span>
               )}
             </span>
-            <span className={cn('block truncate px-1 pb-0.5 pt-1.5 text-xs font-medium', selected ? 'text-content' : 'text-content/70')}>
+            <span className={cn('block truncate px-1 pb-0.5 pt-1.5 text-caption font-medium', selected ? 'text-content' : 'text-content/70')}>
               {preset.name}
             </span>
           </button>

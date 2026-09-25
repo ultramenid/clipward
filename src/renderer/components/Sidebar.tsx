@@ -94,7 +94,7 @@ function NavGroup({ label, expanded, divider = false, children }: {
   return (
     <div className="flex flex-col gap-px">
       {expanded ? (
-        <p aria-hidden className="px-2 pb-1 text-xs font-semibold text-content/35">{label}</p>
+        <p aria-hidden className="px-2 pb-1 text-caption font-semibold text-ink-tertiary">{label}</p>
       ) : divider ? (
         <span aria-hidden className="mx-2 mb-1 h-px bg-stroke" />
       ) : null}
@@ -122,7 +122,7 @@ function NavButton({ item, expanded, active, onNavigate }: {
       className={cn(
         'group relative flex h-8 w-full items-center gap-2 rounded-md text-left transition-colors duration-feedback ease-out',
         expanded ? 'px-2' : 'justify-center',
-        active ? 'bg-selection text-content' : 'text-content/50 hover:bg-content/10 hover:text-content'
+        active ? 'bg-selection text-content' : 'text-ink-secondary hover:bg-content/10 hover:text-content'
       )}
     >
       <Icon className={cn('h-4 w-4 shrink-0', active ? 'opacity-90' : 'opacity-70')} strokeWidth={1.75} />
@@ -131,13 +131,13 @@ function NavButton({ item, expanded, active, onNavigate }: {
       )}
       {expanded && (
         <>
-          <span className="min-w-0 flex-1 truncate text-sm font-medium leading-tight">{item.label}</span>
+          <span className="min-w-0 flex-1 truncate text-label">{item.label}</span>
           {badge ? (
-            <span aria-hidden className="grid min-w-4 place-items-center rounded-full bg-accent px-1 text-[10px] font-semibold leading-4 text-accent-ink tabular">
+            <span aria-hidden className="grid min-w-4 place-items-center rounded-full bg-accent px-1 text-micro font-semibold leading-4 text-accent-ink tabular-nums">
               {badge > 99 ? '99+' : badge}
             </span>
           ) : (
-            <kbd aria-hidden className="shrink-0 font-sans text-[11px] text-content/40">
+            <kbd aria-hidden className="shrink-0 font-sans text-meta text-ink-tertiary">
               {MOD_KEY}
               {item.shortcut}
             </kbd>
@@ -168,14 +168,14 @@ function ActiveJobsCard({ expanded, onOpen }: { expanded: boolean; onOpen: () =>
       title={expanded ? undefined : `${title} · ${percent}%`}
       className={cn('tile tile-hover group w-full rounded-lg text-left animate-fade-in', expanded ? 'px-2.5 py-2' : 'px-1.5 py-1.5')}
     >
-      <div className={cn('flex items-center gap-2 text-xs', !expanded && 'justify-center')}>
+      <div className={cn('flex items-center gap-2 text-caption', !expanded && 'justify-center')}>
         {expanded && <StatusDot tone="accent" pulse />}
         {expanded && <span className="truncate font-medium text-content">{title}</span>}
-        <span className={cn('font-mono text-2xs tabular text-accent-fg', expanded && 'ml-auto')}>{percent}%</span>
+        <span className={cn('text-meta font-medium tabular-nums text-accent-fg', expanded && 'ml-auto')}>{percent}%</span>
       </div>
       <ProgressBar value={percent} className={cn('h-0.5', expanded ? 'mt-2' : 'mt-1.5')} />
       {expanded && (
-        <p className="mt-1.5 flex items-center gap-1 text-2xs text-content/45">
+        <p className="mt-1.5 flex items-center gap-1 text-meta text-ink-secondary">
           <span className="truncate">{single ? sourceLabel(single.request.videoUrl) : 'View all jobs'}</span>
           <ChevronRight className="ml-auto h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover:opacity-100" />
         </p>
@@ -209,7 +209,7 @@ function SetupStatus({ expanded, onOpenSettings }: { expanded: boolean; onOpenSe
       className={cn(
         'flex w-full min-w-0 items-center gap-2.5 rounded-md text-left transition-colors duration-feedback hover:bg-content/10',
         expanded ? 'px-2 py-1.5' : 'h-8 justify-center',
-        ready ? 'text-content/60 hover:text-content' : 'text-content/80 hover:text-content'
+        ready ? 'text-ink-secondary hover:text-content' : 'text-content/80 hover:text-content'
       )}
     >
       <span className="grid h-4 w-4 shrink-0 place-items-center">
@@ -217,8 +217,8 @@ function SetupStatus({ expanded, onOpenSettings }: { expanded: boolean; onOpenSe
       </span>
       {expanded && (
         <span className="flex min-w-0 flex-col">
-          <span className="truncate text-[13px] leading-tight">{label}</span>
-          <span className="font-mono text-[11px] leading-tight text-content/40 tabular">v{APP_VERSION}</span>
+          <span className="truncate text-body leading-tight">{label}</span>
+          <span className="font-mono text-meta leading-tight text-ink-tertiary tabular-nums">v{APP_VERSION}</span>
         </span>
       )}
     </button>

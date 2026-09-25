@@ -9,6 +9,53 @@ const channel = (name: string): string => `rgb(var(--${name}) / <alpha-value>)`
 const neutral = (name: string): string => `hsl(var(--${name}) / <alpha-value>)`
 const tint = (strength: string): string => `hsl(var(--content) / var(--${strength}))`
 
+// ─── Typography ────────────────────────────────────────────────────────────
+// The type scale. Sizes and line heights are rem CSS variables (globals.css,
+// "Typography" block) so an interface-scale setting that changes the root
+// font size, or zooms the webview, scales every piece of text. Each token
+// pairs a size with its line height, weight and tracking; `font-*` and
+// `leading-*` utilities still override them. See DESIGN.md → Typography.
+const type = (name: string, fontWeight: string, letterSpacing = '0em'): [string, { lineHeight: string; fontWeight: string; letterSpacing: string }] => [
+  `var(--text-${name})`,
+  { lineHeight: `var(--text-${name}-lh)`, fontWeight, letterSpacing }
+]
+
+const TYPE_SCALE = {
+  display: type('display', '600', '-0.02em'), // 28/32 · big live numbers (progress)
+  title: type('title', '600', '-0.012em'), // 20/26 · page titles, stat values
+  heading: type('heading', '600', '-0.006em'), // 15/20 · dialog and hero-card titles
+  section: type('section', '600'), // 13/18 · card and section titles
+  label: type('label', '500'), // 13/18 · row, option and field labels, nav
+  body: type('body', '400'), // 13/20 · running text, values
+  caption: type('caption', '400'), // 12/18 · descriptions, hints, control text
+  meta: type('meta', '400', '0.005em'), // 11/16 · metadata, badges, chips, shortcuts
+  micro: type('micro', '500', '0.01em'), // 10/14 · step numbers, counters inside tiny marks
+  // Legacy sizes, in rem so they scale too. New code uses the names above.
+  '3xs': ['0.625rem', '0.875rem'],
+  '2xs': ['0.6875rem', '1rem'],
+  xs: ['0.75rem', '1rem'],
+  sm: ['0.8125rem', '1.125rem'],
+  base: ['0.875rem', '1.25rem'],
+  lg: ['1rem', '1.375rem'],
+  xl: ['1.25rem', '1.5625rem'],
+  '2xl': ['1.5rem', '1.875rem'],
+  '3xl': ['1.875rem', '2.25rem']
+}
+// The token names are listed again in TYPE_TOKENS (src/renderer/lib/utils.ts) for tailwind-merge.
+
+const TYPE_FAMILIES = {
+  sans: ['var(--font-sans)'],
+  mono: ['var(--font-mono)']
+}
+
+// Text emphasis: the content colour at strengths tuned per scheme so both
+// pass WCAG AA on the base and on cards (see globals.css).
+const TYPE_COLORS = {
+  'ink-secondary': 'hsl(var(--content) / var(--ink-secondary-alpha))',
+  'ink-tertiary': 'hsl(var(--content) / var(--ink-tertiary-alpha))'
+}
+// ───────────────────────────────────────────────────────────────────────────
+
 const config: Config = {
   darkMode: 'class',
   content: ['./src/renderer/**/*.{ts,tsx,html}'],
@@ -45,34 +92,12 @@ const config: Config = {
         warning: channel('warning'),
         brand: {
           gold: '#ffd500'
-        }
+        },
+        ...TYPE_COLORS
       },
-      fontFamily: {
-        sans: [
-          'system-ui',
-          '-apple-system',
-          'BlinkMacSystemFont',
-          '"Segoe UI"',
-          'Roboto',
-          'Ubuntu',
-          'Cantarell',
-          '"Helvetica Neue"',
-          'Geist',
-          'sans-serif'
-        ],
-        mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', '"Geist Mono"', '"Liberation Mono"', 'monospace']
-      },
-      fontSize: {
-        '3xs': ['10px', '14px'],
-        '2xs': ['11px', '15px'],
-        xs: ['12px', '16px'],
-        sm: ['13px', '18px'],
-        base: ['14px', '20px'],
-        lg: ['16px', '22px'],
-        xl: ['20px', '25px'],
-        '2xl': ['24px', '30px'],
-        '3xl': ['30px', '36px']
-      },
+      // Typography: see the block at the top of this file and DESIGN.md.
+      fontFamily: TYPE_FAMILIES,
+      fontSize: TYPE_SCALE,
       // Small, quiet corners. Controls and rows are `rounded-md`, menus rows
       // `rounded-lg`, cards and popovers `rounded-xl`, dialogs `rounded-2xl`.
       borderRadius: {

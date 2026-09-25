@@ -1,7 +1,16 @@
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { twitchVodId } from '../../shared/video-source'
 import { type ClassValue, clsx } from 'clsx'
-import { twMerge } from 'tailwind-merge'
+import { extendTailwindMerge } from 'tailwind-merge'
+
+/** The named type scale (tailwind.config.ts, TYPE_SCALE). tailwind-merge has to
+ *  know these are font sizes, or `cn('text-label', 'text-ink')` would drop one
+ *  as a clashing text colour. */
+export const TYPE_TOKENS = ['display', 'title', 'heading', 'section', 'label', 'body', 'caption', 'meta', 'micro'] as const
+
+const twMerge = extendTailwindMerge({
+  extend: { classGroups: { 'font-size': [{ text: [...TYPE_TOKENS] }] } }
+})
 
 export function cn(...inputs: ClassValue[]): string {
   return twMerge(clsx(inputs))

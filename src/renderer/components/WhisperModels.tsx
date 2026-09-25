@@ -47,17 +47,17 @@ export function WhisperModels({ compact = false }: { compact?: boolean }): React
                     {selected && <Check className="h-2.5 w-2.5 text-accent-ink" strokeWidth={4} />}
                   </span>
                   <span className="min-w-0">
-                    <span className="block text-[13px] font-medium text-ink">
-                      {model.label} <span className="font-mono text-2xs font-normal text-content/40">{formatSize(model.sizeMb)}</span>
+                    <span className="block text-label text-ink">
+                      {model.label} <span className="text-meta font-normal tabular-nums text-ink-secondary">{formatSize(model.sizeMb)}</span>
                     </span>
-                    <span className="block truncate text-xs text-content/45">{model.note}</span>
+                    <span className="block truncate text-caption text-ink-secondary">{model.note}</span>
                   </span>
                 </button>
                 {downloading ? (
                   <Button size="sm" variant="ghost" icon={<X className="h-3.5 w-3.5" />} onClick={() => void getApi().whisper.cancel(model.id)}>Cancel</Button>
                 ) : status?.downloaded ? (
                   <span className="flex items-center gap-1">
-                    <span className="text-2xs text-success">Downloaded</span>
+                    <span className="text-meta text-success">Downloaded</span>
                     {!compact && (
                       <Button size="sm" variant="ghost" iconOnly aria-label={`Delete ${model.label}`} icon={<Trash2 className="h-3.5 w-3.5" />}
                         onClick={() => getApi().whisper.remove(model.id).then(() => loadWhisperModels())} />
@@ -72,7 +72,7 @@ export function WhisperModels({ compact = false }: { compact?: boolean }): React
               {downloading && (
                 <div className="mt-2 flex items-center gap-2">
                   <ProgressBar value={percent} />
-                  <span className="w-24 shrink-0 text-right font-mono text-2xs tabular text-content/45">
+                  <span className="w-24 shrink-0 whitespace-nowrap text-right text-meta tabular-nums text-ink-secondary">
                     {formatSize((status!.receivedBytes ?? 0) / 1e6)} / {formatSize(model.sizeMb)}
                   </span>
                 </div>
@@ -81,7 +81,7 @@ export function WhisperModels({ compact = false }: { compact?: boolean }): React
           )
         })}
       </div>
-      {error && <p role="alert" className="text-xs text-danger">{error}</p>}
+      {error && <p role="alert" className="text-caption text-danger">{error}</p>}
     </div>
   )
 }

@@ -25,8 +25,8 @@ export function PanelHeader({ title, description, action, icon, className }: Pan
       <div className="flex min-w-0 items-start gap-3">
         {icon}
         <div className="min-w-0">
-          <h2 className="text-[13px] font-semibold leading-5 text-ink">{title}</h2>
-          {description && <p className="mt-0.5 text-xs leading-relaxed text-content/45">{description}</p>}
+          <h2 className="text-section text-ink">{title}</h2>
+          {description && <p className="mt-0.5 max-w-[70ch] text-caption text-ink-secondary">{description}</p>}
         </div>
       </div>
       {action && <div className="flex shrink-0 items-center gap-2">{action}</div>}

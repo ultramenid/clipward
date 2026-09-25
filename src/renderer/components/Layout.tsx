@@ -58,13 +58,13 @@ function TitleBar({ currentPage }: { currentPage: Page }): React.JSX.Element {
           aria-controls="sidebar"
           title={`${label} (${MOD_KEY}${SIDEBAR_SHORTCUT_KEY})`}
           data-tauri-drag-region="false"
-          className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-content/50 transition-colors duration-feedback hover:bg-content/10 hover:text-content"
+          className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-ink-secondary transition-colors duration-feedback hover:bg-content/10 hover:text-content"
         >
           <PanelLeft className="h-3.5 w-3.5" strokeWidth={1.75} />
         </button>
       )}
-      <nav aria-label="Breadcrumb" className={cn('flex min-w-0 items-center gap-2 text-[13px]', wide ? 'px-1.5' : 'px-2')}>
-        <span className="shrink-0 text-content/45">{GROUP_LABEL[item.group]}</span>
+      <nav aria-label="Breadcrumb" className={cn('flex min-w-0 items-center gap-2 text-body', wide ? 'px-1.5' : 'px-2')}>
+        <span className="shrink-0 text-ink-secondary">{GROUP_LABEL[item.group]}</span>
         <span aria-hidden className="shrink-0 text-content/25">›</span>
         <span aria-current="page" className="min-w-0 truncate text-content">{item.label}</span>
       </nav>

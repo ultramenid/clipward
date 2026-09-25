@@ -50,12 +50,12 @@ export function SourcePicker({ value, onChange, disabled }: SourcePickerProps): 
   if (value) {
     return <>
       <SourcePreview key={value} source={value} onClear={() => { setPickerError(null); onChange('') }} onReplace={browse} disabled={disabled} />
-      {pickerError && <p role="alert" className="mt-2.5 px-1 text-xs text-danger">{pickerError}</p>}
+      {pickerError && <p role="alert" className="mt-2.5 px-1 text-caption text-danger">{pickerError}</p>}
     </>
   }
   return <>
     <DropZone onChange={onChange} onBrowse={browse} disabled={disabled} />
-    {pickerError && <p role="alert" className="mt-2.5 px-1 text-xs text-danger">{pickerError}</p>}
+    {pickerError && <p role="alert" className="mt-2.5 px-1 text-caption text-danger">{pickerError}</p>}
   </>
 }
 
@@ -136,10 +136,10 @@ function DropZone({
           <UploadCloud strokeWidth={1.75} />
         </IconTile>
         <div className="min-w-0">
-          <h2 className="truncate text-[13px] font-semibold text-ink">
+          <h2 className="truncate text-section text-ink">
             {dragging ? 'Choose this video in the file picker' : 'Add a long video'}
           </h2>
-          <p className="text-xs text-content/45">Drop a video file or link here, or paste a link below.</p>
+          <p className="text-caption text-ink-secondary">Drop a video file or link here, or paste a link below.</p>
           <div role="group" aria-label="Supported video links" className="mt-2 flex flex-wrap items-center gap-1.5">
             <Badge icon={<Youtube aria-hidden className="h-3 w-3 text-[#ff0033]" />}>YouTube</Badge>
             <Badge icon={<Twitch aria-hidden className="h-3 w-3 text-[#a970ff]" />}>Twitch VODs</Badge>
@@ -180,12 +180,12 @@ function DropZone({
             ) : undefined
           }
         />
-        <span className="text-xs text-content/35 max-sm:hidden">or</span>
+        <span className="text-caption text-ink-tertiary max-sm:hidden">or</span>
         <Button size="lg" variant="secondary" icon={<FolderOpen className="h-3.5 w-3.5" />} onClick={onBrowse} disabled={disabled}>
           Browse
         </Button>
       </div>
-      {error && <p id="source-link-error" role="alert" className="relative mt-2 px-1 text-xs text-danger">{error}</p>}
+      {error && <p id="source-link-error" role="alert" className="relative mt-2 px-1 text-caption text-danger">{error}</p>}
     </div>
   )
 }
@@ -239,19 +239,19 @@ function SourcePreview({
           />
         )}
         {(mediaFailed || (link && !ytId)) && (
-          <div className="flex h-full w-full items-center justify-center bg-content/5 text-content/45">
+          <div className="flex h-full w-full items-center justify-center bg-content/5 text-ink-secondary">
             {twitchId ? <Twitch className="h-5 w-5" /> : link ? <Link2 className="h-5 w-5" /> : <FileVideo className="h-5 w-5" />}
           </div>
         )}
         {durationMs != null && (
-          <span className="media-chip absolute bottom-1 right-1 rounded px-1 font-mono text-[10px] tabular">
+          <span className="media-chip absolute bottom-1 right-1 rounded px-1 text-micro tabular-nums">
             {formatTimecode(durationMs)}
           </span>
         )}
       </div>
 
       <div className="min-w-0 flex-1">
-        <p className="truncate text-[13px] font-medium text-ink" title={displaySource} data-selectable>
+        <p className="truncate text-label text-ink" title={displaySource} data-selectable>
           {displaySource}
         </p>
         <div className="mt-1.5 flex min-w-0 items-center gap-2">
@@ -260,7 +260,7 @@ function SourcePreview({
           >
             {twitchId ? 'Twitch VOD' : ytId ? 'YouTube' : link ? 'Link' : 'Local file'}
           </Badge>
-          <span className="truncate text-xs text-content/45">{twitchId ? 'Public, completed videos only' : 'Ready to clip'}</span>
+          <span className="truncate text-caption text-ink-secondary">{twitchId ? 'Public, completed videos only' : 'Ready to clip'}</span>
         </div>
       </div>
 

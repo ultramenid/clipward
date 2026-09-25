@@ -47,7 +47,7 @@ function useElapsed(since: string, running: boolean): number {
 /** Small hairline chip for a single fact under the progress ring. */
 function InfoChip({ icon, children }: { icon: React.ReactNode; children: React.ReactNode }): React.JSX.Element {
   return (
-    <span className="inline-flex h-6 items-center gap-1.5 rounded-md border border-content/10 px-2 text-xs tabular text-content/60 [&_svg]:h-3.5 [&_svg]:w-3.5 [&_svg]:text-content/40">
+    <span className="inline-flex h-6 items-center gap-1.5 rounded-md border border-content/10 px-2 text-caption tabular-nums text-ink-secondary [&_svg]:h-3.5 [&_svg]:w-3.5 [&_svg]:text-ink-tertiary">
       {icon}
       {children}
     </span>
@@ -73,7 +73,7 @@ export function JobProgress({ job, onCancel, leading }: JobProgressProps): React
       {leading && <div className="mb-2">{leading}</div>}
       <div className="text-center">
         <p className="eyebrow text-accent-fg">{queued ? 'Waiting in the queue' : 'Generating clips'}</p>
-        <h1 className="mx-auto mt-1 max-w-[560px] truncate text-xl font-medium leading-tight text-ink" title={source}>
+        <h1 className="mx-auto mt-1 max-w-[560px] truncate text-title text-ink" title={source}>
           {sourceLabel(source)}
         </h1>
       </div>
@@ -81,14 +81,14 @@ export function JobProgress({ job, onCancel, leading }: JobProgressProps): React
       <section className="card relative mt-5 overflow-hidden rounded-xl px-5 pb-5 pt-6">
         <div className="relative flex flex-col items-center">
           <ProgressRing value={job.percent} size={160} stroke={6}>
-            <p className="font-mono text-3xl font-medium tabular tracking-[-0.03em] text-ink">
+            <p className="text-display tabular-nums text-ink">
               {pct}
-              <span className="ml-0.5 text-lg text-content/40">%</span>
+              <span className="ml-0.5 text-heading font-medium text-ink-tertiary">%</span>
             </p>
-            <p className="mt-1.5 text-xs font-medium text-accent-fg">{STAGE_LABELS[job.status] ?? 'Working'}</p>
+            <p className="mt-1.5 text-caption font-medium text-accent-fg">{STAGE_LABELS[job.status] ?? 'Working'}</p>
           </ProgressRing>
 
-          <p className="mt-4 h-5 max-w-full truncate text-center text-[13px] text-content/60" aria-live="polite">
+          <p className="mt-4 h-5 max-w-full truncate text-center text-body text-ink-secondary" aria-live="polite">
             {job.step}
           </p>
 
@@ -118,7 +118,7 @@ export function JobProgress({ job, onCancel, leading }: JobProgressProps): React
                       'flex h-8 w-8 items-center justify-center rounded-full border transition-colors duration-300',
                       done && 'border-content/70 bg-content/70 text-canvas',
                       active && 'animate-pulse-ring border-accent/70 bg-accent/15 text-accent-fg',
-                      !done && !active && 'border-content/15 text-content/30'
+                      !done && !active && 'border-content/15 text-ink-tertiary'
                     )}
                     aria-current={active ? 'step' : undefined}
                   >
@@ -126,8 +126,8 @@ export function JobProgress({ job, onCancel, leading }: JobProgressProps): React
                   </span>
                   <span
                     className={cn(
-                      'text-center text-2xs font-medium',
-                      active ? 'text-content' : done ? 'text-content/60' : 'text-content/30'
+                      'text-center text-meta font-medium',
+                      active ? 'text-content' : done ? 'text-ink-secondary' : 'text-ink-tertiary'
                     )}
                   >
                     {step.label}
@@ -148,7 +148,7 @@ export function JobProgress({ job, onCancel, leading }: JobProgressProps): React
       </section>
 
       <div className="mt-4 flex items-center justify-between gap-4 px-1">
-        <p className="text-xs leading-relaxed text-content/45">
+        <p className="max-w-[60ch] text-caption text-ink-secondary">
           {queued
             ? 'Starts automatically when a running job finishes.'
             : 'Long videos can take a while. Keep using Clipward or queue more videos; progress shows in the sidebar.'}
@@ -166,25 +166,25 @@ export function JobFailure({ job, onRetry, leading }: { job: Job; onRetry: () =>
       <IconTile tone="danger" size="md">
         <AlertTriangle />
       </IconTile>
-      <h1 className="mt-3 text-xl font-medium leading-tight text-ink">Clipping failed</h1>
-      <p className="mt-1 truncate text-[13px] text-content/50" title={job.request.videoUrl}>
+      <h1 className="mt-3 text-title text-ink">Clipping failed</h1>
+      <p className="mt-1 truncate text-body text-ink-secondary" title={job.request.videoUrl}>
         {sourceLabel(job.request.videoUrl)}
       </p>
 
       <section className="card mt-5 overflow-hidden rounded-xl">
         <pre
-          className="max-h-72 overflow-auto whitespace-pre-wrap break-words border-b border-stroke bg-danger/[0.04] px-4 py-3 font-mono text-xs leading-relaxed text-danger"
+          className="max-h-72 overflow-auto whitespace-pre-wrap break-words border-b border-stroke bg-danger/[0.04] px-4 py-3 font-mono text-caption text-danger"
           data-selectable
         >
           {job.error || 'The clipping engine stopped without an error message.'}
         </pre>
         {job.errorHint && (
-          <p className="border-b border-stroke px-4 py-3 text-[13px] leading-relaxed text-content/70 last:border-b-0" data-selectable>
+          <p className="border-b border-stroke px-4 py-3 text-body text-content/70 last:border-b-0" data-selectable>
             {job.errorHint}
           </p>
         )}
         {job.failureCode && (
-          <p className="px-4 py-2.5 font-mono text-2xs text-content/40" data-selectable>
+          <p className="px-4 py-2.5 font-mono text-meta text-ink-tertiary" data-selectable>
             Failure code: {job.failureCode}{job.httpStatus ? ` · HTTP ${job.httpStatus}` : ''}
           </p>
         )}

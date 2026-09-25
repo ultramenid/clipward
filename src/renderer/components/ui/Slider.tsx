@@ -38,7 +38,7 @@ export function Slider({ label, value, min, max, step = 1, display, onChange, di
           'disabled:[&::-webkit-slider-thumb]:bg-content/60'
         )}
       />
-      <span className="w-10 shrink-0 text-right font-mono text-xs tabular text-content">{display}</span>
+      <span className="w-10 shrink-0 whitespace-nowrap text-right text-caption tabular-nums text-content/80">{display}</span>
     </div>
   )
 }

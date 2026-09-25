@@ -38,8 +38,8 @@ export function SetupCard({ onOpenSettings, className }: { onOpenSettings: () =>
           <IconTile tone="accent"><Sparkles /></IconTile>
           <div className="min-w-0">
             <p className="eyebrow text-accent-fg">One-time setup</p>
-            <h2 className="mt-0.5 text-[15px] font-medium text-ink">Two things before your first clip</h2>
-            <p className="mt-0.5 max-w-2xl text-xs leading-relaxed text-content/50">
+            <h2 className="mt-0.5 text-heading text-ink">Two things before your first clip</h2>
+            <p className="mt-0.5 max-w-2xl text-caption text-ink-secondary">
               Clipward has no account and no server. Pick the AI that chooses your clips, and download the speech model that transcribes offline.
             </p>
           </div>
@@ -49,7 +49,7 @@ export function SetupCard({ onOpenSettings, className }: { onOpenSettings: () =>
         </SetupStep>
         <SetupStep n={2} done={whisperReady} title="Offline transcription (Whisper)">
           <WhisperModels compact />
-          <p className="mt-2 text-xs text-content/45">Downloaded once. Your audio never leaves this computer. Other sizes are in Settings.</p>
+          <p className="mt-2 text-caption text-ink-secondary">Downloaded once. Your audio never leaves this computer. Other sizes are in Settings.</p>
         </SetupStep>
       </section>
     )
@@ -67,8 +67,8 @@ export function SetupCard({ onOpenSettings, className }: { onOpenSettings: () =>
           <Wrench />
         </IconTile>
         <div className="min-w-0 flex-1">
-          <p className="text-[13px] font-medium text-ink">{toolError ? 'Could not check required tools' : 'Some required tools are missing'}</p>
-          <p className="mt-0.5 text-xs text-content/50">{toolError ? 'Open Settings to retry the system check.' : `Missing: ${missingTools}. Open Settings for details.`}</p>
+          <p className="text-label text-ink">{toolError ? 'Could not check required tools' : 'Some required tools are missing'}</p>
+          <p className="mt-0.5 text-caption text-ink-secondary">{toolError ? 'Open Settings to retry the system check.' : `Missing: ${missingTools}. Open Settings for details.`}</p>
         </div>
         <Button onClick={onOpenSettings}>See what’s missing</Button>
       </section>
@@ -82,12 +82,12 @@ function SetupStep({ n, done, title, children }: { n: number; done: boolean; tit
   return (
     <div className="app-bg m-3 rounded-lg border border-stroke p-3">
       <div className={cn('flex items-center gap-2', !done && 'mb-3')}>
-        <span className={cn('flex h-4 w-4 items-center justify-center rounded-full font-mono text-[10px]',
+        <span className={cn('flex h-4 w-4 items-center justify-center rounded-full text-micro tabular-nums',
           done ? 'bg-success text-canvas' : 'bg-accent text-accent-ink')}>
           {done ? <Check className="h-2.5 w-2.5" strokeWidth={3} /> : n}
         </span>
-        <span className="text-[13px] font-medium text-ink">{title}</span>
-        {done && <span className="text-xs text-success">Ready</span>}
+        <span className="text-label text-ink">{title}</span>
+        {done && <span className="text-caption text-success">Ready</span>}
       </div>
       {!done && children}
     </div>

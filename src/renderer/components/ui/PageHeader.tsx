@@ -18,8 +18,10 @@ export function PageHeader({ title, description, actions, eyebrow, leading, clas
       <div className="min-w-0 flex-1">
         {leading && <div className="mb-2">{leading}</div>}
         {eyebrow && <p className="eyebrow mb-1">{eyebrow}</p>}
-        <h1 className="truncate text-xl font-medium leading-tight text-ink">{title}</h1>
-        {description && <p className="mt-1 max-w-2xl text-xs leading-relaxed text-content/50">{description}</p>}
+        <h1 className="line-clamp-2 text-balance break-words text-title text-ink" title={typeof title === 'string' ? title : undefined}>
+          {title}
+        </h1>
+        {description && <p className="mt-1 max-w-[70ch] text-caption text-ink-secondary">{description}</p>}
       </div>
       {actions && <div className="flex shrink-0 items-center gap-1.5">{actions}</div>}
     </header>
