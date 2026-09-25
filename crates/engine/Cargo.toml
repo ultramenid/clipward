@@ -22,6 +22,7 @@ which = "7"
 tempfile = "3"
 whisper-rs = "0.16"
 tract-onnx = "0.23"
+jpeg-encoder = "0.6"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 whisper-rs = { version = "0.16", features = ["metal"] }
