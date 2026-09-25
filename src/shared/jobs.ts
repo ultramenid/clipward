@@ -20,6 +20,18 @@ export interface ClipJobRequest {
   endTimeSeconds: number | null
   bannerPlatform: string | null
   bannerChannelUrl: string | null
+  /**
+   * Manual clip mode: the moments to cut, exactly as typed, with no AI planner or
+   * provider. Absent or null (older requests too) means the AI picks the moments.
+   */
+  manualClips?: ManualClip[] | null
+}
+
+/** One moment the user typed in manual clip mode, in source seconds. */
+export interface ManualClip {
+  startSeconds: number
+  endSeconds: number
+  title?: string | null
 }
 
 /** How many clipping runs the main process lets run at once; the rest wait in a queue. */

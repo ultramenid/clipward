@@ -136,6 +136,20 @@ pub struct ClipJobRequest {
     pub end_time_seconds: Option<f64>,
     pub banner_platform: Option<String>,
     pub banner_channel_url: Option<String>,
+    /// Manual clip mode: the user's own moments, cut exactly as typed with no AI planner.
+    /// None (the default, and every older payload) means the AI picks the moments.
+    #[serde(default)]
+    pub manual_clips: Option<Vec<ManualClip>>,
+}
+
+/// One moment the user typed in manual clip mode (source seconds).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManualClip {
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 fn one() -> f64 {

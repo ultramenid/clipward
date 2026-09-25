@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
-import { useSetupState } from '../store/use-settings-store'
+import { setupBlockedReason, useSetupState } from '../store/use-settings-store'
 import { useDraftStore } from '../store/use-draft-store'
 import { useJobStore } from '../store/use-job-store'
 import { errorMessage } from '../lib/utils'
@@ -13,12 +13,13 @@ import { Callout } from '../components/ui/Callout'
 import type { Page as PageId } from '../components/Sidebar'
 
 /**
- * Create: the setup card (until the OpenRouter key exists) and the clipping wizard. Runs go
+ * Create: the setup card (until a provider, or for manual clips just Whisper, is ready) and the clipping wizard. Runs go
  * to the main process's queue and are followed on the Jobs page, so this page
  * is always ready for the next video.
  */
 export function ClipPage({ onNavigate }: { onNavigate: (page: PageId) => void }): React.JSX.Element {
   const setup = useSetupState()
+  const clipMode = useDraftStore((s) => s.clipMode)
   const startingRef = useRef(false)
   const [starting, setStarting] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
@@ -45,14 +46,8 @@ export function ClipPage({ onNavigate }: { onNavigate: (page: PageId) => void })
     onNavigate('jobs')
   }, [onNavigate])
 
-  const blockedReason =
-    !setup.providerReady
-      ? 'Choose an AI provider above to start.'
-      : !setup.whisperReady
-        ? 'Download the Whisper model above to start.'
-        : setup.toolsOk === false
-        ? 'Fix the missing tools in Settings to start.'
-        : !setup.ready ? 'Checking required tools…' : undefined
+  // Manual clip mode needs no AI provider, only the Whisper model and tools.
+  const blockedReason = setupBlockedReason(setup, clipMode)
 
   return (
     <Page width="narrow">

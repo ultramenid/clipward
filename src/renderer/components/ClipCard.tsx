@@ -22,6 +22,8 @@ interface ClipCardProps {
   clip: ClipArtifact
   vertical: boolean
   topPick?: boolean
+  /** Off for manual runs, whose clips have no virality score. */
+  showScore?: boolean
   selected: boolean
   selecting: boolean
   onToggleSelect: () => void
@@ -34,6 +36,7 @@ export function ClipCard({
   clip,
   vertical,
   topPick,
+  showScore = true,
   selected,
   selecting,
   onToggleSelect,
@@ -165,13 +168,15 @@ export function ClipCard({
               Top pick
             </span>
           )}
-          <span
-            className="media-chip pointer-events-auto inline-flex h-[1.125rem] items-center gap-1 rounded px-1.5 text-meta font-medium tabular-nums"
-            title="Virality score"
-          >
-            <TrendingUp className="h-3 w-3 text-brand-gold" />
-            {score}
-          </span>
+          {showScore && (
+            <span
+              className="media-chip pointer-events-auto inline-flex h-[1.125rem] items-center gap-1 rounded px-1.5 text-meta font-medium tabular-nums"
+              title="Virality score"
+            >
+              <TrendingUp className="h-3 w-3 text-brand-gold" />
+              {score}
+            </span>
+          )}
         </div>
         <span className="media-chip pointer-events-none absolute bottom-2 left-2 z-10 rounded px-1 py-px text-meta font-medium tabular-nums">
           {formatTimecode(clip.duration_ms)}

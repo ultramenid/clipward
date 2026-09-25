@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { newManualRow, type ManualClipRow } from '../lib/manual-clips'
 
 /** The Create wizard's steps, in order. */
 export type WizardStep = 'video' | 'brief' | 'format' | 'clips' | 'captions' | 'review'
@@ -35,11 +36,23 @@ export interface ClipDraft {
   trimOpen: boolean
   trimStart: string
   trimEnd: string
+  /** ai: the planner picks the moments; manual: the user types them (no AI provider). */
+  clipMode: 'ai' | 'manual'
+  /** Manual mode's clip list, as typed. */
+  manualClips: ManualClipRow[]
+}
+
+/** Length of a local source, once its preview has loaded (validates manual clips). */
+export interface SourceDuration {
+  source: string
+  seconds: number
 }
 
 interface DraftState extends ClipDraft {
   step: WizardStep
   started: StartedJob | null
+  sourceDuration: SourceDuration | null
+  setSourceDuration: (duration: SourceDuration) => void
   update: (patch: Partial<ClipDraft>) => void
   setStep: (step: WizardStep) => void
   clearSource: () => void
@@ -65,11 +78,16 @@ export const useDraftStore = create<DraftState>((set) => ({
   trimOpen: false,
   trimStart: '',
   trimEnd: '',
+  clipMode: 'ai',
+  manualClips: [newManualRow()],
   step: 'video',
   started: null,
+  sourceDuration: null,
+  setSourceDuration: (sourceDuration) => set({ sourceDuration }),
   update: (patch) => set(patch),
   setStep: (step) => set({ step }),
   clearSource: () => set({ source: '', trimStart: '', trimEnd: '' }),
   markStarted: (started) => set({ started }),
-  startAnother: () => set({ source: '', trimOpen: false, trimStart: '', trimEnd: '', step: 'video', started: null })
+  // The typed moments belong to the last video; the mode stays.
+  startAnother: () => set({ source: '', trimOpen: false, trimStart: '', trimEnd: '', manualClips: [newManualRow()], step: 'video', started: null })
 }))

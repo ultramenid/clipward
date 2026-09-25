@@ -1,6 +1,7 @@
 import { Check, Sparkles, Wrench } from 'lucide-react'
 import { useSettingsStore, useSetupState } from '../store/use-settings-store'
 import { cn } from '../lib/utils'
+import { useDraftStore } from '../store/use-draft-store'
 import { ProviderSetup } from './ProviderSetup'
 import { WhisperModels } from './WhisperModels'
 import { Button } from './ui/Button'
@@ -9,10 +10,12 @@ import { IconTile } from './ui/IconTile'
 /**
  * First-run setup, inline on the Create page: pick an AI provider and download
  * the offline Whisper model here instead of being sent to Settings. Hidden once
- * both are ready and the tools check out.
+ * both are ready and the tools check out. Manual clip mode needs no provider, so
+ * there the card only asks for the Whisper model.
  */
 export function SetupCard({ onOpenSettings, className }: { onOpenSettings: () => void; className?: string }): React.JSX.Element | null {
   const { providerReady, whisperReady, toolsOk } = useSetupState()
+  const manual = useDraftStore((s) => s.clipMode === 'manual')
   const toolStatus = useSettingsStore((s) => s.toolStatus)
   const toolError = useSettingsStore((s) => s.toolError)
   const missingTools = toolStatus
@@ -25,7 +28,9 @@ export function SetupCard({ onOpenSettings, className }: { onOpenSettings: () =>
       ].filter(Boolean).join(', ')
     : ''
 
-  if (!providerReady || !whisperReady) {
+  // Manual clip mode never calls an AI provider, so only Whisper is asked for there.
+  const needsProvider = !manual && !providerReady
+  if (needsProvider || !whisperReady) {
     return (
       <section
         className={cn(
@@ -38,16 +43,21 @@ export function SetupCard({ onOpenSettings, className }: { onOpenSettings: () =>
           <IconTile tone="accent"><Sparkles /></IconTile>
           <div className="min-w-0">
             <p className="eyebrow text-accent-fg">One-time setup</p>
-            <h2 className="mt-0.5 text-heading text-ink">Two things before your first clip</h2>
+            <h2 className="mt-0.5 text-heading text-ink">{manual ? 'One thing before your first clip' : 'Two things before your first clip'}</h2>
             <p className="mt-0.5 max-w-2xl text-caption text-ink-secondary">
-              Clipward has no account and no server. Pick the AI that chooses your clips, and download the speech model that transcribes offline.
+              {manual
+                ? 'You’re choosing the moments yourself, so no AI provider is needed. Download the speech model that transcribes offline for captions and pacing.'
+                : 'Clipward has no account and no server. Pick the AI that chooses your clips, and download the speech model that transcribes offline.'}
             </p>
           </div>
         </div>
-        <SetupStep n={1} done={providerReady} title="AI that picks the clips">
-          <ProviderSetup compact />
-        </SetupStep>
-        <SetupStep n={2} done={whisperReady} title="Offline transcription (Whisper)">
+        {!manual && (
+          <SetupStep n={1} done={providerReady} title="AI that picks the clips">
+            <ProviderSetup compact />
+            <p className="mt-2 text-caption text-ink-secondary">Picking the moments yourself? Choose “I’ll choose the moments” in the Clips step and skip this.</p>
+          </SetupStep>
+        )}
+        <SetupStep n={manual ? 1 : 2} done={whisperReady} title="Offline transcription (Whisper)">
           <WhisperModels compact />
           <p className="mt-2 text-caption text-ink-secondary">Downloaded once. Your audio never leaves this computer. Other sizes are in Settings.</p>
         </SetupStep>

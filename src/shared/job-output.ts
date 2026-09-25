@@ -27,6 +27,11 @@ export interface JobOutput {
   user_id?: string | null
 }
 
+/** Clips the user typed in manual clip mode: no virality scores, so no ranking. */
+export function isManualRun(output: Pick<JobOutput, 'metrics'>): boolean {
+  return output.metrics?.planning_source === 'manual'
+}
+
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
@@ -72,7 +77,9 @@ function safeMetrics(value: unknown): Record<string, unknown> | null {
   if (value.transcription_status === 'available' || value.transcription_status === 'no_speech' || value.transcription_status === 'failed') {
     result.transcription_status = value.transcription_status
   }
-  if (value.planning_source === 'visual' || value.planning_source === 'transcript') result.planning_source = value.planning_source
+  if (value.planning_source === 'visual' || value.planning_source === 'transcript' || value.planning_source === 'manual') {
+    result.planning_source = value.planning_source
+  }
   if (value.captions_status === 'enabled' || value.captions_status === 'disabled_by_request' ||
       value.captions_status === 'unavailable_without_transcript') result.captions_status = value.captions_status
   if (nonNegative(value.visual_frame_count)) result.visual_frame_count = value.visual_frame_count

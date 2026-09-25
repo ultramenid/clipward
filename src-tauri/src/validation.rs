@@ -1,7 +1,10 @@
 //! Job option validation.
 use crate::security::is_web_url;
-use crate::shared::{DURATION_IDS, MAX_REQUIREMENTS_CHARS};
-use clip_engine::ClipJobRequest;
+use crate::shared::{
+    DURATION_IDS, MAX_MANUAL_CLIPS, MAX_MANUAL_CLIP_SECONDS, MAX_MANUAL_TITLE_CHARS,
+    MAX_REQUIREMENTS_CHARS, MIN_MANUAL_CLIP_SECONDS,
+};
+use clip_engine::{ClipJobRequest, ManualClip};
 use regex::Regex;
 use serde_json::Value;
 use std::path::Path;
@@ -136,6 +139,13 @@ pub fn validate_job_config(value: Value) -> Result<ClipJobRequest, String> {
             return Err("Invalid banner URL".into());
         }
     }
+    if let Some(clips) = request.manual_clips.as_mut() {
+        validate_manual_clips(clips)?;
+        // Manual ranges are explicit and no AI provider runs: drop the trim and vision check.
+        request.start_time_seconds = None;
+        request.end_time_seconds = None;
+        request.layout_vision = false;
+    }
     request.video_url = normalize_video_source(&request.video_url);
     request.requirements = Some(
         request
@@ -146,6 +156,44 @@ pub fn validate_job_config(value: Value) -> Result<ClipJobRequest, String> {
             .to_string(),
     );
     Ok(request)
+}
+
+/// Manual clip mode: 1-50 clips, each 3 s to 15 min with finite, non-negative times and an
+/// optional short title. Overlaps are allowed. Titles are trimmed; empty ones become None.
+fn validate_manual_clips(clips: &mut [ManualClip]) -> Result<(), String> {
+    if clips.is_empty() {
+        return Err("Add at least one clip".into());
+    }
+    if clips.len() > MAX_MANUAL_CLIPS {
+        return Err(format!("Add at most {MAX_MANUAL_CLIPS} clips"));
+    }
+    for (i, clip) in clips.iter_mut().enumerate() {
+        let n = i + 1;
+        let (start, end) = (clip.start_seconds, clip.end_seconds);
+        if !start.is_finite() || !end.is_finite() || start < 0.0 {
+            return Err(format!("Clip {n} has an invalid time"));
+        }
+        if end <= start {
+            return Err(format!("Clip {n} must end after it starts"));
+        }
+        let length = end - start;
+        if !(MIN_MANUAL_CLIP_SECONDS..=MAX_MANUAL_CLIP_SECONDS).contains(&length) {
+            return Err(format!(
+                "Clip {n} must be between 3 seconds and 15 minutes long"
+            ));
+        }
+        if let Some(title) = clip.title.take() {
+            let title = title.trim();
+            if title.chars().count() > MAX_MANUAL_TITLE_CHARS || title.chars().any(char::is_control)
+            {
+                return Err(format!(
+                    "Clip {n} title must be at most {MAX_MANUAL_TITLE_CHARS} characters on one line"
+                ));
+            }
+            clip.title = (!title.is_empty()).then(|| title.to_string());
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -200,6 +248,84 @@ mod tests {
         let mut bad = base();
         bad.as_object_mut().unwrap().remove("layoutVision");
         assert!(validate_job_config(bad).is_err());
+    }
+
+    #[test]
+    fn older_payloads_have_no_manual_clips() {
+        assert_eq!(validate_job_config(base()).unwrap().manual_clips, None);
+        let mut null = base();
+        null["manualClips"] = Value::Null;
+        assert_eq!(validate_job_config(null).unwrap().manual_clips, None);
+    }
+
+    #[test]
+    fn accepts_and_normalizes_manual_clips() {
+        let mut manual = base();
+        manual["startTimeSeconds"] = json!(10);
+        manual["endTimeSeconds"] = json!(20);
+        manual["manualClips"] = json!([
+            { "startSeconds": 0, "endSeconds": 3, "title": "  Hook  " },
+            { "startSeconds": 1.5, "endSeconds": 901.5, "title": "   " },
+            { "startSeconds": 2, "endSeconds": 30 }
+        ]);
+        let request = validate_job_config(manual).unwrap();
+        let clips = request.manual_clips.unwrap();
+        assert_eq!(clips.len(), 3);
+        assert_eq!(clips[0].title.as_deref(), Some("Hook"));
+        assert_eq!(clips[1].title, None);
+        assert_eq!(clips[2].title, None);
+        // Explicit ranges replace the trim, and no AI vision runs.
+        assert_eq!(
+            (request.start_time_seconds, request.end_time_seconds),
+            (None, None)
+        );
+        assert!(!request.layout_vision);
+    }
+
+    #[test]
+    fn rejects_bad_manual_clips() {
+        let with = |clips: Value| {
+            let mut manual = base();
+            manual["manualClips"] = clips;
+            validate_job_config(manual)
+        };
+        let clip = |start: f64, end: f64| json!({ "startSeconds": start, "endSeconds": end });
+        assert_eq!(with(json!([])).unwrap_err(), "Add at least one clip");
+        assert_eq!(
+            with(json!([clip(10.0, 10.0)])).unwrap_err(),
+            "Clip 1 must end after it starts"
+        );
+        assert_eq!(
+            with(json!([clip(0.0, 5.0), clip(10.0, 5.0)])).unwrap_err(),
+            "Clip 2 must end after it starts"
+        );
+        assert!(with(json!([clip(0.0, 2.9)]))
+            .unwrap_err()
+            .contains("between 3 seconds and 15 minutes"));
+        assert!(with(json!([clip(0.0, 900.5)]))
+            .unwrap_err()
+            .contains("between 3 seconds and 15 minutes"));
+        assert_eq!(
+            with(json!([clip(-1.0, 5.0)])).unwrap_err(),
+            "Clip 1 has an invalid time"
+        );
+        assert!(with(json!([{ "startSeconds": "0", "endSeconds": 5 }])).is_err());
+        assert!(with(json!((0..51)
+            .map(|i| clip(i as f64, i as f64 + 5.0))
+            .collect::<Vec<_>>()))
+        .unwrap_err()
+        .contains("at most 50"));
+        assert!(with(json!((0..50)
+            .map(|i| clip(i as f64, i as f64 + 5.0))
+            .collect::<Vec<_>>()))
+        .is_ok());
+        let titled = |title: &str| json!([{ "startSeconds": 0, "endSeconds": 5, "title": title }]);
+        assert!(with(titled(&"a".repeat(121)))
+            .unwrap_err()
+            .contains("at most 120"));
+        assert!(with(titled(&"é".repeat(120))).is_ok());
+        assert!(with(titled("line\nbreak")).is_err());
+        assert!(with(titled("nul\u{0}")).is_err());
     }
 
     #[test]

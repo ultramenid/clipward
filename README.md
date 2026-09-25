@@ -42,6 +42,8 @@
 
 Create is a short wizard: **Video** (link or file, optional trim) → **Brief** (campaign requirements) → **Format** → **Clips** (lengths and count) → **Captions** → **Review**. The brief stays filled in for the next video, since you usually cut several videos for one campaign.
 
+Already know the moments? In the **Clips** step, choose **I'll choose the moments** and type each clip's start and end (seconds, `m:ss` or `h:mm:ss`) with an optional title: up to 50 clips of 3 seconds to 15 minutes, overlaps allowed. For a local file, a preview player can set a clip's start or end from its current position. Clipward skips the brief and the AI planner, transcribes only the span your clips cover, and frames, captions and renders each one at exactly the times you typed. Manual mode needs no AI provider, only the Whisper model.
+
 Every run gets its own folder. The **Library** shows completed clips with virality scores, timecodes and tags. **Jobs** shows what is running or queued (up to two runs at once; more wait in a queue) and every earlier run. See [transcription and AI providers](docs/transcription.md).
 
 In **Create → Format → Video speed**, choose **1×** (normal), **1.1×**, **1.25×**, **1.5×**, **1.75×**, or **2×** for every clip in the job. Exports preserve voice pitch and keep captions synchronized. Speed works with **Cut dead air** and appears in Review and the saved results. Clip lengths and source trim times refer to the original footage: a 60-second clip at 1.5× exports in about 40 seconds, before any dead-air cuts. The choice stays selected when you clip another video in the same session. Existing exports stay as they are; generate a new job to change their speed.

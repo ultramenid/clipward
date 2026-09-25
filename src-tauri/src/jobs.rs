@@ -496,7 +496,8 @@ async fn run_tracked_job<R: Runtime>(app: AppHandle<R>, id: String) {
             Some("Open Settings to download the model or choose an AI provider.".into()),
         );
     };
-    if settings.ai_provider.starts_with("cli:") && cli_path.is_none() {
+    let manual = request.manual_clips.is_some();
+    if !manual && settings.ai_provider.starts_with("cli:") && cli_path.is_none() {
         return report_error(
             "The selected AI CLI is not installed.".into(),
             Some("Open Settings to download the model or choose an AI provider.".into()),
@@ -535,7 +536,8 @@ async fn run_tracked_job<R: Runtime>(app: AppHandle<R>, id: String) {
             "autoClipCount": request.auto_clip_count,
             "aspectRatio": request.aspect_ratio,
             "captionPreset": request.caption_preset,
-            "provider": if settings.ai_provider.starts_with("cli:") { "cli" } else { settings.ai_provider.as_str() },
+            "provider": if manual { "none" } else if settings.ai_provider.starts_with("cli:") { "cli" } else { settings.ai_provider.as_str() },
+            "manualClips": request.manual_clips.as_ref().map(Vec::len),
         }),
     );
 

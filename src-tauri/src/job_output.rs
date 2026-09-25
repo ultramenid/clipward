@@ -93,7 +93,7 @@ fn safe_metrics(value: &Value) -> Value {
             "transcription_status",
             &["available", "no_speech", "failed"],
         ),
-        ("planning_source", &["visual", "transcript"]),
+        ("planning_source", &["visual", "transcript", "manual"]),
         (
             "captions_status",
             &[
@@ -403,6 +403,22 @@ mod tests {
         );
         assert!(output["metrics"].get("junk").is_none());
         assert_eq!(output["total_clips"], 1);
+    }
+
+    #[test]
+    fn keeps_manual_planning_source() {
+        let output = parse_job_output(&json!({ "clips": [], "metrics": {
+            "planning_source": "manual", "requested_settings": { "ai_provider": "none" } } }))
+        .unwrap();
+        assert_eq!(output["metrics"]["planning_source"], "manual");
+        assert_eq!(
+            output["metrics"]["requested_settings"]["ai_provider"],
+            "none"
+        );
+        let other =
+            parse_job_output(&json!({ "clips": [], "metrics": { "planning_source": "guess" } }))
+                .unwrap();
+        assert!(other["metrics"].get("planning_source").is_none());
     }
 
     #[test]

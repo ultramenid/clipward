@@ -29,9 +29,14 @@ const STEPS = [
   { label: 'Render', icon: Film, statuses: ['rendering', 'uploading'] }
 ]
 
-function stepIndex(status: string): number {
-  if (status === 'completed') return STEPS.length
-  return STEPS.findIndex((s) => s.statuses.includes(status))
+/** Manual runs skip "Find moments": the user typed them. */
+function stepsFor(manual: boolean): typeof STEPS {
+  return manual ? STEPS.filter((s) => !s.statuses.includes('planning')) : STEPS
+}
+
+function stepIndex(steps: typeof STEPS, status: string): number {
+  if (status === 'completed') return steps.length
+  return steps.findIndex((s) => s.statuses.includes(status))
 }
 
 function useElapsed(since: string, running: boolean): number {
@@ -62,7 +67,8 @@ interface JobProgressProps {
 }
 
 export function JobProgress({ job, onCancel, leading }: JobProgressProps): React.JSX.Element {
-  const current = stepIndex(job.status)
+  const steps = stepsFor(Boolean(job.request.manualClips))
+  const current = stepIndex(steps, job.status)
   const queued = job.status === 'queued'
   const elapsed = useElapsed(job.startedAt ?? job.queuedAt, true)
   const pct = Math.round(Math.min(job.percent, 100))
@@ -106,7 +112,7 @@ export function JobProgress({ job, onCancel, leading }: JobProgressProps): React
         </div>
 
         <ol className="relative mt-6 flex items-start" aria-label="Progress">
-          {STEPS.map((step, i) => {
+          {steps.map((step, i) => {
             const done = current > i
             const active = current === i
             const Icon = step.icon
@@ -133,7 +139,7 @@ export function JobProgress({ job, onCancel, leading }: JobProgressProps): React
                     {step.label}
                   </span>
                 </div>
-                {i < STEPS.length - 1 && (
+                {i < steps.length - 1 && (
                   <div className="mt-[15px] h-0.5 flex-1 overflow-hidden rounded-full bg-content/10">
                     <div
                       className="h-full rounded-full bg-accent transition-[width] duration-700 ease-out"

@@ -14,7 +14,9 @@ import { Button } from './ui/Button'
 import { TextArea, TextInput } from './ui/Field'
 import { IconTile } from './ui/IconTile'
 import { SettingRow } from './ui/SettingRow'
-import { onRadioKeyDown } from './ui/Segmented'
+import { onRadioKeyDown, Segmented } from './ui/Segmented'
+import { ManualClipList } from './ManualClipList'
+import { checkManualClips, formatClipLength, formatClipTime, toManualClips, type ManualClipsCheck } from '../lib/manual-clips'
 import { DURATION_OPTIONS, MAX_REQUIREMENTS_CHARS, VIDEO_SPEED_OPTIONS } from '../../shared/job-contract'
 import { providerLabel } from '../../shared/ai-providers'
 import { useSettingsStore } from '../store/use-settings-store'
@@ -38,7 +40,7 @@ export const WIZARD_STEPS: { id: WizardStep; label: string; title: string; descr
   { id: 'video', label: 'Video', title: 'Choose a video', description: 'Upload a file, or paste a YouTube, Twitch, Kick, X or other video link. Optionally clip only part of it.' },
   { id: 'brief', label: 'Brief', title: 'Campaign requirements', description: 'Paste the campaign’s clip rules. Every clip must follow them; leave empty to pick the most viral moments.' },
   { id: 'format', label: 'Format', title: 'Format, framing and speed', description: 'Choose the look and pace of every clip in this job.' },
-  { id: 'clips', label: 'Clips', title: 'Clip length and count', description: 'Pick one or more lengths, or leave them all off for any length.' },
+  { id: 'clips', label: 'Clips', title: 'Clip length and count', description: 'Let AI pick the moments, or type the ones you want cut.' },
   { id: 'captions', label: 'Captions', title: 'Captions', description: 'Word-by-word captions burned into each clip. Silent videos are clipped without them.' },
   { id: 'review', label: 'Review', title: 'Review and generate', description: 'Check the run, then generate. You can queue another video right after.' }
 ]
@@ -56,8 +58,43 @@ export function parseTrimRange(enabled: boolean, startText: string, endText: str
   return { start, end, error }
 }
 
+/** Header text for the Clips step in manual mode. */
+const MANUAL_CLIPS_META = { title: 'Clips to cut', description: 'Type the moments you want. Clipward transcribes, frames, captions and renders each one; no AI provider is used.' }
+
+/** Steps shown for a mode: manual clip mode has no campaign brief. */
+export function wizardSteps(clipMode: ClipDraft['clipMode']): typeof WIZARD_STEPS {
+  return clipMode === 'manual' ? WIZARD_STEPS.filter((s) => s.id !== 'brief') : WIZARD_STEPS
+}
+
+/** Length of the chosen video when its preview reported one. */
+export function knownDuration(draft: Pick<ClipDraft, 'source'> & { sourceDuration?: { source: string; seconds: number } | null }): number | null {
+  return draft.sourceDuration && draft.sourceDuration.source === draft.source ? draft.sourceDuration.seconds : null
+}
+
 /** The run request for the current draft. */
 export function buildJobRequest(draft: ClipDraft, trim: { start: number | null; end: number | null }): ClipJobRequest {
+  if (draft.clipMode === 'manual') {
+    // The typed ranges are the plan: no brief, trim, clip count or AI vision.
+    return {
+      videoUrl: normalizeVideoSource(draft.source),
+      requirements: '',
+      maxClips: null,
+      autoClipCount: true,
+      durationRanges: null,
+      aspectRatio: draft.aspectRatio,
+      layoutStyle: draft.layoutStyle,
+      layoutVision: false,
+      pacing: draft.pacing,
+      videoSpeed: draft.videoSpeed ?? 1,
+      includeCaptions: draft.includeCaptions,
+      captionPreset: draft.captionPreset,
+      startTimeSeconds: null,
+      endTimeSeconds: null,
+      bannerPlatform: null,
+      bannerChannelUrl: null,
+      manualClips: toManualClips(draft.manualClips)
+    }
+  }
   return {
     videoUrl: normalizeVideoSource(draft.source),
     requirements: draft.requirements.trim(),
@@ -97,20 +134,28 @@ type Update = (patch: Partial<ClipDraft>) => void
  */
 export function JobForm({ onSubmit, onViewJob, blockedReason, submitting, className }: JobFormProps): React.JSX.Element {
   const draft = useDraftStore()
-  const { update, step, setStep } = draft
+  const { update, setStep } = draft
+  const manual = draft.clipMode === 'manual'
+  const steps = wizardSteps(draft.clipMode)
+  // A draft left on the Brief step opens Format once the brief no longer applies.
+  const step = manual && draft.step === 'brief' ? 'format' : draft.step
 
+  // Manual clips carry their own ranges, so the source trim only applies to AI runs.
   const trim = useMemo(
-    () => parseTrimRange(draft.trimOpen, draft.trimStart, draft.trimEnd),
-    [draft.trimOpen, draft.trimStart, draft.trimEnd]
+    () => parseTrimRange(draft.trimOpen && !manual, draft.trimStart, draft.trimEnd),
+    [draft.trimOpen, manual, draft.trimStart, draft.trimEnd]
   )
+  const videoSeconds = knownDuration(draft)
+  const manualCheck = useMemo(() => checkManualClips(draft.manualClips, videoSeconds), [draft.manualClips, videoSeconds])
+  const manualValid = !manual || manualCheck.valid
 
-  const index = WIZARD_STEPS.findIndex((s) => s.id === step)
-  const meta = WIZARD_STEPS[index]
+  const index = steps.findIndex((s) => s.id === step)
+  const meta = step === 'clips' && manual ? { ...steps[index], ...MANUAL_CLIPS_META } : steps[index]
   const sourceError = twitchSourceError(draft.source)
   const hasSource = Boolean(draft.source.trim()) && !sourceError
-  const briefValid = draft.requirements.length <= MAX_REQUIREMENTS_CHARS
-  const stepValid = step === 'video' ? hasSource && !trim.error : step !== 'brief' || briefValid
-  const canSubmit = hasSource && briefValid && !blockedReason && !trim.error && !submitting && !draft.started
+  const briefValid = manual || draft.requirements.length <= MAX_REQUIREMENTS_CHARS
+  const stepValid = step === 'video' ? hasSource && !trim.error : step === 'brief' ? briefValid : step !== 'clips' || manualValid
+  const canSubmit = hasSource && briefValid && manualValid && !blockedReason && !trim.error && !submitting && !draft.started
 
   const submit = (): void => {
     if (canSubmit) onSubmit(buildJobRequest(draft, trim))
@@ -136,12 +181,12 @@ export function JobForm({ onSubmit, onViewJob, blockedReason, submitting, classN
     setStep(target)
     document.getElementById('page-scroll')?.scrollTo({ top: 0 })
   }
-  const next = WIZARD_STEPS[index + 1]
-  const back = WIZARD_STEPS[index - 1]
+  const next = steps[index + 1]
+  const back = steps[index - 1]
 
   return (
     <div className={cn('space-y-3', className)}>
-      <Stepper current={step} reachable={hasSource ? WIZARD_STEPS.length - 1 : 0} onSelect={goTo} />
+      <Stepper steps={steps} current={step} reachable={hasSource ? steps.length - 1 : 0} onSelect={goTo} />
 
       <Panel padded={false}>
         <div className="border-b border-stroke px-4 py-3">
@@ -153,9 +198,9 @@ export function JobForm({ onSubmit, onViewJob, blockedReason, submitting, classN
         {step === 'video' && <VideoStep draft={draft} update={update} trimError={trim.error} disabled={submitting} />}
         {step === 'brief' && <BriefStep draft={draft} update={update} />}
         {step === 'format' && <FormatStep draft={draft} update={update} />}
-        {step === 'clips' && <ClipsStep draft={draft} update={update} />}
+        {step === 'clips' && <ClipsStep draft={draft} update={update} videoSeconds={videoSeconds} />}
         {step === 'captions' && <CaptionsStep draft={draft} update={update} />}
-        {step === 'review' && <ReviewStep draft={draft} trim={trim} onEdit={goTo} />}
+        {step === 'review' && <ReviewStep draft={draft} trim={trim} manualCheck={manualCheck} onEdit={goTo} />}
         </div>
       </Panel>
 
@@ -167,7 +212,13 @@ export function JobForm({ onSubmit, onViewJob, blockedReason, submitting, classN
           </Button>
         ) : <span />}
         <p className="min-w-0 flex-1 truncate text-center text-meta text-ink-secondary">
-          {blockedReason ?? (!briefValid ? `Shorten the brief to ${MAX_REQUIREMENTS_CHARS} characters.` : step === 'video' && !hasSource ? 'Add a video to continue.' : `${MOD_KEY}↵ generates from any step`)}
+          {blockedReason ?? (!briefValid
+            ? `Shorten the brief to ${MAX_REQUIREMENTS_CHARS} characters.`
+            : step === 'video' && !hasSource
+              ? 'Add a video to continue.'
+              : !manualValid && step !== 'video'
+                ? step === 'clips' ? 'Fill in or fix each clip’s times to continue.' : 'Add valid clip times in the Clips step.'
+                : `${MOD_KEY}↵ generates from any step`)}
         </p>
         {next && step !== 'review' ? (
           <div className="flex items-center gap-2">
@@ -190,12 +241,12 @@ export function JobForm({ onSubmit, onViewJob, blockedReason, submitting, classN
   )
 }
 
-function Stepper({ current, reachable, onSelect }: { current: WizardStep; reachable: number; onSelect: (step: WizardStep) => void }): React.JSX.Element {
-  const currentIndex = WIZARD_STEPS.findIndex((s) => s.id === current)
+function Stepper({ steps, current, reachable, onSelect }: { steps: typeof WIZARD_STEPS; current: WizardStep; reachable: number; onSelect: (step: WizardStep) => void }): React.JSX.Element {
+  const currentIndex = steps.findIndex((s) => s.id === current)
   return (
     <nav aria-label="Create steps">
       <ol className="flex items-center gap-1">
-        {WIZARD_STEPS.map((s, i) => {
+        {steps.map((s, i) => {
           const active = i === currentIndex
           const done = i < currentIndex
           const enabled = i <= reachable
@@ -221,7 +272,7 @@ function Stepper({ current, reachable, onSelect }: { current: WizardStep; reacha
                 </span>
                 <span className={cn('truncate', !active && 'max-md:hidden')}>{s.label}</span>
               </button>
-              {i < WIZARD_STEPS.length - 1 && (
+              {i < steps.length - 1 && (
                 <span aria-hidden className={cn('h-px min-w-3 flex-1', done ? 'bg-content/30' : 'bg-stroke')} />
               )}
             </li>
@@ -233,9 +284,26 @@ function Stepper({ current, reachable, onSelect }: { current: WizardStep; reacha
 }
 
 function VideoStep({ draft, update, trimError, disabled }: { draft: ClipDraft; update: Update; trimError: string | null; disabled?: boolean }): React.JSX.Element {
+  const setSourceDuration = useDraftStore((s) => s.setSourceDuration)
+  const source = (
+    <SourcePicker
+      value={draft.source}
+      onChange={(source) => update({ source })}
+      onDuration={(seconds) => setSourceDuration({ source: draft.source, seconds })}
+      disabled={disabled}
+    />
+  )
+  if (draft.clipMode === 'manual') {
+    return (
+      <div className="space-y-3">
+        {source}
+        <p className="text-caption text-ink-secondary">You’re choosing the moments in the Clips step, so each clip sets its own start and end.</p>
+      </div>
+    )
+  }
   return (
     <div className="space-y-3">
-      <SourcePicker value={draft.source} onChange={(source) => update({ source })} disabled={disabled} />
+      {source}
       <SettingRow
         title="Clip only part of the video"
         description="Set a start and end time. Leave either empty for an open range."
@@ -371,7 +439,10 @@ export function FormatStep({ draft, update }: { draft: ClipDraft; update: Update
               )
             })}
           </div>
-          {draft.layoutStyle === 'auto' && (
+          {draft.layoutStyle === 'auto' && draft.clipMode === 'manual' && (
+            <p className="mt-2 text-caption text-ink-secondary">Smart framing runs on this computer. The AI vision check is off when you choose the moments.</p>
+          )}
+          {draft.layoutStyle === 'auto' && draft.clipMode !== 'manual' && (
             <SettingRow
               className="mt-2"
               title="Check tricky shots with AI vision"
@@ -414,12 +485,43 @@ export function FormatStep({ draft, update }: { draft: ClipDraft; update: Update
   )
 }
 
-export function ClipsStep({ draft, update }: { draft: ClipDraft; update: Update }): React.JSX.Element {
+const CLIP_MODES = [
+  { value: 'ai' as const, label: 'AI picks the moments' },
+  { value: 'manual' as const, label: 'I’ll choose the moments' }
+]
+
+export function ClipsStep({ draft, update, videoSeconds = null }: { draft: ClipDraft; update: Update; videoSeconds?: number | null }): React.JSX.Element {
+  const setSourceDuration = useDraftStore((s) => s.setSourceDuration)
   const toggleDuration = (id: string): void => {
     update({ durations: draft.durations.includes(id) ? draft.durations.filter((d) => d !== id) : [...draft.durations, id] })
   }
+  const modePicker = (
+    <div className="space-y-1.5">
+      <Segmented label="How clips are chosen" value={draft.clipMode ?? 'ai'} options={CLIP_MODES} onChange={(clipMode) => update({ clipMode })} />
+      <p className="text-caption text-ink-secondary">
+        {draft.clipMode === 'manual'
+          ? 'No AI provider needed. The brief, clip length and count, and AI vision are skipped.'
+          : 'Your AI provider finds the moments that fit the brief and the lengths below.'}
+      </p>
+    </div>
+  )
+  if (draft.clipMode === 'manual') {
+    return (
+      <div className="space-y-4">
+        {modePicker}
+        <ManualClipList
+          rows={draft.manualClips}
+          onChange={(manualClips) => update({ manualClips })}
+          source={draft.source}
+          videoSeconds={videoSeconds}
+          onDuration={(seconds) => setSourceDuration({ source: draft.source, seconds })}
+        />
+      </div>
+    )
+  }
   return (
     <div className="space-y-4">
+      {modePicker}
       <Group label="Clip length" aside={draft.durations.length === 0 ? 'Any length' : `${draft.durations.length} selected`}>
         <div className="grid grid-cols-4 gap-1.5 sm:grid-cols-7" role="group" aria-label="Clip length options">
           {DURATIONS.map((d) => {
@@ -506,11 +608,13 @@ function CaptionsStep({ draft, update }: { draft: ClipDraft; update: Update }): 
   )
 }
 
-function ReviewStep({ draft, trim, onEdit }: {
+function ReviewStep({ draft, trim, manualCheck, onEdit }: {
   draft: ClipDraft
   trim: { start: number | null; end: number | null }
+  manualCheck: ManualClipsCheck
   onEdit: (step: WizardStep) => void
 }): React.JSX.Element {
+  const manual = draft.clipMode === 'manual'
   const active = useActiveJobs()
   const aiProvider = useSettingsStore((s) => s.aiProvider)
   const aiModel = useSettingsStore((s) => s.aiModel)
@@ -519,21 +623,35 @@ function ReviewStep({ draft, trim, onEdit }: {
     ? 'Any length'
     : DURATIONS.filter((d) => draft.durations.includes(d.id)).map((d) => d.range).join(', ')
   const framing = draft.aspectRatio === '9:16'
-    ? `${LAYOUT_STYLES.find((s) => s.id === draft.layoutStyle)?.label ?? 'Smart'} framing${draft.layoutStyle === 'auto' && draft.layoutVision ? ' · AI vision' : ''}`
+    ? `${LAYOUT_STYLES.find((s) => s.id === draft.layoutStyle)?.label ?? 'Smart'} framing${draft.layoutStyle === 'auto' && draft.layoutVision && !manual ? ' · AI vision' : ''}`
     : 'Whole frame'
-  const trimLabel = draft.trimOpen && (trim.start != null || trim.end != null)
+  const trimLabel = !manual && draft.trimOpen && (trim.start != null || trim.end != null)
     ? ` · ${trim.start != null ? formatSeconds(trim.start) : 'start'} to ${trim.end != null ? formatSeconds(trim.end) : 'end'}`
     : ''
 
-  const rows: { step: WizardStep; label: string; value: string }[] = [
+  const format = `${FORMATS.find((f) => f.id === draft.aspectRatio)?.label ?? draft.aspectRatio} ${draft.aspectRatio} · ${framing}`
+  const pacing = draft.pacing === 'tight' ? 'Cut dead air' : 'Keep pauses'
+  const speed = `${draft.videoSpeed ?? 1}×${(draft.videoSpeed ?? 1) === 1 ? ' · Normal' : ' · All exported clips'}`
+  const captions = draft.includeCaptions ? CAPTION_PRESET_NAMES[draft.captionPreset] ?? draft.captionPreset : 'Off'
+  const manualTotal = manualCheck.rows.reduce((sum, row) => sum + (row.error ? 0 : row.length ?? 0), 0)
+  const clipCount = draft.manualClips.length
+  const rows: { step: WizardStep; label: string; value: string }[] = manual ? [
+    { step: 'video', label: 'Video', value: sourceLabel(draft.source) },
+    { step: 'format', label: 'Format', value: format },
+    { step: 'format', label: 'Pacing', value: pacing },
+    { step: 'format', label: 'Speed', value: speed },
+    { step: 'clips', label: 'Moments', value: 'You choose · No AI provider · Whisper offline' },
+    { step: 'clips', label: 'Clips', value: `${clipCount} clip${clipCount === 1 ? '' : 's'}${manualTotal > 0 ? ` · ${formatClipLength(manualTotal)} of source` : ''}` },
+    { step: 'captions', label: 'Captions', value: captions }
+  ] : [
     { step: 'video', label: 'Video', value: `${sourceLabel(draft.source)}${trimLabel}` },
-    { step: 'format', label: 'Format', value: `${FORMATS.find((f) => f.id === draft.aspectRatio)?.label ?? draft.aspectRatio} ${draft.aspectRatio} · ${framing}` },
-    { step: 'format', label: 'Pacing', value: draft.pacing === 'tight' ? 'Cut dead air' : 'Keep pauses' },
-    { step: 'format', label: 'Speed', value: `${draft.videoSpeed ?? 1}×${(draft.videoSpeed ?? 1) === 1 ? ' · Normal' : ' · All exported clips'}` },
+    { step: 'format', label: 'Format', value: format },
+    { step: 'format', label: 'Pacing', value: pacing },
+    { step: 'format', label: 'Speed', value: speed },
     { step: 'brief', label: 'Brief', value: draft.requirements.trim() ? draft.requirements.trim().replace(/\s+/g, ' ') : 'None · most viral moments' },
     { step: 'brief', label: 'AI', value: `${providerLabel(aiProvider)}${aiModel ? ` · ${aiModel}` : ''} · Whisper offline` },
     { step: 'clips', label: 'Clips', value: `${lengths}${(draft.videoSpeed ?? 1) > 1 && draft.durations.length > 0 ? ' of source footage' : ''} · ${draft.autoClipCount ? 'AI decides how many' : `Up to ${draft.maxClips}`}` },
-    { step: 'captions', label: 'Captions', value: draft.includeCaptions ? CAPTION_PRESET_NAMES[draft.captionPreset] ?? draft.captionPreset : 'Off' }
+    { step: 'captions', label: 'Captions', value: captions }
   ]
   return (
     <div className="space-y-3">
@@ -548,14 +666,48 @@ function ReviewStep({ draft, trim, onEdit }: {
           </div>
         ))}
       </dl>
+      {manual && <ManualClipSummary draft={draft} check={manualCheck} />}
       <p className="flex items-start gap-2 text-caption text-ink-secondary">
         <Clock3 className="mt-px h-3.5 w-3.5 shrink-0" />
         {runningCount >= MAX_PARALLEL_JOBS
           ? `${runningCount} jobs are running. This one waits in the queue and starts automatically.`
           : active.length > 0
             ? `Runs alongside ${active.length} other job${active.length === 1 ? '' : 's'}. Up to ${MAX_PARALLEL_JOBS} run at once.`
+            : manual ? 'Runs on this computer. No AI provider is used; transcription is offline.'
             : aiProvider.startsWith('cli:') ? 'Runs on this computer. Clip planning uses your CLI plan; transcription is offline.' : 'Runs on this computer. Clip planning bills your API key; transcription is offline.'}
       </p>
+    </div>
+  )
+}
+
+/** The typed clips, in order, as Review lists them. */
+function ManualClipSummary({ draft, check }: { draft: ClipDraft; check: ManualClipsCheck }): React.JSX.Element {
+  return (
+    <div>
+      <div className="mb-1.5 flex items-center justify-between">
+        <span className="eyebrow">Clips to cut</span>
+        {!check.valid && <span className="text-caption text-danger">Some clips need fixing</span>}
+      </div>
+      <ol className="field max-h-64 divide-y divide-stroke overflow-y-auto rounded-lg" aria-label="Clips to cut">
+        {draft.manualClips.map((row, i) => {
+          const rowCheck = check.rows[i]
+          const title = row.title.trim() || `Clip ${i + 1}`
+          return (
+            <li key={row.id} className="flex items-center gap-3 py-1.5 pl-3 pr-3">
+              <span className="w-5 shrink-0 text-right text-caption tabular-nums text-ink-tertiary">{i + 1}</span>
+              <span className="w-32 shrink-0 font-mono text-caption tabular-nums text-ink">
+                {rowCheck.error ? '–' : `${formatClipTime(rowCheck.start ?? 0)} – ${formatClipTime(rowCheck.end ?? 0)}`}
+              </span>
+              <span className="w-14 shrink-0 text-right text-caption tabular-nums text-ink-secondary">
+                {!rowCheck.error && rowCheck.length != null ? formatClipLength(rowCheck.length) : ''}
+              </span>
+              <span className={cn('min-w-0 flex-1 truncate text-body', rowCheck.error ? 'text-danger' : 'text-ink')} title={rowCheck.error ?? title}>
+                {rowCheck.error ?? title}
+              </span>
+            </li>
+          )
+        })}
+      </ol>
     </div>
   )
 }

@@ -190,6 +190,8 @@ export type SetupState = {
   /** The selected Whisper model is on disk. */
   whisperReady: boolean
   toolsOk: boolean | null
+  /** Everything but the provider is ready: enough for manual clip mode. */
+  manualReady?: boolean
 }
 
 /** Whether the selected provider is usable, from settings alone (no network). */
@@ -212,5 +214,19 @@ export function useSetupState(): SetupState {
   const toolsOk = toolError ? false : tools
     ? tools.smartFraming && tools.ffmpeg && tools.ffprobe && tools.ytdlp && tools.engine
     : null
-  return { ready: providerReady && whisperReady && toolsOk === true && !checkingTools, providerReady, whisperReady, toolsOk }
+  const manualReady = whisperReady && toolsOk === true && !checkingTools
+  return { ready: providerReady && manualReady, providerReady, whisperReady, toolsOk, manualReady }
+}
+
+/**
+ * Why a job in this clip mode can't start yet, or undefined when it can. Manual clip
+ * mode needs no AI provider; the Whisper model is still required (captions and tight
+ * pacing need word timings).
+ */
+export function setupBlockedReason(setup: SetupState, clipMode: 'ai' | 'manual'): string | undefined {
+  if (clipMode === 'ai' && !setup.providerReady) return 'Choose an AI provider above to start.'
+  if (!setup.whisperReady) return 'Download the Whisper model above to start.'
+  if (setup.toolsOk === false) return 'Fix the missing tools in Settings to start.'
+  const ready = clipMode === 'ai' ? setup.ready : setup.manualReady ?? (setup.whisperReady && setup.toolsOk === true)
+  return ready ? undefined : 'Checking required tools…'
 }

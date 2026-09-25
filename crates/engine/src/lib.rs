@@ -9,6 +9,7 @@ pub mod transcribe;
 
 pub mod llm;
 pub mod planner;
+pub mod manual;
 
 pub mod layout;
 pub mod render;

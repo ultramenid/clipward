@@ -22,3 +22,9 @@ export function isVideoSpeed(value: unknown): value is number {
 
 export type DurationId = (typeof DURATION_OPTIONS)[number]['id']
 export const DURATION_IDS: readonly string[] = DURATION_OPTIONS.map((option) => option.id)
+
+/** Manual clip mode limits (mirrors crates/engine/src/manual.rs and src-tauri validation). */
+export const MAX_MANUAL_CLIPS = 50
+export const MIN_MANUAL_CLIP_SECONDS = 3
+export const MAX_MANUAL_CLIP_SECONDS = 15 * 60
+export const MAX_MANUAL_TITLE_CHARS = 120

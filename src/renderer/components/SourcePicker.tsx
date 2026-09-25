@@ -11,6 +11,8 @@ import { IconTile } from './ui/IconTile'
 interface SourcePickerProps {
   value: string
   onChange: (source: string) => void
+  /** A local file's length in seconds, once its preview loads. */
+  onDuration?: (seconds: number) => void
   disabled?: boolean
 }
 
@@ -33,7 +35,7 @@ function displaySourceLink(value: string): string {
   }
 }
 
-export function SourcePicker({ value, onChange, disabled }: SourcePickerProps): React.JSX.Element {
+export function SourcePicker({ value, onChange, onDuration, disabled }: SourcePickerProps): React.JSX.Element {
   const [pickerError, setPickerError] = useState<string | null>(null)
   const browse = useCallback(async () => {
     try {
@@ -49,7 +51,7 @@ export function SourcePicker({ value, onChange, disabled }: SourcePickerProps): 
 
   if (value) {
     return <>
-      <SourcePreview key={value} source={value} onClear={() => { setPickerError(null); onChange('') }} onReplace={browse} disabled={disabled} />
+      <SourcePreview key={value} source={value} onDuration={onDuration} onClear={() => { setPickerError(null); onChange('') }} onReplace={browse} disabled={disabled} />
       {pickerError && <p role="alert" className="mt-2.5 px-1 text-caption text-danger">{pickerError}</p>}
     </>
   }
@@ -194,9 +196,11 @@ function SourcePreview({
   source,
   onClear,
   onReplace,
+  onDuration,
   disabled
 }: {
   source: string
+  onDuration?: (seconds: number) => void
   onClear: () => void
   onReplace: () => void
   disabled?: boolean
@@ -230,6 +234,7 @@ function SourcePreview({
               const seconds = e.currentTarget.duration
               if (Number.isFinite(seconds)) {
                 setDurationMs(seconds * 1000)
+                if (seconds > 0) onDuration?.(seconds)
                 // Seek past a black first frame for a representative still. Not a
                 // #t= fragment: the local-file protocol would treat it as part of the path.
                 e.currentTarget.currentTime = Math.min(2, seconds / 2)

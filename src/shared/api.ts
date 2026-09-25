@@ -8,6 +8,7 @@ import type { WhisperModelStatus } from './whisper-models'
 import type { Appearance } from './appearance'
 
 export type { ClipJobRequest, JobSnapshot } from './jobs'
+export type { ManualClip } from './jobs'
 
 export interface ClipSettings {
   openrouterConfigured: boolean

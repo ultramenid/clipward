@@ -4,6 +4,7 @@ import { basename, cn, errorMessage } from '../lib/utils'
 import { getApi } from '../lib/ipc'
 import { clipFilePath } from '../lib/thumbnails'
 import type { ApiCosts, ClipArtifact, JobOutput } from '../store/use-job-store'
+import { isManualRun } from '../../shared/job-output'
 import { ClipCard } from './ClipCard'
 import { RunStats } from './RunStats'
 import { Page } from './ui/Page'
@@ -26,7 +27,9 @@ interface ClipListProps {
 }
 
 export function ClipList({ output, outputDir: runDirectory, leading, onNewClip }: ClipListProps): React.JSX.Element {
-  const [sort, setSort] = useState<Sort>('score')
+  // Manual runs have no scores: they list in timeline order with no ranking.
+  const manualRun = isManualRun(output)
+  const [sort, setSort] = useState<Sort>(manualRun ? 'timeline' : 'score')
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [exporting, setExporting] = useState(false)
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -65,10 +68,10 @@ export function ClipList({ output, outputDir: runDirectory, leading, onNewClip }
 
   const clips = useMemo(() => {
     const list = [...output.clips]
-    return sort === 'score'
+    return sort === 'score' && !manualRun
       ? list.sort((a, b) => b.virality_score - a.virality_score)
       : list.sort((a, b) => a.start_time_ms - b.start_time_ms)
-  }, [output.clips, sort])
+  }, [output.clips, sort, manualRun])
 
   const allSelected = selected.size > 0 && selected.size === clips.length
 
@@ -201,16 +204,18 @@ export function ClipList({ output, outputDir: runDirectory, leading, onNewClip }
               <span aria-hidden className="mx-1 h-4 w-px bg-stroke" />
             </div>
           )}
-          <Segmented<Sort>
-            label="Sort clips"
-            size="sm"
-            value={sort}
-            onChange={setSort}
-            options={[
-              { value: 'score', label: 'Best first' },
-              { value: 'timeline', label: 'Timeline' }
-            ]}
-          />
+          {!manualRun && (
+            <Segmented<Sort>
+              label="Sort clips"
+              size="sm"
+              value={sort}
+              onChange={setSort}
+              options={[
+                { value: 'score', label: 'Best first' },
+                { value: 'timeline', label: 'Timeline' }
+              ]}
+            />
+          )}
         </div>
       </div>
 
@@ -235,7 +240,8 @@ export function ClipList({ output, outputDir: runDirectory, leading, onNewClip }
               key={clip.clip_index}
               clip={clip}
               vertical={vertical}
-              topPick={clip.clip_index === topIndex && clips.length > 1}
+              topPick={!manualRun && clip.clip_index === topIndex && clips.length > 1}
+              showScore={!manualRun}
               selected={selected.has(clip.clip_index)}
               selecting={selected.size > 0}
               onToggleSelect={() => toggle(clip.clip_index)}

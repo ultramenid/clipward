@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { CalendarClock, Clapperboard, CircleDollarSign, Timer } from 'lucide-react'
 import { formatDuration, formatTimecode, formatUsd } from '../lib/utils'
 import type { ApiCosts, JobOutput } from '../store/use-job-store'
+import { isManualRun } from '../../shared/job-output'
 import { IconTile } from './ui/IconTile'
 
 /** Cells enter one after another; numbers count up once their cell is in. */
@@ -50,6 +51,7 @@ interface RunStatsProps {
  */
 export function RunStats({ output, costs, videoSpeed }: RunStatsProps): React.JSX.Element {
   const clips = output.total_clips
+  const manual = isManualRun(output)
   const topScore = output.clips.reduce((best, clip) => Math.max(best, clip.virality_score), 0) * 10
   const sourceSeconds = output.source_video_duration_seconds
   const processingMs = output.processing_time_seconds * 1000
@@ -76,7 +78,7 @@ export function RunStats({ output, costs, videoSpeed }: RunStatsProps): React.JS
       label="API cost"
       value={costs ? `${costs.cost_incomplete ? '≥ ' : ''}${cost === costs.total_estimated_cost_usd ? formatUsd(cost) : `$${cost.toFixed(2)}`}` : '—'}
       final={costs ? `${costs.cost_incomplete ? 'At least ' : ''}${formatUsd(costs.total_estimated_cost_usd)}` : 'Not recorded'}
-      sub={costs ? costParts(costs) : 'Not recorded for this run'}
+      sub={costs ? costParts(costs, manual) : 'Not recorded for this run'}
     />
   )
 
@@ -88,7 +90,7 @@ export function RunStats({ output, costs, videoSpeed }: RunStatsProps): React.JS
         label="Clips"
         value={String(clipCount)}
         final={String(clips)}
-        sub={clips > 0 && <>Top score <Num>{topScore.toFixed(1)}</Num>{videoSpeed && <> · <Num>{videoSpeed}×</Num> speed</>}</>}
+        sub={clips > 0 && <>{manual ? 'Your picks' : <>Top score <Num>{topScore.toFixed(1)}</Num></>}{videoSpeed && <> · <Num>{videoSpeed}×</Num> speed</>}</>}
       />
       {processingCell}
       {costCell}
@@ -146,9 +148,9 @@ function StatCell({ index, icon, label, value, final, sub }: {
 }
 
 /** "Transcribe $0.02 · plan $0.11", from the parts the run recorded. */
-function costParts(costs: ApiCosts): string | null {
+function costParts(costs: ApiCosts, manual = false): string | null {
   if (costs.cost_incomplete) return 'Partial: a model didn’t report its price'
-  if (costs.total_estimated_cost_usd === 0) return 'Offline transcription · CLI plan'
+  if (costs.total_estimated_cost_usd === 0) return manual ? 'Offline transcription · No AI used' : 'Offline transcription · CLI plan'
   const parts = [
     costs.transcription && `Transcribe ${formatUsd(costs.transcription.estimated_cost_usd)}`,
     costs.planning && `plan ${formatUsd(costs.planning.estimated_cost_usd)}`,

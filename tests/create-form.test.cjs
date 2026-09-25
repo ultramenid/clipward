@@ -7,7 +7,11 @@ const { renderToStaticMarkup } = require('react-dom/server')
 
 const bundled = buildSync({
   stdin: {
-    contents: `export { FormatStep, ClipsStep, BriefStep, JobForm, buildJobRequest, parseTrimRange, WIZARD_STEPS } from './src/renderer/components/JobForm';
+    contents: `export { FormatStep, ClipsStep, BriefStep, JobForm, buildJobRequest, parseTrimRange, WIZARD_STEPS, wizardSteps } from './src/renderer/components/JobForm';
+      export { parseClipTime, formatClipTime, formatClipLength, checkManualRow, checkManualClips, newManualRow } from './src/renderer/lib/manual-clips';
+      export { setupBlockedReason } from './src/renderer/store/use-settings-store';
+      export { ClipCard } from './src/renderer/components/ClipCard';
+      export { isManualRun } from './src/shared/job-output';
       export { SetupCard } from './src/renderer/components/SetupCard';
       export { LocalAiSetup } from './src/renderer/components/LocalAiSetup';
       export { useSettingsStore, isProviderReady } from './src/renderer/store/use-settings-store';
@@ -198,4 +202,135 @@ test('Twitch VOD links canonicalize while other Twitch pages are rejected', () =
   assert.match(html, /Twitch VOD/)
   assert.match(html, /Public, completed videos only/)
   assert.doesNotMatch(html, /<img/)
+})
+
+test('manual clip times accept seconds, m:ss and h:mm:ss', () => {
+  const { parseClipTime, formatClipTime, formatClipLength } = form.exports
+  assert.equal(parseClipTime('90'), 90)
+  assert.equal(parseClipTime('75.5'), 75.5)
+  assert.equal(parseClipTime('1:30'), 90)
+  assert.equal(parseClipTime(' 1:02:03 '), 3723)
+  assert.equal(parseClipTime(''), null)
+  for (const bad of ['1:75', 'abc', '1:2:3:4', '-5']) assert.ok(Number.isNaN(parseClipTime(bad)), bad)
+  assert.equal(formatClipTime(90), '1:30')
+  assert.equal(formatClipTime(3723.4), '1:02:03.4')
+  assert.equal(formatClipLength(45), '45s')
+  assert.equal(formatClipLength(3.5), '3.5s')
+  assert.equal(formatClipLength(90), '1m 30s')
+  assert.equal(formatClipLength(900), '15m')
+})
+
+test('manual clips are checked inline against the shell limits and the known video length', () => {
+  const { checkManualRow, checkManualClips, newManualRow } = form.exports
+  const row = (start, end, title = '') => ({ id: 'r', start, end, title })
+  assert.deepEqual(checkManualRow(row('0:10', '0:40'), null), { start: 10, end: 40, length: 30, error: null, field: null })
+  assert.equal(checkManualRow(row('', '10'), null).error, 'Enter a start time.')
+  assert.equal(checkManualRow(row('5', ''), null).error, 'Enter an end time.')
+  assert.match(checkManualRow(row('1:99', '2:00'), null).error, /m:ss/)
+  assert.equal(checkManualRow(row('40', '30'), null).error, 'End must be after the start.')
+  assert.equal(checkManualRow(row('10', '12'), null).error, 'Clips must be at least 3 seconds.')
+  assert.equal(checkManualRow(row('10', '13'), null).error, null)
+  assert.equal(checkManualRow(row('0', '15:00'), null).error, null)
+  assert.equal(checkManualRow(row('0', '15:01'), null).error, 'Clips can be at most 15 minutes.')
+  assert.equal(checkManualRow(row('0', '10', 'x'.repeat(121)), null).field, 'title')
+  assert.equal(checkManualRow(row('0', '10', 'two\nlines'), null).error, 'Titles must be a single line.')
+  // A known video length catches clips past the end; unknown lengths wait for the engine.
+  assert.equal(checkManualRow(row('1:50', '2:10'), 120).error, 'Ends after the video ends (2:00).')
+  assert.equal(checkManualRow(row('2:00', '2:10'), 120).error, 'Starts after the video ends (2:00).')
+  assert.equal(checkManualRow(row('1:50', '2:10'), null).error, null)
+  // Overlaps are allowed; the list needs one to fifty clips.
+  assert.equal(checkManualClips([row('0', '30'), row('10', '40')], 60).valid, true)
+  assert.equal(checkManualClips([], null).listError, 'Add at least one clip.')
+  const many = Array.from({ length: 51 }, () => newManualRow({ start: '0', end: '10' }))
+  assert.equal(checkManualClips(many, null).listError, 'Add at most 50 clips.')
+  assert.equal(checkManualClips(many.slice(0, 50), null).valid, true)
+  assert.equal(new Set(many.map((r) => r.id)).size, 51)
+})
+
+test('manual mode sends the typed clips and drops the brief, trim, counts and AI vision', () => {
+  const { useDraftStore, buildJobRequest, wizardSteps, newManualRow } = form.exports
+  const original = useDraftStore.getState()
+  try {
+    original.update({
+      source: 'https://example.com/video', requirements: 'Mention Acme', trimOpen: true, trimStart: '10', trimEnd: '20',
+      autoClipCount: false, maxClips: 3, layoutVision: true, clipMode: 'manual',
+      manualClips: [newManualRow({ start: '1:00', end: '1:30', title: '  Hook ' }), newManualRow({ start: '5', end: '20' })]
+    })
+    const request = buildJobRequest(useDraftStore.getState(), { start: 10, end: 20 })
+    assert.deepEqual(request.manualClips, [
+      { startSeconds: 60, endSeconds: 90, title: 'Hook' },
+      { startSeconds: 5, endSeconds: 20, title: null }
+    ])
+    assert.equal(request.requirements, '')
+    assert.equal(request.startTimeSeconds, null)
+    assert.equal(request.endTimeSeconds, null)
+    assert.equal(request.maxClips, null)
+    assert.equal(request.layoutVision, false)
+    assert.deepEqual(wizardSteps('manual').map((s) => s.id), ['video', 'format', 'clips', 'captions', 'review'])
+    // AI mode keeps the trim and sends no manual clips.
+    useDraftStore.getState().update({ clipMode: 'ai' })
+    const ai = buildJobRequest(useDraftStore.getState(), { start: 10, end: 20 })
+    assert.equal('manualClips' in ai, false)
+    assert.equal(ai.startTimeSeconds, 10)
+    assert.equal(wizardSteps('ai').length, 6)
+    // The mode survives the next video; the typed moments belong to the last one.
+    useDraftStore.getState().update({ clipMode: 'manual' })
+    useDraftStore.getState().startAnother()
+    assert.equal(useDraftStore.getState().clipMode, 'manual')
+    assert.equal(useDraftStore.getState().manualClips.length, 1)
+    assert.equal(useDraftStore.getState().manualClips[0].start, '')
+  } finally { useDraftStore.setState(original) }
+})
+
+test('the Clips step offers both modes and shows an editable list in manual mode', () => {
+  const { useDraftStore, ClipsStep, newManualRow } = form.exports
+  const original = useDraftStore.getState()
+  try {
+    const ai = renderToStaticMarkup(React.createElement(ClipsStep, { draft: useDraftStore.getState(), update() {} }))
+    assert.match(ai, /role="radiogroup" aria-label="How clips are chosen"/)
+    assert.match(ai, /AI picks the moments/)
+    assert.match(ai, /Clip length/)
+    original.update({ clipMode: 'manual', manualClips: [newManualRow({ start: '0:10', end: '0:40', title: 'Intro' }), newManualRow({ start: '50', end: '45' })] })
+    const html = renderToStaticMarkup(React.createElement(ClipsStep, { draft: useDraftStore.getState(), update() {} }))
+    assert.doesNotMatch(html, /Clip length options/)
+    assert.doesNotMatch(html, /Let AI decide/)
+    assert.match(html, /aria-label="Clip 1 start"/)
+    assert.match(html, /aria-label="Clip 2 end" aria-invalid="true"/)
+    assert.match(html, /aria-label="Duplicate clip 1"/)
+    assert.match(html, /aria-label="Remove clip 2"/)
+    assert.match(html, />30s</)
+    assert.match(html, /End must be after the start\./)
+    assert.match(html, /checked against the video once it downloads/)
+  } finally { useDraftStore.setState(original) }
+})
+
+test('manual mode starts without an AI provider but still needs Whisper and the tools', () => {
+  const { setupBlockedReason, SetupCard } = form.exports
+  const noProvider = { ready: false, providerReady: false, whisperReady: true, toolsOk: true, manualReady: true }
+  assert.equal(setupBlockedReason(noProvider, 'ai'), 'Choose an AI provider above to start.')
+  assert.equal(setupBlockedReason(noProvider, 'manual'), undefined)
+  assert.equal(setupBlockedReason({ ...noProvider, whisperReady: false, manualReady: false }, 'manual'), 'Download the Whisper model above to start.')
+  assert.equal(setupBlockedReason({ ...noProvider, toolsOk: false, manualReady: false }, 'manual'), 'Fix the missing tools in Settings to start.')
+  assert.equal(setupBlockedReason({ ...noProvider, toolsOk: null, manualReady: false }, 'manual'), 'Checking required tools…')
+  assert.equal(setupBlockedReason({ ...noProvider, ready: true, providerReady: true }, 'ai'), undefined)
+  // Server rendering reads the stores' initial state (AI mode): the card points to manual mode.
+  const setup = renderToStaticMarkup(React.createElement(SetupCard, { onOpenSettings() {} }))
+  assert.match(setup, /I’ll choose the moments/)
+})
+
+test('manual runs keep their planning source and hide scores and the top pick', () => {
+  const { isManualRun, ClipCard } = form.exports
+  const clip = { clip_index: 0, s3_url: '/tmp/clip-0.mp4', duration_ms: 5000, start_time_ms: 0, end_time_ms: 5000, virality_score: 0 }
+  const output = parseJobOutput({ clips: [clip], metrics: { planning_source: 'manual', requested_settings: { ai_provider: 'none' } } })
+  assert.ok(output)
+  assert.equal(output.metrics.planning_source, 'manual')
+  assert.equal(output.metrics.requested_settings.ai_provider, 'none')
+  assert.equal(isManualRun(output), true)
+  assert.equal(isManualRun(parseJobOutput({ clips: [], metrics: { planning_source: 'transcript' } })), false)
+  assert.equal(parseJobOutput({ clips: [], metrics: { planning_source: 'other' } }).metrics.planning_source, undefined)
+  const props = { clip: output.clips[0], vertical: true, selected: false, selecting: false, onToggleSelect() {} }
+  assert.match(renderToStaticMarkup(React.createElement(ClipCard, props)), /title="Virality score"/)
+  const manual = renderToStaticMarkup(React.createElement(ClipCard, { ...props, showScore: false, topPick: false }))
+  assert.doesNotMatch(manual, /Virality score/)
+  assert.doesNotMatch(manual, /Top pick/)
 })

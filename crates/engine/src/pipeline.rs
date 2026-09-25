@@ -4,6 +4,7 @@ use crate::download;
 use crate::error::{EngineError, Result};
 use crate::layout;
 use crate::llm;
+use crate::manual;
 use crate::planner;
 use crate::render::{self, RenderRequest, Renderer};
 use crate::transcribe;
@@ -81,6 +82,13 @@ impl Job {
         self.stages.insert("download", t.elapsed().as_secs_f64());
         let meta = source.metadata.clone();
         let video_duration = meta.duration_seconds;
+        let manual_clips = self.req.manual_clips.clone();
+        if manual_clips.is_some() {
+            // The typed ranges are explicit, and no AI provider takes part in a manual run.
+            self.req.start_time_seconds = None;
+            self.req.end_time_seconds = None;
+            self.req.layout_vision = false;
+        }
         if self.req.end_time_seconds.is_some_and(|end| end > video_duration) {
             self.req.end_time_seconds = Some(video_duration);
         }
@@ -89,9 +97,14 @@ impl Job {
         // 2. Transcribe (no audio track -> empty transcript and visual-only planning)
         self.report(Stage::Transcribing, 15.0, "Transcribing audio...", 0, 0);
         let t = Instant::now();
-        let range = match (self.req.start_time_seconds, self.req.end_time_seconds) {
-            (None, None) => None,
-            (start, end) => Some((start.unwrap_or(0.0), end.unwrap_or(f64::INFINITY))),
+        let range = match (&manual_clips, self.req.start_time_seconds, self.req.end_time_seconds) {
+            // Manual: only the span the typed clips cover, clamped to the video.
+            (Some(clips), ..) => manual::transcription_range(clips).map(|(start, end)| {
+                let end = if video_duration > 0.0 { end.min(video_duration) } else { end };
+                (start, end.max(start))
+            }),
+            (None, None, None) => None,
+            (None, start, end) => Some((start.unwrap_or(0.0), end.unwrap_or(f64::INFINITY))),
         };
         let transcript = transcribe::transcribe(&source.path, &self.cfg, range, &self.progress, &self.cancel).await?;
         self.stages.insert("transcription", t.elapsed().as_secs_f64());
@@ -110,11 +123,16 @@ impl Job {
         )?;
         self.check_cancel()?;
 
-        // 3. Plan (the planner samples frames itself when there is no speech)
+        // 3. Plan (the planner samples frames itself when there is no speech). Manual runs
+        // skip the planner: the user's ranges are the plan, cut exactly as typed.
         let t = Instant::now();
-        let mut plan =
-            planner::plan_clips(&transcript, &self.req, &self.cfg, &source.path, video_duration, &self.progress, &self.cancel)
-                .await?;
+        let mut plan = match &manual_clips {
+            Some(clips) => manual::build_plan(clips, video_duration)?,
+            None => {
+                planner::plan_clips(&transcript, &self.req, &self.cfg, &source.path, video_duration, &self.progress, &self.cancel)
+                    .await?
+            }
+        };
         self.stages.insert("planning", t.elapsed().as_secs_f64());
         if plan.clips.is_empty() {
             return Err(EngineError::msg(
@@ -140,7 +158,11 @@ impl Job {
         let total = plan.clips.len() as u32;
         let plural = if total == 1 { "" } else { "s" };
         self.report(Stage::Rendering, 50.0, &format!("Rendering {total} clip{plural}..."), 0, total);
-        let (min_s, _) = planner::resolve_clip_duration_bounds(self.req.duration_ranges.as_deref(), None, None);
+        let min_s = match &manual_clips {
+            // Longform when every typed clip is episode length.
+            Some(_) => plan.clips.iter().map(|c| (c.end_time_ms - c.start_time_ms) / 1000).min().unwrap_or(0),
+            None => planner::resolve_clip_duration_bounds(self.req.duration_ranges.as_deref(), None, None).0,
+        };
         let longform = planner::is_longform(&self.req.aspect_ratio, min_s);
         let clips_dir = self.cfg.work_dir.join("clips");
         std::fs::create_dir_all(&clips_dir)?;
@@ -259,18 +281,25 @@ impl Job {
         api_costs.insert("total_estimated_cost_usd".into(), json!(round6(total_cost)));
         api_costs.insert("cost_incomplete".into(), json!(incomplete));
 
-        let analysis_end = self.req.end_time_seconds.unwrap_or(video_duration);
+        let (analysis_start, analysis_end) = match (&manual_clips, range) {
+            (Some(_), Some(covered)) => covered,
+            _ => (self.req.start_time_seconds.unwrap_or(0.0), self.req.end_time_seconds.unwrap_or(video_duration)),
+        };
+        let (ai_provider, planner_model) = match &manual_clips {
+            Some(_) => ("none".to_string(), "none".to_string()),
+            None => (self.cfg.ai.provider.clone(), planner_model(&self.cfg)),
+        };
         let rendered_output_bytes: u64 = rendered.iter().map(|(r, _)| r.file_size_bytes).sum();
         let source_size = std::fs::metadata(&source.path).map(|m| m.len()).unwrap_or(0);
         let metrics = json!({
-            "analysis_duration_seconds": (analysis_end - self.req.start_time_seconds.unwrap_or(0.0)).max(0.0),
+            "analysis_duration_seconds": (analysis_end - analysis_start).max(0.0),
             "requested_settings": {
-                "ai_provider": self.cfg.ai.provider,
-                "planner_model": planner_model(&self.cfg),
+                "ai_provider": ai_provider,
+                "planner_model": planner_model,
                 "transcription_model": transcribe::whisper_model_label(&self.cfg.whisper_model_path),
                 "aspect_ratio": self.req.aspect_ratio,
                 "layout_style": self.req.layout_style,
-                "layout_vision_enabled": self.req.layout_vision && llm::supports_images(&self.cfg.ai.provider),
+                "layout_vision_enabled": self.req.layout_vision && llm::ai_supports_images(&self.cfg.ai),
                 "pacing": self.req.pacing,
                 "video_speed": self.req.video_speed,
             },
@@ -531,6 +560,11 @@ const FAILURES: &[(&[&str], &str, &str)] = &[
         "Choose a shorter source video, or trim a downloaded file before adding it.",
     ),
     (
+        &[manual::OUTSIDE_VIDEO],
+        "None of your clip times are inside this video.",
+        "Check each start and end time against the video's length, then retry.",
+    ),
+    (
         &["no clip-worthy moments"],
         "Clipward couldn't find any clips in this video.",
         "No clear spoken or visual moment met the selected clip length. If you set a start and end time, widen it or pick a shorter clip length.",
@@ -628,6 +662,97 @@ mod tests {
         let stages = stages.lock().unwrap();
         assert!(stages.contains(&Stage::Downloading) && stages.contains(&Stage::Transcribing));
         assert!(video.is_file());
+    }
+
+    /// Generates a silent test video (no audio track, so transcription needs no Whisper
+    /// model) and returns the engine config for it; None without ffmpeg.
+    fn silent_video_job(dir: &Path, seconds: u32) -> Option<(PathBuf, EngineConfig)> {
+        let (Ok(ffmpeg), Ok(ffprobe)) = (which::which("ffmpeg"), which::which("ffprobe")) else {
+            return None;
+        };
+        let video = dir.join("silent.mp4");
+        let status = std::process::Command::new(&ffmpeg)
+            .args(["-v", "error", "-f", "lavfi", "-i", &format!("testsrc2=size=320x240:rate=25:duration={seconds}")])
+            .args(["-pix_fmt", "yuv420p", "-an"])
+            .arg(&video)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let cfg = EngineConfig {
+            ffmpeg,
+            ffprobe,
+            ytdlp: None,
+            assets_dir: Path::new(env!("CARGO_MANIFEST_DIR")).join("assets"),
+            whisper_model_path: dir.join("missing.bin"),
+            // A configured provider must not be used by a manual run.
+            ai: crate::types::AiSettings { provider: "openrouter".into(), ..Default::default() },
+            custom_vocabulary: vec![],
+            work_dir: dir.join("work"),
+            output_dir: dir.join("run"),
+        };
+        Some((video, cfg))
+    }
+
+    fn manual_request(video: &Path, clips: Value) -> ClipJobRequest {
+        serde_json::from_value(json!({
+            "videoUrl": video.to_string_lossy(), "maxClips": null, "autoClipCount": true,
+            "durationRanges": null, "aspectRatio": "16:9", "layoutStyle": "fit", "layoutVision": true,
+            "pacing": "natural", "includeCaptions": true, "captionPreset": "pop",
+            "startTimeSeconds": 1, "endTimeSeconds": 2, "bannerPlatform": null, "bannerChannelUrl": null,
+            "manualClips": clips
+        }))
+        .unwrap()
+    }
+
+    /// Manual mode renders the typed ranges with no AI planner or provider: the one past
+    /// the end is skipped, the overlong one is clamped to the video.
+    #[tokio::test]
+    async fn manual_job_renders_typed_clips_without_a_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some((video, cfg)) = silent_video_job(dir.path(), 8) else {
+            return;
+        };
+        let req = manual_request(
+            &video,
+            json!([
+                { "startSeconds": 1, "endSeconds": 4.5, "title": "Opening" },
+                { "startSeconds": 20, "endSeconds": 30 },
+                { "startSeconds": 4, "endSeconds": 60, "title": null }
+            ]),
+        );
+        let stages = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = stages.clone();
+        let progress: ProgressFn = std::sync::Arc::new(move |p: Progress| seen.lock().unwrap().push(p.stage));
+        let output = run_job(req, cfg, progress, CancellationToken::new()).await.unwrap();
+        assert!(!stages.lock().unwrap().contains(&Stage::Planning));
+        let clips = output["clips"].as_array().unwrap();
+        let spans: Vec<_> = clips.iter().map(|c| (c["start_time_ms"].as_i64().unwrap(), c["end_time_ms"].as_i64().unwrap())).collect();
+        assert_eq!(spans, [(1_000, 4_500), (4_000, 8_000)]);
+        assert_eq!(clips[0]["summary"], "Opening");
+        assert_eq!(clips[1]["summary"], "Clip 3");
+        assert_eq!(clips[0]["virality_score"], 0.0);
+        let metrics = &output["metrics"];
+        assert_eq!(metrics["planning_source"], "manual");
+        assert_eq!(metrics["requested_settings"]["ai_provider"], "none");
+        assert_eq!(metrics["requested_settings"]["layout_vision_enabled"], false);
+        assert_eq!(metrics["api_costs"]["total_estimated_cost_usd"], 0.0);
+        assert_eq!(metrics["api_costs"]["planning"]["provider"], "none");
+        let plan: Value = serde_json::from_slice(&std::fs::read(dir.path().join("run/plan.json")).unwrap()).unwrap();
+        assert_eq!(plan["planning_source"], "manual");
+        assert_eq!(plan["total_clips"], 2);
+        assert!(dir.path().join("run/clip_01.mp4").is_file());
+    }
+
+    #[tokio::test]
+    async fn manual_job_fails_clearly_when_every_clip_is_outside_the_video() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some((video, cfg)) = silent_video_job(dir.path(), 2) else {
+            return;
+        };
+        let req = manual_request(&video, json!([{ "startSeconds": 30, "endSeconds": 40 }]));
+        let progress: ProgressFn = std::sync::Arc::new(|_| {});
+        let err = run_job(req, cfg, progress, CancellationToken::new()).await.unwrap_err();
+        assert_eq!(describe_failure(&err).0, "None of your clip times are inside this video.");
     }
 
     /// The app shell spawns run_job on a multi-threaded runtime, so its future must be Send.

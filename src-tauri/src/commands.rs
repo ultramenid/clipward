@@ -277,7 +277,13 @@ pub async fn job_start(
     }
 
     let paths = &state.paths;
-    if let Some(problem) = ai_providers::provider_problem(&paths.home, &settings) {
+    // Manual clip mode never calls an AI provider; only AI planning needs one ready.
+    let provider_problem = request
+        .manual_clips
+        .is_none()
+        .then(|| ai_providers::provider_problem(&paths.home, &settings))
+        .flatten();
+    if let Some(problem) = provider_problem {
         logger::warn(
             "job.start.providerNotReady",
             json!({ "provider": settings.ai_provider }),

@@ -60,3 +60,9 @@ pub const TRUSTED_EXTERNAL_URLS: &[&str] = &[
     "https://console.anthropic.com/settings/keys",
     "https://platform.openai.com/api-keys",
 ];
+
+/// src/shared/job-contract.ts manual clip mode limits (the engine's `manual` module agrees).
+pub const MAX_MANUAL_CLIPS: usize = clip_engine::manual::MAX_CLIPS;
+pub const MIN_MANUAL_CLIP_SECONDS: f64 = clip_engine::manual::MIN_CLIP_SECONDS;
+pub const MAX_MANUAL_CLIP_SECONDS: f64 = clip_engine::manual::MAX_CLIP_SECONDS;
+pub const MAX_MANUAL_TITLE_CHARS: usize = clip_engine::manual::MAX_TITLE_CHARS;
