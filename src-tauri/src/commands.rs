@@ -118,6 +118,22 @@ pub fn window_set_glass(
     Ok(saved)
 }
 
+/// Save the appearance settings and apply the parts the shell owns: the
+/// webview zoom (interface scale) and the macOS blur radius. The renderer
+/// applies the rest (theme, colours, glass strengths) itself.
+#[tauri::command]
+pub fn settings_set_appearance(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    appearance: crate::settings::Appearance,
+) -> CmdResult<PublicSettings> {
+    assert_main(&window)?;
+    let saved = state.settings.set_appearance(appearance)?;
+    let _ = window.set_zoom(saved.appearance.ui_scale);
+    crate::window_glass::set_blur_radius(&window, saved.appearance.blur_radius);
+    Ok(saved)
+}
+
 #[tauri::command]
 pub async fn settings_select_output_dir(
     window: WebviewWindow,

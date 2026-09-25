@@ -6,6 +6,7 @@
 //! as Electron's safeStorage kept them. When no keychain is available, saving a key
 //! fails rather than falling back to plain text. Keys never reach the renderer:
 //! it only sees `<provider>Configured` flags.
+pub use crate::appearance::Appearance;
 use crate::logger;
 use crate::shared::{is_whisper_model_id, DEFAULT_WHISPER_MODEL};
 use regex::Regex;
@@ -43,6 +44,8 @@ pub struct AppSettings {
     /// Native window glass (macOS vibrancy, Windows Mica/acrylic). Not a secret;
     /// ignored where the platform has none (see window_glass.rs).
     pub window_glass: bool,
+    /// Theme, tint, translucency, scale and layout (see appearance.rs).
+    pub appearance: Appearance,
 }
 
 impl AppSettings {
@@ -111,6 +114,12 @@ pub struct PublicSettings {
     pub window_glass: bool,
     /// Whether this platform can draw window glass; the renderer stays opaque otherwise.
     pub window_glass_supported: bool,
+    pub appearance: Appearance,
+    /// Whether the shell sets the glass blur radius (macOS only).
+    pub window_blur_supported: bool,
+    /// The shell applies `appearance.uiScale` as the webview zoom, so the
+    /// renderer must not scale again.
+    pub native_ui_scale: bool,
 }
 
 /// The fields the renderer may change with settings:save.
@@ -143,6 +152,9 @@ struct PersistedSettings {
     /// Missing in files written before window glass existed: on by default.
     #[serde(default = "default_window_glass")]
     window_glass: bool,
+    /// Missing in older files; out-of-range or unknown values fall back per field.
+    #[serde(default, deserialize_with = "crate::appearance::deserialize_lenient")]
+    appearance: Appearance,
 }
 
 fn default_window_glass() -> bool {
@@ -162,6 +174,9 @@ pub fn public_settings(settings: &AppSettings) -> PublicSettings {
         openai_configured: !settings.openai_api_key.is_empty(),
         window_glass: settings.window_glass,
         window_glass_supported: crate::window_glass::SUPPORTED,
+        appearance: settings.appearance.clone(),
+        window_blur_supported: crate::window_glass::BLUR_SUPPORTED,
+        native_ui_scale: true,
     }
 }
 
@@ -218,6 +233,7 @@ impl SettingsStore {
                 },
                 custom_vocabulary: String::new(),
                 window_glass: default_window_glass(),
+                appearance: Appearance::default(),
             },
             cache: Mutex::new(None),
         }
@@ -267,6 +283,7 @@ impl SettingsStore {
             python_path: or_default(&settings.python_path, &self.defaults.python_path),
             custom_vocabulary: vocabulary_terms(&settings.custom_vocabulary).join("\n"),
             window_glass: settings.window_glass,
+            appearance: settings.appearance.normalized(),
         };
         if !Path::new(&normalized.output_directory).is_absolute() {
             return Err("Settings folders must be absolute paths".into());
@@ -318,6 +335,7 @@ impl SettingsStore {
             python_path: persisted.python_path,
             custom_vocabulary: persisted.custom_vocabulary,
             window_glass: persisted.window_glass,
+            appearance: persisted.appearance,
             ..self.defaults.clone()
         };
         for key in SECRET_KEYS {
@@ -387,6 +405,7 @@ impl SettingsStore {
             python_path: settings.python_path.clone(),
             custom_vocabulary: settings.custom_vocabulary.clone(),
             window_glass: settings.window_glass,
+            appearance: settings.appearance.clone(),
             stored_keys: SECRET_KEYS
                 .iter()
                 .filter(|key| !settings.secret(key).is_empty())
@@ -431,6 +450,32 @@ impl SettingsStore {
         let current = self.load()?;
         Ok(public_settings(&self.save(AppSettings {
             window_glass: enabled,
+            ..current
+        })?))
+    }
+
+    /// Save the appearance settings. Out-of-range values are refused, not clamped:
+    /// the renderer clamps before it sends.
+    pub fn set_appearance(&self, appearance: Appearance) -> Result<PublicSettings, String> {
+        let appearance = appearance.validated()?;
+        let current = self.load()?;
+        Ok(public_settings(&self.save(AppSettings {
+            appearance,
+            ..current
+        })?))
+    }
+
+    /// Save a new interface scale (the View menu's zoom items), clamped and
+    /// rounded to the slider's steps.
+    pub fn set_ui_scale(&self, scale: f64) -> Result<PublicSettings, String> {
+        let current = self.load()?;
+        let appearance = Appearance {
+            ui_scale: scale,
+            ..current.appearance.clone()
+        }
+        .normalized();
+        Ok(public_settings(&self.save(AppSettings {
+            appearance,
             ..current
         })?))
     }
@@ -519,6 +564,47 @@ mod tests {
                 .unwrap()
                 .window_glass
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn appearance_defaults_for_old_files_and_round_trips() {
+        let old: PersistedSettings = serde_json::from_str(
+            r#"{"version":1,"aiProvider":"openrouter","aiModel":"","whisperModel":"base","outputDirectory":"/x","pythonPath":"python3"}"#,
+        )
+        .unwrap();
+        assert_eq!(old.appearance, Appearance::default());
+
+        // A bad field falls back on its own; the rest of the file still loads.
+        let odd: PersistedSettings = serde_json::from_str(
+            r##"{"version":1,"aiProvider":"openrouter","aiModel":"","whisperModel":"base","outputDirectory":"/x","pythonPath":"python3","appearance":{"theme":"solarized","hue":400,"accentColor":"#AABBCC"}}"##,
+        )
+        .unwrap();
+        assert_eq!(odd.appearance.theme, Appearance::default().theme);
+        assert_eq!(odd.appearance.hue, 360.0);
+        assert_eq!(odd.appearance.accent_color.as_deref(), Some("#aabbcc"));
+
+        let dir = std::env::temp_dir().join(format!("clipward-look-{}", uuid::Uuid::new_v4()));
+        let home = std::env::temp_dir();
+        let store = SettingsStore::new(&dir, None, &home);
+        let next = Appearance {
+            hue: 20.0,
+            saturation: 35.0,
+            collapsed_rail: true,
+            ..Appearance::default()
+        };
+        assert_eq!(store.set_appearance(next.clone()).unwrap().appearance, next);
+        assert!(store
+            .set_appearance(Appearance {
+                blur_radius: 0.0,
+                ..Appearance::default()
+            })
+            .is_err());
+        assert_eq!(store.set_ui_scale(1.26).unwrap().appearance.ui_scale, 1.3);
+        let reread = SettingsStore::new(&dir, None, &home).load().unwrap();
+        assert_eq!(reread.appearance.hue, 20.0);
+        assert!(reread.appearance.collapsed_rail);
+        assert_eq!(reread.appearance.ui_scale, 1.3);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

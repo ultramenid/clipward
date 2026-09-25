@@ -2,7 +2,7 @@
 
 Clipward is a desktop tool people keep open for hours, so it looks like one: a neutral grey base, dense controls, hairline borders and one blue accent. Surfaces are flat. Colour comes from the footage, the one primary action, a chosen option and status. The visual language (palette, tint strengths, radii, control sizes, motion timings, overlay title bar) is adapted from the [MonoCode](https://github.com/hardbeat920/monocode) desktop app (MIT, see `THIRD_PARTY_NOTICES.md`). Clipward keeps its own name, logo and brand artwork.
 
-Tokens live in `src/renderer/globals.css` (RGB channels, redefined per colour scheme, plus the surface classes) and are mapped to Tailwind names in `tailwind.config.ts`. Reusable pieces live in `src/renderer/components/ui/`. Use them before writing new class strings.
+Tokens live in `src/renderer/globals.css` (neutrals as HSL components, accent and status as RGB channels, redefined per colour scheme, plus the surface classes) and are mapped to Tailwind names in `tailwind.config.ts`. Reusable pieces live in `src/renderer/components/ui/`. Use them before writing new class strings.
 
 ---
 
@@ -19,7 +19,7 @@ Tokens live in `src/renderer/globals.css` (RGB channels, redefined per colour sc
 
 ## Colour
 
-Dark is the default. Light follows the OS (`prefers-color-scheme`); `html.theme-light` or `html.theme-dark` forces either.
+Dark is the default. Settings → Appearance → Theme picks System, Dark or Light; the app resolves it to `html.theme-light` or `html.theme-dark` (without either class, the OS decides). The neutral rows below are the defaults: the Appearance hue and saturation tint every one of them, and dark-mode lightness moves the dark base (see **Appearance settings**).
 
 | Token (Tailwind) | Dark | Light | Use |
 | --- | --- | --- | --- |
@@ -34,6 +34,8 @@ Dark is the default. Light follows the OS (`prefers-color-scheme`); `html.theme-
 | `accent-fg` | `#7DB8FA` | `#0A66CC` | Accent used as text on the base |
 | `success` · `warning` · `danger` | green-400 · amber-400 · red-400 | darker variants | Status only |
 | `brand-gold` | `#FFD500` | same | The virality score icon |
+
+A custom accent (Appearance → Accent color) replaces `accent` in both schemes; `accent-fg` becomes it lightened 30% toward white in dark mode and darkened 25% in light mode, and `accent-ink` black or white by luminance.
 
 Text ladder on the base: title `text-content`, body `text-content/80`, secondary `/60`, descriptions `/45`, group labels `/35`, placeholders `/35`, disabled `/25`.
 
@@ -66,18 +68,39 @@ Text ladder on the base: title `text-content`, body `text-content/80`, secondary
 
 ### Window glass
 
-The second glass layer, after the CSS blur on floating surfaces. On macOS and Windows the app shell (`src-tauri/src/window_glass.rs`) creates the window transparent and draws a native material behind the webview: macOS vibrancy with the sidebar material, Windows 11 Mica, or acrylic on Windows 10. Linux stays opaque. Settings → Appearance → **Window transparency** switches it at runtime (`settings.setWindowGlass`, the `window_set_glass` command); it is stored in `settings.json` and on by default.
+The second glass layer, after the CSS blur on floating surfaces. On macOS and Windows the app shell (`src-tauri/src/window_glass.rs`) creates the window transparent and blurs the desktop behind it: on macOS a WindowServer blur whose radius is the Appearance blur setting (over a visual-effect view faded to 1%, which falls back to the full sidebar material if the private blur call is missing); on Windows 11 Mica, or acrylic on Windows 10, with a fixed blur. Linux stays opaque. Settings → Appearance → **Window transparency** switches it at runtime (`settings.setWindowGlass`, the `window_set_glass` command); it is stored in `settings.json` and on by default.
 
 The renderer sets `html.glass` (`src/renderer/lib/glass.ts`) when the platform supports it, the setting is on and the OS does not ask for reduced transparency. The page, `body` and `#root` go clear, and a few variables in `globals.css` turn chrome into tints of the base over the material:
 
 | Variable | Glass | Opaque | Paints |
 | --- | --- | --- | --- |
-| `--glass-window` | 0.72 | 1 | `window-bg`: backdrop and title bar |
-| `--glass-sidebar` | 0.5 | 1 | `sidebar-bg` |
+| `--glass-window` | sidebar opacity with main pane glass, else 1 | 1 | `window-bg`: backdrop and title bar |
+| `--glass-sidebar` | sidebar opacity (0.85) | 1 | `sidebar-bg` |
 | `--glass-strip` | 0.82 | 1 | `app-bg` sticky strips and insets (also blurred) |
 | `--glass-surface` | 0.72 | 0 | A layer of base under `card` and `field`, so text, inputs and thumbnails stay readable |
 
 Video, thumbnails and `media-chip` are unchanged. Light mode keeps the opaque values (pale desktops make translucent UI illegible), so glass is a dark-mode look. Don't add new translucent chrome with raw alphas: use these classes, so opaque mode and reduced transparency keep working.
+
+---
+
+### Appearance settings
+
+Settings → Appearance ports MonoCode's appearance page with its ranges and defaults. The app shell stores the values in `settings.json` (`src-tauri/src/appearance.rs` validates them; `src/shared/appearance.ts` mirrors the ranges) and the renderer applies them live (`src/renderer/lib/appearance.ts`) as a class or variable on the root, all in the **Appearance** block of `globals.css`:
+
+| Setting | Range (default) | Drives |
+| --- | --- | --- |
+| Theme | System · Dark · Light (Dark) | `html.theme-light` / `html.theme-dark` |
+| Accent color | Default, 6 presets, custom (Default) | `html.has-user-accent`, `--user-accent*` → `--accent`, `--accent-fg`, `--accent-ink` |
+| Hue | 0–360° (240) | `--theme-hue`, every neutral token |
+| Saturation | 0–100% (0) | `--theme-saturation`, every neutral token |
+| Dark-mode lightness | 0–30% (9) | `--theme-dark-lightness` → dark `--bg`, `--sidebar` (×0.9), `--elevated` (+3%) |
+| Sidebar opacity | 15–100% (85) | `--sidebar-opacity` → `--glass-sidebar` (glass only) |
+| Blur radius | 1–64 (24) | macOS WindowServer blur, set by the shell (glass only) |
+| Main pane glass | on/off (on) | `html.glass-body`: `--glass-window` takes the sidebar opacity |
+| Interface scale | 50–200% in 10% steps (100) | Webview zoom, set by the shell (also View → Zoom, ⌘= ⌘- ⌘0); CSS `zoom` outside it |
+| Collapsed rail | on/off (off) | The 52px sidebar rail (⌘\ toggles it) |
+
+Glass controls are disabled when window transparency is off or unsupported, in light mode and with reduced transparency; dark-mode lightness is disabled in light mode. **Reset appearance** restores every default and turns window transparency back on. `public/appearance-boot.js` paints the cached theme, tint and accent before the bundle loads, so launch doesn't flash the defaults. The shell sets the webview zoom before the page loads. Pages size with `h-full`/`w-full`, not viewport units, so the CSS-zoom fallback lays out correctly.
 
 ---
 
@@ -115,7 +138,7 @@ Nested shapes step down one size (card `xl` with `p-1` → media `lg`).
 
 - **Window**: Tauri overlay title bar with a hidden title (`titleBarStyle: "Overlay"`, `hiddenTitle: true`). The sidebar's top 40px strip and the page title bar are `data-tauri-drag-region="deep"`; buttons inside carry `data-tauri-drag-region="false"`. On macOS the sidebar strip pads 78px for the traffic lights (`TRAFFIC_LIGHT_INSET`); when the sidebar is a rail, the title bar adds the difference.
 - **Sidebar**: 220px, or a 52px icon rail when collapsed or when the window is narrower than 1024px. Nav rows are 32px, `rounded-md`, icon at 70% opacity, `text-sm font-medium`; active rows get `bg-selection`, others `text-content/50` and `hover:bg-content/10`. The shortcut sits at the right in `text-[11px] text-content/40`; Jobs shows a solid accent count instead while jobs run. Group labels are `text-xs font-semibold text-content/35`; in the rail a hairline replaces them. The footer, above a hairline, shows setup status and the version.
-- **Title bar**: the sidebar toggle (⌘\, remembered in `store/use-sidebar-store.ts`) and a breadcrumb, group › page. Pages scroll below it, so sticky elements use small offsets (`top-2`, `top-6`).
+- **Title bar**: the sidebar toggle (⌘\, saved as Settings → Appearance → Collapsed rail) and a breadcrumb, group › page. Pages scroll below it, so sticky elements use small offsets (`top-2`, `top-6`).
 - **Page**: wrap every page in `<Page width>`: `focus` 720, `narrow` 880, `default` 1280, `wide` 1680. Gutters `px-5`/`sm:px-8`, `pt-6`. Stacks use `gap-2.5`/`space-y-3`; cards pad `p-4`.
 - **Create** is a wizard: Video → Brief → Format → Clips → Captions → Review. Its step strip uses the tab style (active `bg-selection`), the step card has a header row above a hairline, and Back/Next/Generate stick to the bottom on an `app-bg` strip. ⌘↵ generates from any step.
 
@@ -134,6 +157,8 @@ Nested shapes step down one size (card `xl` with `p-1` → media `lg`).
 | `Segmented` | Hairline track, `bg-selection` on the chosen segment, roving tab stop. `onRadioKeyDown` serves custom radio groups. |
 | `SettingRow` | Title and description with a control on a `tile`; `bare` drops the tile. |
 | `Switch` | 36×20, `bg-content/20` off, solid accent on. |
+| `Slider` | 224px range: 4px `content/15` track, 12px content thumb, mono value to the right. Streams changes while dragging. |
+| `ColorSwatchRow` / `ColorPicker` | 16px round swatches with a ring on the chosen one and a rainbow custom button; the picker is a saturation/brightness square, hue strip and hex field (arrow keys work), shown in a `popover-surface`. |
 | `Checkbox` | 16px, hairline off, solid accent on; `indeterminate`; `variant="overlay"` for video. |
 | `Badge`, `StatusDot` | 18px tinted labels with a hairline border; tones `neutral` · `accent` · `success` · `warning` · `danger`. Dots are solid and can pulse. |
 | `IconTile` | Tinted square with a hairline border, sizes `sm`–`xl`. |

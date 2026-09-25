@@ -9,10 +9,11 @@ import { UpdateModal } from './components/UpdateModal'
 import { ClipwardLogo } from './components/brand/ClipwardLogo'
 import { useSettingsStore } from './store/use-settings-store'
 import { useJobStore } from './store/use-job-store'
-import { useSidebarStore } from './store/use-sidebar-store'
+import { migrateLegacyCollapsed, useSidebarStore } from './store/use-sidebar-store'
 import { Button } from './components/ui/Button'
 import { getApi } from './lib/ipc'
 import { useWindowGlass } from './lib/glass'
+import { useAppearance } from './lib/appearance'
 
 export default function App(): React.JSX.Element {
   const [loadError, setLoadError] = useState(false)
@@ -23,11 +24,20 @@ export default function App(): React.JSX.Element {
   const checkTools = useSettingsStore((s) => s.checkTools)
   const settingsLoaded = useSettingsStore((s) => s.loaded)
   useWindowGlass()
+  useAppearance()
 
   useEffect(() => {
     setLoadError(false)
-    void loadSettings().then(() => checkTools()).catch(() => setLoadError(true))
+    void loadSettings()
+      .then(() => {
+        migrateLegacyCollapsed()
+        return checkTools()
+      })
+      .catch(() => setLoadError(true))
   }, [loadSettings, checkTools, retry])
+
+  // The View menu's zoom items change the interface scale from the shell.
+  useEffect(() => getApi().settings.onChanged((settings) => useSettingsStore.getState().receive(settings)), [])
 
   // The main process owns the job list. Subscribe first, then load the list,
   // so a reload or reopened window picks up jobs that are still running.
@@ -75,7 +85,7 @@ export default function App(): React.JSX.Element {
           {page === 'settings' && <SettingsPage />}
         </Layout>
       ) : (
-        <div data-tauri-drag-region="deep" className="window-bg flex h-screen items-center justify-center">
+        <div data-tauri-drag-region="deep" className="window-bg flex h-full items-center justify-center">
           {loadError ? (
             <div className="card modal-panel space-y-3 rounded-xl px-5 py-4 text-center">
               <p role="alert" className="text-[13px] text-danger">Could not load settings. Please try again.</p>

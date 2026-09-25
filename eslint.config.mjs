@@ -8,7 +8,7 @@ export default toolkit.config(
   },
   toolkit.configs.recommended,
   {
-    files: ['scripts/**/*.cjs', 'scripts/icon/*.js', 'tests/**/*.cjs'],
+    files: ['scripts/**/*.cjs', 'scripts/icon/*.js', 'tests/**/*.cjs', 'src/renderer/public/**/*.js'],
     rules: {
       '@typescript-eslint/no-require-imports': 'off',
       '@typescript-eslint/explicit-function-return-type': 'off'

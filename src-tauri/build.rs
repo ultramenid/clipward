@@ -7,6 +7,7 @@ const COMMANDS: &[&str] = &[
     "settings_save",
     "settings_replace_api_key",
     "window_set_glass",
+    "settings_set_appearance",
     "settings_select_output_dir",
     "ai_detect",
     "ai_test",

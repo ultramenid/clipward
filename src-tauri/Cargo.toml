@@ -45,6 +45,9 @@ libc = "0.2"
 # as Electron's safeStorage kept them.
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
+# Window glass: the WindowServer blur radius needs the NSWindow's number
+# (window_glass.rs). Same version Tauri already links.
+objc2 = "0.6"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }

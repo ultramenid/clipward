@@ -1,11 +1,13 @@
 import type { Config } from 'tailwindcss'
 
-// Tokens live in globals.css as RGB channels, redefined for light and dark
-// schemes, so every colour supports Tailwind's `/alpha` modifier
-// (e.g. `bg-content/5`, `border-content/10`). Surfaces (.card, .tile, .field,
-// .popover-surface, …) are component classes in globals.css; see DESIGN.md.
+// Tokens live in globals.css, redefined for light and dark schemes, so every
+// colour supports Tailwind's `/alpha` modifier (e.g. `bg-content/5`,
+// `border-content/10`). Neutrals are HSL components (Settings → Appearance
+// tints them), accent and status colours RGB channels. Surfaces (.card, .tile,
+// .field, .popover-surface, …) are component classes in globals.css; see DESIGN.md.
 const channel = (name: string): string => `rgb(var(--${name}) / <alpha-value>)`
-const tint = (strength: string): string => `rgb(var(--content) / var(--${strength}))`
+const neutral = (name: string): string => `hsl(var(--${name}) / <alpha-value>)`
+const tint = (strength: string): string => `hsl(var(--content) / var(--${strength}))`
 
 const config: Config = {
   darkMode: 'class',
@@ -13,15 +15,15 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        canvas: channel('bg'),
-        sidebar: channel('sidebar'),
-        elevated: channel('elevated'),
-        content: channel('content'),
+        canvas: neutral('bg'),
+        sidebar: neutral('sidebar'),
+        elevated: neutral('elevated'),
+        content: neutral('content'),
         ink: {
-          DEFAULT: channel('content'),
-          muted: channel('ink-muted'),
-          subtle: channel('ink-subtle'),
-          faint: channel('ink-faint')
+          DEFAULT: neutral('content'),
+          muted: neutral('ink-muted'),
+          subtle: neutral('ink-subtle'),
+          faint: neutral('ink-faint')
         },
         // Structural hairlines: border-stroke, divide-stroke, bg-stroke.
         stroke: tint('stroke-strength'),

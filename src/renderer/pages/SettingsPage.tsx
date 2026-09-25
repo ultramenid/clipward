@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { AppWindow, ArrowUpRight, AudioLines, BookA, Check, ChevronDown, Cpu, FolderOpen, Github, Info, Loader2, RefreshCw, ScrollText, Sparkles } from 'lucide-react'
+import { AppWindow, ArrowUpRight, AudioLines, BookA, Check, ChevronDown, Cpu, FolderOpen, Github, Info, Loader2, RefreshCw, RotateCcw, ScrollText, Sparkles } from 'lucide-react'
 import { useSettingsStore, useSetupState } from '../store/use-settings-store'
 import { getApi } from '../lib/ipc'
-import { cn, errorMessage } from '../lib/utils'
+import { cn, errorMessage, MOD_KEY } from '../lib/utils'
 import { APP_NAME, APP_VERSION, CLIPWARD_URL, ISSUES_URL, LICENSE_NAME, REPO_URL } from '../config/brand'
 import { providerLabel } from '../../shared/ai-providers'
 import { WHISPER_MODELS } from '../../shared/whisper-models'
@@ -20,7 +20,32 @@ import { IconTile } from '../components/ui/IconTile'
 import { Callout } from '../components/ui/Callout'
 import { SettingRow } from '../components/ui/SettingRow'
 import { Switch } from '../components/ui/Switch'
-import { useReducedTransparency } from '../lib/glass'
+import { Segmented } from '../components/ui/Segmented'
+import { Slider } from '../components/ui/Slider'
+import { ColorPicker, ColorSwatchRow } from '../components/ui/ColorSwatches'
+import { glassActive, useReducedTransparency } from '../lib/glass'
+import { useColorScheme } from '../lib/appearance'
+import { LAYER_CLASS } from '../lib/layers'
+import { SIDEBAR_SHORTCUT_KEY } from '../components/Sidebar'
+import {
+  ACCENT_COLOR_LABELS,
+  ACCENT_COLOR_PRESETS,
+  APPEARANCE_DEFAULTS,
+  SIDEBAR_BLUR_MAX,
+  SIDEBAR_BLUR_MIN,
+  SIDEBAR_OPACITY_MAX,
+  SIDEBAR_OPACITY_MIN,
+  THEME_DARK_LIGHTNESS_MAX,
+  THEME_DARK_LIGHTNESS_MIN,
+  THEME_HUE_MAX,
+  THEME_HUE_MIN,
+  THEME_SATURATION_MAX,
+  THEME_SATURATION_MIN,
+  UI_SCALE_MAX,
+  UI_SCALE_MIN,
+  type Appearance,
+  type ThemePreference
+} from '../../shared/appearance'
 
 type SectionId = 'ai' | 'transcription' | 'vocabulary' | 'output' | 'appearance' | 'system' | 'about'
 type SectionTone = 'success' | 'warning' | 'danger' | 'idle'
@@ -169,12 +194,7 @@ export function SettingsPage(): React.JSX.Element {
           </Section>
 
           <Section id="appearance">
-            <PanelHeader
-              icon={<IconTile size="sm"><AppWindow /></IconTile>}
-              title="Appearance"
-              description="How the window looks on this computer."
-            />
-            <WindowGlassRow onError={setSaveError} onSaved={() => { setSaveError(null); setSavedAt(Date.now()) }} />
+            <AppearanceSettings onError={setSaveError} onSaved={() => { setSaveError(null); setSavedAt(Date.now()) }} />
           </Section>
 
           <Section id="system">
@@ -310,8 +330,272 @@ function useActiveSection(ids: SectionId[]): [SectionId, (id: SectionId) => void
   return [active, jump]
 }
 
+interface SaveCallbacks {
+  onSaved: () => void
+  onError: (message: string) => void
+}
+
+/**
+ * Settings → Appearance, ported from MonoCode's appearance page (MIT,
+ * Copyright (c) 2026 Nick; see THIRD_PARTY_NOTICES.md): theme and accent,
+ * the tint of the neutral chrome, window glass strength, and layout. Every
+ * change shows at once and saves in the background.
+ */
+function AppearanceSettings({ onSaved, onError }: SaveCallbacks): React.JSX.Element {
+  const appearance = useSettingsStore((s) => s.appearance)
+  const setAppearance = useSettingsStore((s) => s.setAppearance)
+  const glassSupported = useSettingsStore((s) => s.windowGlassSupported)
+  const glassEnabled = useSettingsStore((s) => s.windowGlass)
+  const blurSupported = useSettingsStore((s) => s.windowBlurSupported)
+  const setWindowGlass = useSettingsStore((s) => s.setWindowGlass)
+  const reduced = useReducedTransparency()
+  const light = useColorScheme() === 'light'
+  const glassOn = glassActive(glassSupported, glassEnabled, reduced)
+  const glassOff = !glassOn || light
+
+  const change = (patch: Partial<Appearance>): void => {
+    setAppearance(patch).then(onSaved, (err) => onError(errorMessage(err, 'Could not save appearance settings')))
+  }
+
+  const reset = (): void => {
+    change({ ...APPEARANCE_DEFAULTS })
+    if (glassSupported && !glassEnabled) {
+      setWindowGlass(true).then(onSaved, (err) => onError(errorMessage(err, 'Could not change window transparency')))
+    }
+  }
+
+  const opacity = Math.round(appearance.sidebarOpacity * 100)
+  const scale = Math.round(appearance.uiScale * 100)
+  const translucencyNote = !glassSupported
+    ? 'Window transparency is available on macOS and Windows.'
+    : light
+      ? 'Light mode always uses an opaque window, so these are off. Your dark-mode values are preserved.'
+      : !glassOn
+        ? 'Turn on window transparency to adjust these. Your values are preserved.'
+        : 'How much of the desktop shows through Clipward. Blur costs more to composite the higher it goes.'
+
+  return (
+    <>
+      <PanelHeader
+        icon={<IconTile size="sm"><AppWindow /></IconTile>}
+        title="Appearance"
+        description="How Clipward looks on this computer. Changes show as you make them."
+        action={
+          <Button size="sm" variant="ghost" icon={<RotateCcw className="h-3.5 w-3.5" />} onClick={reset}>
+            Reset appearance
+          </Button>
+        }
+      />
+
+      <AppearanceGroup title="Theme" description="Dark and light share the same tint, so the color settings below apply to both.">
+        <SettingRow
+          title="Theme"
+          description="System follows the OS appearance."
+          control={
+            <Segmented<ThemePreference>
+              label="Theme"
+              value={appearance.theme}
+              options={[
+                { value: 'system', label: 'System' },
+                { value: 'dark', label: 'Dark' },
+                { value: 'light', label: 'Light' }
+              ]}
+              onChange={(theme) => change({ theme })}
+            />
+          }
+        />
+        <SettingRow
+          title="Accent color"
+          description="Primary buttons, chosen options, progress and focus rings."
+          control={<AccentColorPicker value={appearance.accentColor} light={light} onChange={(accentColor) => change({ accentColor })} />}
+        />
+      </AppearanceGroup>
+
+      <AppearanceGroup title="Color" description="Hue and saturation tint every surface. Lightness only moves the dark theme.">
+        <SettingRow
+          title="Hue"
+          description="Base hue for tinted surfaces."
+          control={
+            <Slider
+              label="Hue"
+              value={appearance.hue}
+              display={`${appearance.hue}°`}
+              min={THEME_HUE_MIN}
+              max={THEME_HUE_MAX}
+              onChange={(hue) => change({ hue })}
+            />
+          }
+        />
+        <SettingRow
+          title="Saturation"
+          description="How strongly the hue tints the interface. Zero keeps it neutral."
+          control={
+            <Slider
+              label="Saturation"
+              value={appearance.saturation}
+              display={`${appearance.saturation}%`}
+              min={THEME_SATURATION_MIN}
+              max={THEME_SATURATION_MAX}
+              onChange={(saturation) => change({ saturation })}
+            />
+          }
+        />
+        <SettingRow
+          title="Dark-mode lightness"
+          description={
+            light
+              ? 'This only affects dark mode. Your dark-mode value is preserved.'
+              : 'Base brightness of the dark theme. Lower values are darker; zero is true black.'
+          }
+          control={
+            <Slider
+              label="Dark-mode lightness"
+              value={appearance.darkLightness}
+              display={`${appearance.darkLightness}%`}
+              min={THEME_DARK_LIGHTNESS_MIN}
+              max={THEME_DARK_LIGHTNESS_MAX}
+              onChange={(darkLightness) => change({ darkLightness })}
+              disabled={light}
+            />
+          }
+        />
+      </AppearanceGroup>
+
+      <AppearanceGroup title="Translucency" description={translucencyNote}>
+        <WindowGlassRow onSaved={onSaved} onError={onError} />
+        <SettingRow
+          title="Sidebar opacity"
+          description="How solid the sidebar is over the glass. With main pane glass, the pages too."
+          control={
+            <Slider
+              label="Sidebar opacity"
+              value={opacity}
+              display={`${opacity}%`}
+              min={Math.round(SIDEBAR_OPACITY_MIN * 100)}
+              max={Math.round(SIDEBAR_OPACITY_MAX * 100)}
+              onChange={(percent) => change({ sidebarOpacity: percent / 100 })}
+              disabled={glassOff}
+            />
+          }
+        />
+        <SettingRow
+          title="Blur radius"
+          description={blurSupported || !glassSupported ? 'Background blur behind the window.' : 'Windows draws Mica and acrylic with a fixed blur.'}
+          control={
+            <Slider
+              label="Blur radius"
+              value={appearance.blurRadius}
+              display={String(appearance.blurRadius)}
+              min={SIDEBAR_BLUR_MIN}
+              max={SIDEBAR_BLUR_MAX}
+              onChange={(blurRadius) => change({ blurRadius })}
+              disabled={glassOff || !blurSupported}
+            />
+          }
+        />
+        <SettingRow
+          title="Main pane glass"
+          description="Extend the translucent treatment to the pages beside the sidebar."
+          control={
+            <Switch
+              label="Main pane glass"
+              checked={appearance.mainPaneGlass}
+              disabled={glassOff}
+              onChange={(mainPaneGlass) => change({ mainPaneGlass })}
+            />
+          }
+        />
+      </AppearanceGroup>
+
+      <AppearanceGroup title="Layout">
+        <SettingRow
+          title="Collapsed rail"
+          description={`Show the sidebar as a compact icon rail. ${MOD_KEY}${SIDEBAR_SHORTCUT_KEY} toggles it. Narrow windows always use the rail.`}
+          control={
+            <Switch label="Collapsed rail" checked={appearance.collapsedRail} onChange={(collapsedRail) => change({ collapsedRail })} />
+          }
+        />
+        <SettingRow
+          title="Interface scale"
+          description={`Zoom the whole interface. You can also use ${MOD_KEY}=, ${MOD_KEY}- and ${MOD_KEY}0.`}
+          control={
+            <Slider
+              label="Interface scale"
+              value={scale}
+              display={`${scale}%`}
+              min={Math.round(UI_SCALE_MIN * 100)}
+              max={Math.round(UI_SCALE_MAX * 100)}
+              step={10}
+              onChange={(percent) => change({ uiScale: percent / 100 })}
+            />
+          }
+        />
+      </AppearanceGroup>
+    </>
+  )
+}
+
+function AppearanceGroup({ title, description, children }: { title: string; description?: string; children: ReactNode }): React.JSX.Element {
+  return (
+    <div className="mt-5">
+      <h3 className="eyebrow">{title}</h3>
+      {description && <p className="mt-0.5 text-xs leading-relaxed text-content/45">{description}</p>}
+      <div className="mt-2 space-y-1.5">{children}</div>
+    </div>
+  )
+}
+
+/** Clipward's own accent in each scheme (globals.css `--accent`). */
+const DEFAULT_ACCENT = { dark: 'rgb(69 155 247)', light: 'rgb(41 134 238)' } as const
+
+/** Default, MonoCode's six presets, and a custom colour in a popover. */
+function AccentColorPicker({ value, light, onChange }: { value: string | null; light: boolean; onChange: (value: string | null) => void }): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const root = useRef<HTMLDivElement>(null)
+  const presetIndex = value == null ? 0 : ACCENT_COLOR_PRESETS.indexOf(value as (typeof ACCENT_COLOR_PRESETS)[number]) + 1
+  const custom = value != null && presetIndex === 0 ? value : null
+
+  useEffect(() => {
+    if (!open) return
+    const onPointer = (event: PointerEvent): void => {
+      if (!root.current?.contains(event.target as Node)) setOpen(false)
+    }
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    window.addEventListener('pointerdown', onPointer)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('pointerdown', onPointer)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  return (
+    <div ref={root} className="relative shrink-0">
+      <ColorSwatchRow
+        colors={[DEFAULT_ACCENT[light ? 'light' : 'dark'], ...ACCENT_COLOR_PRESETS]}
+        labels={['Default', ...ACCENT_COLOR_LABELS]}
+        selectedIndex={custom ? null : presetIndex}
+        customColor={custom}
+        customOpen={open}
+        onPick={(index) => {
+          setOpen(false)
+          onChange(index === 0 ? null : ACCENT_COLOR_PRESETS[index - 1])
+        }}
+        onToggleCustom={() => setOpen((current) => !current)}
+      />
+      {open && (
+        <div className={cn('popover-surface popover-open absolute right-0 top-full mt-2 w-[248px] rounded-xl p-2', LAYER_CLASS.popover)}>
+          <ColorPicker value={value ?? ACCENT_COLOR_PRESETS[0]} onChange={onChange} />
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** Native window glass: on or off, applied at once by the app shell. */
-function WindowGlassRow({ onSaved, onError }: { onSaved: () => void; onError: (message: string) => void }): React.JSX.Element {
+function WindowGlassRow({ onSaved, onError }: SaveCallbacks): React.JSX.Element {
   const supported = useSettingsStore((s) => s.windowGlassSupported)
   const enabled = useSettingsStore((s) => s.windowGlass)
   const setWindowGlass = useSettingsStore((s) => s.setWindowGlass)
@@ -334,7 +618,7 @@ function WindowGlassRow({ onSaved, onError }: { onSaved: () => void; onError: (m
     ? 'Available on macOS and Windows.'
     : reduced
       ? 'Your system asks for reduced transparency, so the window stays opaque.'
-      : 'The desktop shows softly through the sidebar and window background in dark mode. Video, cards and fields stay solid.'
+      : 'The desktop shows softly through the sidebar, and the pages with main pane glass, in dark mode. Video, cards and fields stay solid.'
 
   return (
     <SettingRow

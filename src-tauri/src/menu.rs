@@ -1,9 +1,7 @@
 //! Application menu (port of src/main/menu.ts).
 use crate::shared::{ISSUES_URL, REPO_URL};
 use tauri::menu::{IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
-use tauri::{AppHandle, Manager, Wry};
-
-const ZOOM_STEP: f64 = 0.1;
+use tauri::{AppHandle, Emitter, Manager, Wry};
 
 pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let sep = || PredefinedMenuItem::separator(app);
@@ -119,18 +117,25 @@ pub fn handle_event(app: &AppHandle, event: MenuEvent) {
                 }
             }
         }
+        // Zoom is Settings → Appearance → Interface scale: saved, applied as
+        // the webview zoom, and reported so the slider follows.
         id @ ("zoom-reset" | "zoom-in" | "zoom-out") => {
+            use crate::appearance::{UI_SCALE, UI_SCALE_STEP};
             let state = app.state::<crate::AppState>();
-            let Ok(mut zoom) = state.zoom.lock() else {
+            let Ok(current) = state.settings.load() else {
                 return;
             };
-            *zoom = match id {
-                "zoom-in" => (*zoom + ZOOM_STEP).min(3.0),
-                "zoom-out" => (*zoom - ZOOM_STEP).max(0.5),
-                _ => 1.0,
+            let scale = current.appearance.ui_scale;
+            let next = match id {
+                "zoom-in" => scale + UI_SCALE_STEP,
+                "zoom-out" => scale - UI_SCALE_STEP,
+                _ => UI_SCALE.default,
             };
-            if let Some(window) = window {
-                let _ = window.set_zoom(*zoom);
+            if let Ok(saved) = state.settings.set_ui_scale(next) {
+                if let Some(window) = window {
+                    let _ = window.set_zoom(saved.appearance.ui_scale);
+                }
+                let _ = app.emit_to("main", "settings:changed", saved);
             }
         }
         "github" => {

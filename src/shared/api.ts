@@ -6,6 +6,7 @@
 import type { ClipJobRequest, JobSnapshot } from './jobs'
 import type { ApiKeyName, DetectedCli, ProviderTestResult } from './ai-providers'
 import type { WhisperModelStatus } from './whisper-models'
+import type { Appearance } from './appearance'
 
 export type { ClipJobRequest, JobSnapshot } from './jobs'
 
@@ -24,6 +25,12 @@ export interface ClipSettings {
   windowGlass: boolean
   /** Whether this platform draws window glass; Linux stays opaque. */
   windowGlassSupported: boolean
+  /** Settings → Appearance (src/shared/appearance.ts). Change it with settings.setAppearance. */
+  appearance: Appearance
+  /** Whether the shell can change the glass blur radius (macOS). */
+  windowBlurSupported: boolean
+  /** The shell applies appearance.uiScale as the webview zoom; otherwise the renderer scales itself. */
+  nativeUiScale: boolean
 }
 
 export interface HistoryEntry {
@@ -81,6 +88,10 @@ export interface ClipwardAPI {
     selectOutputDir: () => Promise<string | null>
     /** Switches native window glass now and remembers the choice. */
     setWindowGlass: (enabled: boolean) => Promise<ClipSettings>
+    /** Saves the appearance settings; the shell applies interface scale and blur radius. */
+    setAppearance: (appearance: Appearance) => Promise<ClipSettings>
+    /** Settings changed outside the renderer (the View menu's zoom items). */
+    onChanged: (callback: (settings: ClipSettings) => void) => () => void
   }
   job: {
     /** Queues a clipping run; it starts right away when a slot is free (`queued: false`). */

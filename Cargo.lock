@@ -674,6 +674,7 @@ dependencies = [
  "file-id",
  "keyring",
  "libc",
+ "objc2",
  "percent-encoding",
  "regex",
  "reqwest 0.12.28",

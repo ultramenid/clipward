@@ -53,7 +53,7 @@ export function ProgressRing({ value, size = 200, stroke = 10, className, childr
       style={{ width: size, height: size }}
     >
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="relative -rotate-90">
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgb(var(--content) / 0.1)" strokeWidth={stroke} />
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="hsl(var(--content) / 0.1)" strokeWidth={stroke} />
         <circle
           cx={size / 2}
           cy={size / 2}

@@ -4,6 +4,7 @@
 //! listens for `jobs:update` and `whisper:progress` events. Clipping runs
 //! in-process through `clip_engine::pipeline::run_job` (see `jobs.rs`).
 mod ai_providers;
+mod appearance;
 mod commands;
 mod file_manager;
 mod job_output;
@@ -40,7 +41,6 @@ pub struct AppState {
     /// Output folders the user picked with the folder dialog this session; settings
     /// accept no other new output folder.
     pub selected_output_dirs: Mutex<HashSet<String>>,
-    pub zoom: Mutex<f64>,
 }
 
 static EXITING: AtomicBool = AtomicBool::new(false);
@@ -84,12 +84,12 @@ fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
     };
     // Glass needs a transparent window from the start; the config keeps
     // `transparent: false` so Linux stays opaque (see window_glass.rs).
-    let glass = app
+    let (glass, appearance) = app
         .state::<AppState>()
         .settings
         .load()
-        .map(|settings| settings.window_glass)
-        .unwrap_or(true);
+        .map(|settings| (settings.window_glass, settings.appearance))
+        .unwrap_or_else(|_| (true, appearance::Appearance::default()));
     let nav_app = app.clone();
     let popup_app = app.clone();
     let builder = WebviewWindowBuilder::from_config(app, &config)?
@@ -111,6 +111,9 @@ fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
         })
         .visible(config.visible && !hidden_for_tests())
         .build()?;
+    // Interface scale is the webview zoom; set before the page paints.
+    let _ = window.set_zoom(appearance.ui_scale);
+    window_glass::set_blur_radius(&window, appearance.blur_radius);
     if glass {
         window_glass::apply(&window, true);
     }
@@ -156,7 +159,6 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         media: security::MediaRegistry::default(),
         jobs: jobs::JobManager::default(),
         selected_output_dirs: Mutex::new(HashSet::new()),
-        zoom: Mutex::new(1.0),
         paths,
     });
 
@@ -209,6 +211,7 @@ pub fn run() {
             commands::settings_save,
             commands::settings_replace_api_key,
             commands::window_set_glass,
+            commands::settings_set_appearance,
             commands::settings_select_output_dir,
             commands::ai_detect,
             commands::ai_test,

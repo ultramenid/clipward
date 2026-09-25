@@ -27,17 +27,19 @@
 }
 
 @layer base {
-  /* Colours are RGB channels so every token takes Tailwind's `/alpha`
-     modifier. Dark is the default; light follows the OS unless the root
-     carries .theme-dark, and .theme-light forces it. */
+  /* Every token takes Tailwind's `/alpha` modifier: neutrals are HSL
+     components built in the Appearance block below from these lightnesses,
+     the rest RGB channels. Dark is the default; the app sets .theme-light or
+     .theme-dark from Settings → Appearance → Theme, and without either the
+     OS decides. */
   :root {
-    --bg: 23 23 23;            /* #171717 app base */
-    --sidebar: 20 20 20;       /* base mixed 10% toward black */
-    --elevated: 31 31 31;      /* solid popover fallback */
-    --content: 235 235 235;    /* ink and every tint */
-    --ink-muted: 163 163 163;
-    --ink-subtle: 125 125 125;
-    --ink-faint: 94 94 94;
+    --background-lightness: var(--theme-dark-lightness); /* #171717 app base */
+    --sidebar-lightness: calc(var(--background-lightness) * 0.9); /* base toward black */
+    --elevated-lightness: calc(var(--background-lightness) + 3%); /* solid popover fallback */
+    --content-lightness: 92%; /* ink and every tint */
+    --ink-muted-lightness: 64%;
+    --ink-subtle-lightness: 49%;
+    --ink-faint-lightness: 37%;
 
     --accent: 69 155 247;      /* hsl(211 92% 62%) */
     --accent-fg: 125 184 250;  /* accent used as text on the base */
@@ -64,13 +66,13 @@
 
   @media (prefers-color-scheme: light) {
     :root:not(.theme-dark) {
-      --bg: 247 247 247;
-      --sidebar: 247 247 247;
-      --elevated: 255 255 255;
-      --content: 46 46 46;
-      --ink-muted: 102 102 102;
-      --ink-subtle: 128 128 128;
-      --ink-faint: 166 166 166;
+      --background-lightness: 97%;
+      --sidebar-lightness: 97%;
+      --elevated-lightness: 100%;
+      --content-lightness: 18%;
+      --ink-muted-lightness: 40%;
+      --ink-subtle-lightness: 50%;
+      --ink-faint-lightness: 65%;
       --accent: 41 134 238;
       --accent-fg: 10 102 204;
       --success: 22 150 70;
@@ -85,13 +87,13 @@
   }
 
   :root.theme-light {
-    --bg: 247 247 247;
-    --sidebar: 247 247 247;
-    --elevated: 255 255 255;
-    --content: 46 46 46;
-    --ink-muted: 102 102 102;
-    --ink-subtle: 128 128 128;
-    --ink-faint: 166 166 166;
+    --background-lightness: 97%;
+    --sidebar-lightness: 97%;
+    --elevated-lightness: 100%;
+    --content-lightness: 18%;
+    --ink-muted-lightness: 40%;
+    --ink-subtle-lightness: 50%;
+    --ink-faint-lightness: 65%;
     --accent: 41 134 238;
     --accent-fg: 10 102 204;
     --success: 22 150 70;
@@ -118,8 +120,8 @@
   }
 
   :root.glass {
-    --glass-window: 0.72;
-    --glass-sidebar: 0.5;
+    --glass-window: var(--main-pane-opacity);
+    --glass-sidebar: var(--sidebar-opacity);
     --glass-strip: 0.82;
     --glass-surface: 0.72;
   }
@@ -148,6 +150,52 @@
       --glass-surface: 0;
     }
   }
+
+  /* ─── Appearance (Settings → Appearance) ─────────────────────────────────
+     Ported from MonoCode's appearance settings (MIT, Copyright (c) 2026
+     Nick; see THIRD_PARTY_NOTICES.md). src/renderer/lib/appearance.ts (and
+     public/appearance-boot.js before the bundle loads) sets these on the
+     root: the tint, dark-mode lightness, glass strengths and a custom
+     accent. Colour only; defaults are MonoCode's. See DESIGN.md. */
+  :root {
+    --theme-hue: 240;
+    --theme-saturation: 0%;
+    --theme-dark-lightness: 9%;
+    --sidebar-opacity: 0.85;
+    --main-pane-opacity: 1;
+
+    --bg: var(--theme-hue) var(--theme-saturation) var(--background-lightness);
+    --sidebar: var(--theme-hue) var(--theme-saturation) var(--sidebar-lightness);
+    --elevated: var(--theme-hue) var(--theme-saturation) var(--elevated-lightness);
+    --content: var(--theme-hue) var(--theme-saturation) var(--content-lightness);
+    --ink-muted: var(--theme-hue) var(--theme-saturation) var(--ink-muted-lightness);
+    --ink-subtle: var(--theme-hue) var(--theme-saturation) var(--ink-subtle-lightness);
+    --ink-faint: var(--theme-hue) var(--theme-saturation) var(--ink-faint-lightness);
+  }
+
+  /* Main pane glass: the backdrop and title bar share the sidebar's opacity. */
+  :root.glass-body {
+    --main-pane-opacity: var(--sidebar-opacity);
+  }
+
+  /* A custom accent replaces the blue in both schemes. As text on the base
+     it is lightened in dark mode and darkened in light mode. */
+  :root.has-user-accent {
+    --accent: var(--user-accent);
+    --accent-ink: var(--user-accent-ink);
+    --accent-fg: var(--user-accent-fg-dark);
+  }
+
+  :root.has-user-accent.theme-light {
+    --accent-fg: var(--user-accent-fg-light);
+  }
+
+  @media (prefers-color-scheme: light) {
+    :root.has-user-accent:not(.theme-dark) {
+      --accent-fg: var(--user-accent-fg-light);
+    }
+  }
+  /* ─── End Appearance ──────────────────────────────────────────────────── */
 
   /* The window itself is clear; .window-bg paints the tinted backdrop. */
   html.glass,
@@ -234,14 +282,14 @@
   /* The window backdrop: the app shell and the title bar over it. A tint
      over the native material in glass mode. */
   .window-bg {
-    background: rgb(var(--bg) / var(--glass-window));
+    background: hsl(var(--bg) / var(--glass-window));
   }
 
   /* The base colour on a strip or inset that sits over content (sticky
      footers, setup steps). Nearly solid in glass mode, blurring what
      scrolls beneath. */
   .app-bg {
-    background: rgb(var(--bg) / var(--glass-strip));
+    background: hsl(var(--bg) / var(--glass-strip));
   }
 
   html.glass .app-bg {
@@ -250,22 +298,22 @@
   }
 
   .sidebar-bg {
-    background: rgb(var(--sidebar) / var(--glass-sidebar));
+    background: hsl(var(--sidebar) / var(--glass-sidebar));
   }
 
   /* A group of related content: faint fill, hairline border. In glass mode
      a layer of the base underneath keeps footage and text readable. */
   .card {
     position: relative;
-    background: linear-gradient(rgb(var(--content) / 0.03), rgb(var(--content) / 0.03)),
-      rgb(var(--bg) / var(--glass-surface));
-    border: 1px solid rgb(var(--content) / 0.08);
+    background: linear-gradient(hsl(var(--content) / 0.03), hsl(var(--content) / 0.03)),
+      hsl(var(--bg) / var(--glass-surface));
+    border: 1px solid hsl(var(--content) / 0.08);
   }
 
   /* A row or option inside a card. */
   .tile {
-    background: rgb(var(--content) / 0.03);
-    border: 1px solid rgb(var(--content) / 0.08);
+    background: hsl(var(--content) / 0.03);
+    border: 1px solid hsl(var(--content) / 0.08);
   }
 
   .tile-hover {
@@ -275,8 +323,8 @@
   }
 
   .tile-hover:hover {
-    background: rgb(var(--content) / 0.06);
-    border-color: rgb(var(--content) / 0.14);
+    background: hsl(var(--content) / 0.06);
+    border-color: hsl(var(--content) / 0.14);
   }
 
   /* The chosen option: a brighter selection fill with an accent edge. */
@@ -288,29 +336,29 @@
 
   /* Text inputs, selects and inset lists. */
   .field {
-    background: linear-gradient(rgb(var(--content) / 0.03), rgb(var(--content) / 0.03)),
-      rgb(var(--bg) / var(--glass-surface));
-    border: 1px solid rgb(var(--content) / 0.1);
+    background: linear-gradient(hsl(var(--content) / 0.03), hsl(var(--content) / 0.03)),
+      hsl(var(--bg) / var(--glass-surface));
+    border: 1px solid hsl(var(--content) / 0.1);
   }
 
   /* Anything floating over the page: menus, tooltips, dialogs. Blurs what
      scrolls beneath it; light mode is opaque. */
   .popover-surface {
     position: relative;
-    background: rgb(var(--bg) / 0.86);
+    background: hsl(var(--bg) / 0.86);
     -webkit-backdrop-filter: blur(24px) saturate(150%);
     backdrop-filter: blur(24px) saturate(150%);
-    border: 1px solid rgb(var(--content) / 0.1);
+    border: 1px solid hsl(var(--content) / 0.1);
     box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.25), 0 8px 10px -6px rgb(0 0 0 / 0.2);
   }
 
   :root.theme-light .popover-surface {
-    background: rgb(var(--elevated));
+    background: hsl(var(--elevated));
   }
 
   @media (prefers-color-scheme: light) {
     :root:not(.theme-dark) .popover-surface {
-      background: rgb(var(--elevated));
+      background: hsl(var(--elevated));
     }
   }
 
@@ -391,12 +439,12 @@ html:not(.is-mac) ::-webkit-scrollbar-track {
 }
 
 html:not(.is-mac) ::-webkit-scrollbar-thumb {
-  background: rgb(var(--content) / 0.16);
+  background: hsl(var(--content) / 0.16);
   border-radius: 9999px;
 }
 
 html:not(.is-mac) ::-webkit-scrollbar-thumb:hover {
-  background: rgb(var(--content) / 0.32);
+  background: hsl(var(--content) / 0.32);
 }
 
 html:not(.is-mac) ::-webkit-scrollbar-corner {
@@ -430,7 +478,7 @@ html:not(.is-mac) ::-webkit-scrollbar-corner {
   }
 
   .popover-surface {
-    background: rgb(var(--elevated));
+    background: hsl(var(--elevated));
   }
 
   .media-chip {

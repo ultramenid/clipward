@@ -19,7 +19,7 @@ interface LayoutProps {
  */
 export function Layout({ children, currentPage, onNavigate }: LayoutProps): React.JSX.Element {
   return (
-    <div className="window-bg flex h-screen w-screen overflow-hidden text-ink">
+    <div className="window-bg flex h-full w-full overflow-hidden text-ink">
       <Sidebar currentPage={currentPage} onNavigate={onNavigate} />
       <main className="flex min-w-0 flex-1 flex-col">
         <TitleBar currentPage={currentPage} />
