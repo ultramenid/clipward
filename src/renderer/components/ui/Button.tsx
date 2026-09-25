@@ -11,29 +11,31 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   icon?: ReactNode
   trailingIcon?: ReactNode
   loading?: boolean
-  /** Round button with only an icon; pass `aria-label`. */
+  /** Square button with only an icon; pass `aria-label`. */
   iconOnly?: boolean
 }
 
-// Capsules throughout: liquid glass controls are pill-shaped.
+// Dense, flat controls: small radius, hairline borders, content-tinted hovers.
 const VARIANTS: Record<Variant, string> = {
-  primary: 'btn-primary',
-  secondary: 'btn-glass text-ink disabled:text-ink-subtle disabled:opacity-60',
-  ghost: 'text-ink-muted hover:bg-white/[0.07] hover:text-ink disabled:text-ink-faint disabled:hover:bg-transparent',
+  primary:
+    'bg-accent text-accent-ink hover:brightness-110 disabled:bg-accent/30 disabled:text-accent-ink/60 disabled:hover:brightness-100',
+  secondary:
+    'border border-content/10 text-content/80 hover:bg-content/10 hover:text-content disabled:text-content/35 disabled:hover:bg-transparent',
+  ghost: 'text-content/60 hover:bg-content/10 hover:text-content disabled:text-content/30 disabled:hover:bg-transparent',
   danger:
-    'text-danger bg-danger/[0.08] shadow-[inset_0_0_0_1px_rgb(var(--danger)/0.28),inset_0_1px_0_rgb(255_255_255/0.06)] hover:bg-danger/[0.15] hover:shadow-[inset_0_0_0_1px_rgb(var(--danger)/0.45),inset_0_1px_0_rgb(255_255_255/0.08)]'
+    'border border-danger/30 text-danger hover:border-danger/50 hover:bg-danger/10 disabled:opacity-40 disabled:hover:bg-transparent'
 }
 
 const SIZES: Record<Size, string> = {
-  sm: 'h-7 px-2.5 text-xs gap-1.5',
-  md: 'h-8 px-3.5 text-sm gap-1.5',
-  lg: 'h-10 px-5 text-sm gap-2'
+  sm: 'h-6 px-2 text-xs gap-1.5',
+  md: 'h-7 px-2.5 text-xs gap-1.5',
+  lg: 'h-8 px-3 text-sm gap-2'
 }
 
 const ICON_ONLY: Record<Size, string> = {
-  sm: 'h-7 w-7',
-  md: 'h-8 w-8',
-  lg: 'h-10 w-10'
+  sm: 'h-6 w-6',
+  md: 'h-7 w-7',
+  lg: 'h-8 w-8'
 }
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
@@ -58,9 +60,8 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       type={type}
       disabled={disabled || loading}
       className={cn(
-        'inline-flex shrink-0 select-none items-center justify-center whitespace-nowrap rounded-full font-medium',
-        'transition-[background,box-shadow,color,filter,transform] duration-200 ease-out',
-        'active:scale-[0.97] disabled:active:scale-100',
+        'inline-flex shrink-0 select-none items-center justify-center whitespace-nowrap rounded-md font-medium',
+        'transition-[background-color,border-color,color,filter] duration-feedback ease-out',
         VARIANTS[variant],
         iconOnly ? ICON_ONLY[size] : SIZES[size],
         className

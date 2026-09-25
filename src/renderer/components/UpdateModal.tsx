@@ -109,14 +109,14 @@ export function UpdateModal(): React.JSX.Element | null {
 
   return (
     <Dialog ref={dialogRef} layer="system" aria-label={title} panelClassName="max-w-[440px]">
-      <div className="relative flex items-start justify-between gap-3 px-4 pt-4">
-        <div className="flex items-center gap-3.5">
-          <IconTile tone={failed ? 'danger' : 'accent'} size="lg">
+      <div className="flex items-start justify-between gap-2 px-4 pt-3">
+        <div className="flex items-center gap-3 pt-0.5">
+          <IconTile tone={failed ? 'danger' : 'accent'} size="md">
             {failed ? <AlertTriangle /> : state.phase === 'ready' ? <RefreshCw /> : <ArrowDownToLine />}
           </IconTile>
           <div>
             <p className="eyebrow">Software update</p>
-            <h3 className="mt-1 text-lg font-semibold tracking-[-0.01em] text-ink">{title}</h3>
+            <h3 className="mt-0.5 text-xl font-medium leading-tight text-ink">{title}</h3>
           </div>
         </div>
         {state.phase !== 'downloading' && (
@@ -126,21 +126,22 @@ export function UpdateModal(): React.JSX.Element | null {
             iconOnly
             aria-label="Close"
             onClick={() => setDismissed(true)}
-            icon={<X className="h-4 w-4" />}
+            className="h-7 w-7 text-content/45"
+            icon={<X className="h-3.5 w-3.5" strokeWidth={1.75} />}
           />
         )}
       </div>
 
-      <div className="relative px-4 py-4 text-sm leading-relaxed text-ink-muted">
+      <div className="px-4 py-4 text-[13px] leading-relaxed text-content/60">
         {state.phase === 'available' && (
           <div className="space-y-3">
             <p>
               {APP_NAME} <span className="font-medium text-ink">v{state.version}</span> is ready to download.
             </p>
             {state.releaseNotes && (
-              <div className="glass-well max-h-40 overflow-y-auto rounded-2xl px-3 py-3.5">
+              <div className="field max-h-40 overflow-y-auto rounded-lg px-3 py-2.5">
                 <p className="eyebrow mb-2 flex items-center gap-1.5">
-                  <Sparkles className="h-3 w-3 text-accent-hover" />
+                  <Sparkles className="h-3 w-3 text-accent-fg" />
                   What’s new
                 </p>
                 <p className="whitespace-pre-wrap text-xs leading-relaxed text-ink-muted" data-selectable>
@@ -156,14 +157,14 @@ export function UpdateModal(): React.JSX.Element | null {
             <div className="flex items-baseline justify-between">
               <span className="font-mono text-xl font-medium tabular tracking-tight text-ink">
                 {Math.round(state.percent)}
-                <span className="text-base text-ink-subtle">%</span>
+                <span className="text-sm text-content/40">%</span>
               </span>
-              <span className="font-mono text-2xs tabular text-ink-subtle">
+              <span className="font-mono text-2xs tabular text-content/45">
                 {formatBytes(state.transferred)} / {formatBytes(state.total)}
                 {state.bytesPerSecond > 0 && ` · ${formatBytes(state.bytesPerSecond)}/s`}
               </span>
             </div>
-            <ProgressBar value={state.percent} className="h-2" />
+            <ProgressBar value={state.percent} className="h-1" />
           </div>
         )}
 
@@ -185,7 +186,7 @@ export function UpdateModal(): React.JSX.Element | null {
               <Button variant="ghost" onClick={() => setDismissed(true)}>
                 Later
               </Button>
-              <Button variant="primary" icon={<ArrowDownToLine className="h-4 w-4" />} onClick={handleDownload}>
+              <Button variant="primary" icon={<ArrowDownToLine className="h-3.5 w-3.5" />} onClick={handleDownload}>
                 Download
               </Button>
             </>

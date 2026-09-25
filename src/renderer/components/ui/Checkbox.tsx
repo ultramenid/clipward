@@ -26,17 +26,17 @@ export function Checkbox({ checked, indeterminate, onChange, label, disabled, va
         onChange(!checked)
       }}
       className={cn(
-        'flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[6px] transition-[background,box-shadow] duration-150',
+        'flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors duration-feedback',
         on
-          ? 'bg-accent text-accent-ink shadow-[inset_0_1px_0_rgb(255_255_255/0.35),0_0_0_1px_rgb(var(--accent)/0.7)]'
+          ? 'border-accent bg-accent text-accent-ink'
           : variant === 'overlay'
-            ? 'bg-black/35 text-transparent shadow-[inset_0_0_0_1.5px_rgb(255_255_255/0.55)] backdrop-blur-md hover:shadow-[inset_0_0_0_1.5px_rgb(255_255_255/0.85)]'
-            : 'bg-black/25 text-transparent shadow-[inset_0_0_0_1px_rgb(255_255_255/0.22),inset_0_1px_2px_rgb(0_0_0/0.3)] hover:shadow-[inset_0_0_0_1px_rgb(255_255_255/0.4),inset_0_1px_2px_rgb(0_0_0/0.3)]',
-        disabled && 'cursor-not-allowed opacity-40',
+            ? 'border-white/60 bg-black/40 text-transparent backdrop-blur-md hover:border-white/90'
+            : 'border-content/25 bg-transparent text-transparent hover:border-content/45',
+        disabled && 'opacity-40',
         className
       )}
     >
-      {indeterminate ? <Minus className="h-3 w-3" strokeWidth={3} /> : <Check className="h-3 w-3" strokeWidth={3} />}
+      {indeterminate ? <Minus className="h-2.5 w-2.5" strokeWidth={3} /> : <Check className="h-2.5 w-2.5" strokeWidth={3} />}
     </button>
   )
 }

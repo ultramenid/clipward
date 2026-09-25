@@ -239,13 +239,13 @@ function JobsList({ active, entries, filter, query, error, refreshing, onFilter,
         {active.length > 0 && (
           <Panel padded={false} className="overflow-hidden">
             <section aria-label="Active jobs">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] py-2 pl-4 pr-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-stroke py-2 pl-4 pr-3">
                 <SectionTitle label="Active" count={active.length} />
-                <p className="text-2xs text-ink-subtle">
+                <p className="text-2xs text-content/40">
                   {running} running{queued > 0 && ` · ${queued} queued`} · up to {MAX_PARALLEL_JOBS} at once
                 </p>
               </div>
-              <ul className="divide-y divide-white/[0.05]">
+              <ul className="divide-y divide-stroke">
                 {active.map((job) => (
                   <ActiveJobRow
                     key={job.id}
@@ -270,7 +270,7 @@ function JobsList({ active, entries, filter, query, error, refreshing, onFilter,
         ) : (
           <Panel padded={false} className="overflow-hidden">
             <section aria-label="Previous jobs">
-              <div className="flex flex-wrap items-center gap-2 border-b border-white/[0.06] py-1.5 pl-4 pr-1.5">
+              <div className="flex flex-wrap items-center gap-2 border-b border-stroke py-1.5 pl-4 pr-1.5">
                 <SectionTitle label="Previous" count={previous.length} className="mr-auto" />
                 {previous.length > 0 && (
                   <>
@@ -280,47 +280,48 @@ function JobsList({ active, entries, filter, query, error, refreshing, onFilter,
                         return (
                           <button
                             key={option.id}
+                            type="button"
                             onClick={() => onFilter(option.id)}
                             aria-pressed={selected}
                             className={cn(
-                              'inline-flex h-6 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium transition-colors duration-150',
-                              selected ? 'bg-white/[0.1] text-ink' : 'text-ink-muted hover:bg-white/[0.05] hover:text-ink'
+                              'inline-flex h-6 items-center gap-1.5 rounded-md px-2 text-xs transition-colors duration-feedback',
+                              selected ? 'bg-selection text-content' : 'text-content/50 hover:bg-content/5 hover:text-content'
                             )}
                           >
                             {option.label}
-                            <span className={cn('font-mono text-2xs tabular', selected ? 'text-ink-muted' : 'text-ink-faint')}>{counts[option.id] ?? 0}</span>
+                            <span className={cn('font-mono text-2xs tabular', selected ? 'text-content/60' : 'text-content/30')}>{counts[option.id] ?? 0}</span>
                           </button>
                         )
                       })}
                     </div>
                     <TextInput
-                      className="w-44 rounded-full max-sm:w-full"
+                      className="w-48 max-sm:w-full"
                       value={query}
                       onChange={(event) => onQuery(event.target.value)}
                       placeholder="Search jobs"
                       aria-label="Search jobs"
-                      leading={<Search className="h-3.5 w-3.5" />}
+                      leading={<Search strokeWidth={1.75} />}
                     />
                   </>
                 )}
               </div>
 
               {entries === null ? (
-                <ul className="divide-y divide-white/[0.05]" aria-busy="true" aria-label="Loading jobs">
+                <ul className="divide-y divide-stroke" aria-busy="true" aria-label="Loading jobs">
                   {Array.from({ length: 4 }).map((_, i) => (
                     <li key={i} className="flex h-10 items-center gap-3 px-4">
                       <Skeleton className="h-2 w-2 rounded-full" />
-                      <Skeleton className="h-3 w-2/5 rounded-full" />
-                      <Skeleton className="ml-auto h-3 w-24 rounded-full" />
+                      <Skeleton className="h-3 w-2/5" />
+                      <Skeleton className="ml-auto h-3 w-24" />
                     </li>
                   ))}
                 </ul>
               ) : previous.length === 0 ? (
-                <p className="px-4 py-3 text-xs text-ink-subtle">Finished jobs will appear here.</p>
+                <p className="px-4 py-3 text-xs text-content/45">Finished jobs will appear here.</p>
               ) : visible.length === 0 ? (
-                <p className="px-4 py-3 text-xs text-ink-subtle">No jobs match this filter.</p>
+                <p className="px-4 py-3 text-xs text-content/45">No jobs match this filter.</p>
               ) : (
-                <ul className="divide-y divide-white/[0.05]">
+                <ul className="divide-y divide-stroke">
                   {visible.map((entry) => (
                     <PreviousJobRow key={entry.jobId} entry={entry} hasDetails={Boolean(sessionJobs[entry.jobId])} onOpen={() => onOpenEntry(entry)} onOpenFolder={() => onOpenFolder(entry.outputDir)} />
                   ))}
@@ -338,7 +339,7 @@ function SectionTitle({ label, count, className }: { label: string; count: numbe
   return (
     <h2 className={cn('flex items-center gap-2', className)}>
       <span className="eyebrow">{label}</span>
-      <span className="font-mono text-2xs tabular text-ink-faint">{count}</span>
+      <span className="font-mono text-2xs tabular text-content/30">{count}</span>
     </h2>
   )
 }
@@ -356,21 +357,21 @@ function ActiveJobRow({ job, position, onOpen, onCancel }: { job: Job; position:
   const detail = queued ? 'Starts when a slot frees up' : job.step
 
   return (
-    <li className="flex items-center pr-2 transition-colors duration-150 hover:bg-white/[0.025]">
-      <button onClick={onOpen} className="flex min-w-0 flex-1 items-center gap-3 py-2 pl-4 pr-3 text-left" title={job.request.videoUrl}>
+    <li className="flex items-center pr-2 transition-colors duration-feedback hover:bg-content/[0.04]">
+      <button type="button" onClick={onOpen} className="flex min-w-0 flex-1 items-center gap-3 py-2 pl-4 pr-3 text-left" title={job.request.videoUrl}>
         {queued ? (
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/[0.05] font-mono text-2xs tabular text-ink-muted shadow-[inset_0_0_0_1px_rgb(255_255_255/0.1)]">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-content/15 font-mono text-2xs tabular text-content/60">
             #{position}
           </span>
         ) : (
           <ProgressRing value={job.percent} size={32} stroke={3}>
-            <span className="font-mono text-[9px] tabular text-accent-hover">{Math.round(job.percent)}%</span>
+            <span className="font-mono text-[9px] tabular text-accent-fg">{Math.round(job.percent)}%</span>
           </ProgressRing>
         )}
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-medium leading-5 text-ink">{sourceLabel(job.request.videoUrl)}</span>
-          <span className="block truncate text-xs text-ink-muted">
-            <span className={queued ? 'text-ink-subtle' : 'text-accent-hover'}>{stage}</span>
+          <span className="block truncate text-[13px] font-medium leading-5 text-ink">{sourceLabel(job.request.videoUrl)}</span>
+          <span className="block truncate text-xs text-content/50">
+            <span className={queued ? 'text-content/40' : 'text-accent-fg'}>{stage}</span>
             {detail && detail !== stage && ` · ${detail}`}
           </span>
         </span>
@@ -379,7 +380,7 @@ function ActiveJobRow({ job, position, onOpen, onCancel }: { job: Job; position:
             {job.clipsDone}/{job.clipsTotal} <span className="font-sans">clips</span>
           </span>
         )}
-        <span className="w-24 shrink-0 text-right text-xs text-ink-subtle">
+        <span className="w-24 shrink-0 text-right text-xs text-content/45">
           <span className="font-mono tabular">{formatTimecode(elapsed)}</span> {queued ? 'waiting' : 'elapsed'}
         </span>
       </button>
@@ -408,7 +409,7 @@ const STATUS_DOT: Record<HistoryEntry['status'], 'success' | 'accent' | 'danger'
 
 const STATUS_TEXT: Record<HistoryEntry['status'], string> = {
   completed: 'text-success',
-  running: 'text-accent-hover',
+  running: 'text-accent-fg',
   failed: 'text-danger',
   cancelled: 'text-ink-subtle',
   interrupted: 'text-warning',
@@ -427,9 +428,9 @@ function PreviousJobRow({ entry, hasDetails, onOpen, onOpenFolder }: { entry: Hi
       <StatusDot tone={STATUS_DOT[entry.status]} />
       <span className="min-w-0 flex-1 truncate text-xs" title={entry.errorMessage ?? entry.videoTitle}>
         <span className="sr-only">{status.label}: </span>
-        <span className="text-sm text-ink">{entry.videoTitle}</span>
+        <span className="text-[13px] text-ink">{entry.videoTitle}</span>
         {!completed && <span className={cn('ml-2 font-medium', STATUS_TEXT[entry.status])} aria-hidden>{status.label}</span>}
-        {entry.errorMessage && <span className="text-ink-subtle" data-selectable> · {entry.errorMessage}</span>}
+        {entry.errorMessage && <span className="text-content/45" data-selectable> · {entry.errorMessage}</span>}
       </span>
       <span className="hidden w-16 shrink-0 text-right text-xs text-ink-muted sm:block">
         {completed ? `${entry.clipCount} clip${entry.clipCount === 1 ? '' : 's'}` : ''}
@@ -445,12 +446,12 @@ function PreviousJobRow({ entry, hasDetails, onOpen, onOpenFolder }: { entry: Hi
       </span>
     </>
   )
-  const cellClass = 'flex min-w-0 flex-1 items-center gap-3 py-2.5 pl-4 pr-2 text-left'
+  const cellClass = 'flex min-w-0 flex-1 items-center gap-3 py-2 pl-4 pr-2 text-left'
 
   return (
-    <li className={cn('group/row flex items-center pr-2 transition-colors duration-150', openable && 'hover:bg-white/[0.025]')}>
+    <li className={cn('group/row flex items-center pr-2 transition-colors duration-feedback', openable && 'hover:bg-content/[0.04]')}>
       {openable ? (
-        <button onClick={onOpen} className={cellClass} title={completed ? 'View clips' : 'Details'}>{cells}</button>
+        <button type="button" onClick={onOpen} className={cellClass} title={completed ? 'View clips' : 'Details'}>{cells}</button>
       ) : (
         <div className={cellClass}>{cells}</div>
       )}
@@ -472,8 +473,8 @@ function JobCancelled({ job, leading, onRetry }: { job: Job; leading: React.Reac
   return (
     <Page width="focus">
       <div className="mb-3">{leading}</div>
-      <h1 className="text-xl font-semibold tracking-[-0.02em] text-ink">Job cancelled</h1>
-      <p className="mt-1 truncate text-sm text-ink-muted" title={job.request.videoUrl}>{sourceLabel(job.request.videoUrl)}</p>
+      <h1 className="text-xl font-medium leading-tight text-ink">Job cancelled</h1>
+      <p className="mt-1 truncate text-[13px] text-content/50" title={job.request.videoUrl}>{sourceLabel(job.request.videoUrl)}</p>
       <div className="mt-4">
         <Button variant="primary" icon={<RotateCcw className="h-3.5 w-3.5" />} onClick={onRetry}>Run again</Button>
       </div>

@@ -31,18 +31,17 @@ export function SetupCard({ onOpenSettings, className }: { onOpenSettings: () =>
     return (
       <section
         className={cn(
-          'glass relative overflow-hidden rounded-3xl bg-accent/[0.05] animate-fade-in',
-          'shadow-[inset_0_1px_0_rgb(255_255_255/0.08),inset_0_0_0_1px_rgb(var(--accent)/0.22)]',
+          'relative overflow-hidden rounded-xl border border-accent/25 bg-accent/[0.04] animate-fade-in',
           className
         )}
         aria-label="Finish setup"
       >
-        <div className="flex items-start gap-3 p-3.5 pb-0">
+        <div className="flex items-start gap-3 px-4 pb-1 pt-4">
           <IconTile tone="accent"><Sparkles /></IconTile>
           <div className="min-w-0">
-            <p className="eyebrow text-accent-hover">One-time setup</p>
-            <h2 className="mt-0.5 text-base font-semibold text-ink">Two things before your first clip</h2>
-            <p className="mt-0.5 max-w-2xl text-xs text-ink-muted">
+            <p className="eyebrow text-accent-fg">One-time setup</p>
+            <h2 className="mt-0.5 text-[15px] font-medium text-ink">Two things before your first clip</h2>
+            <p className="mt-0.5 max-w-2xl text-xs leading-relaxed text-content/50">
               Clipward has no account and no server. Pick the AI that chooses your clips, and download the speech model that transcribes offline.
             </p>
           </div>
@@ -52,7 +51,7 @@ export function SetupCard({ onOpenSettings, className }: { onOpenSettings: () =>
         </SetupStep>
         <SetupStep n={2} done={whisperReady} title="Offline transcription (Whisper)">
           <WhisperModels compact />
-          <p className="mt-2 text-2xs text-ink-subtle">Downloaded once. Your audio never leaves this computer. Other sizes are in Settings.</p>
+          <p className="mt-2 text-xs text-content/45">Downloaded once. Your audio never leaves this computer. Other sizes are in Settings.</p>
         </SetupStep>
       </section>
     )
@@ -62,8 +61,7 @@ export function SetupCard({ onOpenSettings, className }: { onOpenSettings: () =>
     return (
       <section
         className={cn(
-          'flex items-center gap-3 rounded-3xl bg-danger/[0.07] p-3 pr-4 animate-fade-in',
-          'shadow-[inset_0_0_0_1px_rgb(var(--danger)/0.26),inset_0_1px_0_rgb(255_255_255/0.06)]',
+          'flex items-center gap-3 rounded-xl border border-danger/25 bg-danger/[0.06] p-3 pr-3.5 animate-fade-in',
           className
         )}
       >
@@ -71,8 +69,8 @@ export function SetupCard({ onOpenSettings, className }: { onOpenSettings: () =>
           <Wrench />
         </IconTile>
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-ink">{toolError ? 'Could not check required tools' : 'Some required tools are missing'}</p>
-          <p className="mt-0.5 text-xs text-ink-muted">{toolError ? 'Open Settings to retry the system check.' : `Missing: ${missingTools}. Open Settings for details.`}</p>
+          <p className="text-[13px] font-medium text-ink">{toolError ? 'Could not check required tools' : 'Some required tools are missing'}</p>
+          <p className="mt-0.5 text-xs text-content/50">{toolError ? 'Open Settings to retry the system check.' : `Missing: ${missingTools}. Open Settings for details.`}</p>
         </div>
         <Button onClick={onOpenSettings}>See what’s missing</Button>
       </section>
@@ -84,14 +82,14 @@ export function SetupCard({ onOpenSettings, className }: { onOpenSettings: () =>
 
 function SetupStep({ n, done, title, children }: { n: number; done: boolean; title: string; children: React.ReactNode }): React.JSX.Element {
   return (
-    <div className="m-3 rounded-xl bg-black/15 p-3 shadow-[inset_0_0_0_1px_rgb(255_255_255/0.06)]">
-      <div className="mb-3 flex items-center gap-2">
-        <span className={cn('flex h-5 w-5 items-center justify-center rounded-full font-mono text-2xs',
+    <div className="app-bg m-3 rounded-lg border border-stroke p-3">
+      <div className={cn('flex items-center gap-2', !done && 'mb-3')}>
+        <span className={cn('flex h-4 w-4 items-center justify-center rounded-full font-mono text-[10px]',
           done ? 'bg-success text-canvas' : 'bg-accent text-accent-ink')}>
-          {done ? <Check className="h-3 w-3" strokeWidth={3} /> : n}
+          {done ? <Check className="h-2.5 w-2.5" strokeWidth={3} /> : n}
         </span>
-        <span className="text-sm font-medium text-ink">{title}</span>
-        {done && <span className="text-2xs text-success">Ready</span>}
+        <span className="text-[13px] font-medium text-ink">{title}</span>
+        {done && <span className="text-xs text-success">Ready</span>}
       </div>
       {!done && children}
     </div>

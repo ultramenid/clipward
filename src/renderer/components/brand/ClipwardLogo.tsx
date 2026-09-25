@@ -1,4 +1,5 @@
 import lockupUrl from '../../../../resources/clipward-logo.svg'
+import lockupLightUrl from '../../../../resources/clipward-logo-light.svg'
 import iconUrl from '../../../../resources/clipward-icon-small.svg'
 import markUrl from '../../../../resources/clipward-mark.svg'
 import { cn } from '../../lib/utils'
@@ -20,12 +21,20 @@ interface ClipwardLogoProps {
  * then scripts/icon/build-icons.sh (raster app icons).
  */
 export function ClipwardLogo({ variant = 'lockup', className, alt = 'Clipward' }: ClipwardLogoProps): React.JSX.Element {
-  return (
+  const img = (
     <img
       src={variant === 'icon' ? iconUrl : variant === 'mark' ? markUrl : lockupUrl}
       alt={alt}
       draggable={false}
       className={cn('w-auto shrink-0 select-none', className)}
     />
+  )
+  if (variant !== 'lockup') return img
+  // The lockup's wordmark is white; the light scheme gets the dark-ink version.
+  return (
+    <picture className="contents">
+      <source srcSet={lockupLightUrl} media="(prefers-color-scheme: light)" />
+      {img}
+    </picture>
   )
 }

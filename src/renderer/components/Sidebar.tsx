@@ -1,6 +1,6 @@
-import { ChevronRight, Film, Layers, PanelLeftClose, PanelLeftOpen, Settings, WandSparkles, type LucideIcon } from 'lucide-react'
-import { cn, MOD_KEY, sourceLabel } from '../lib/utils'
-import { useIsWide, useSidebarExpanded, useSidebarStore } from '../store/use-sidebar-store'
+import { ChevronRight, Film, Layers, Settings, WandSparkles, type LucideIcon } from 'lucide-react'
+import { cn, isMac, MOD_KEY, sourceLabel } from '../lib/utils'
+import { useSidebarExpanded } from '../store/use-sidebar-store'
 import { useActiveJobs } from '../store/use-job-store'
 import { useSetupState } from '../store/use-settings-store'
 import { APP_VERSION } from '../config/brand'
@@ -26,10 +26,17 @@ interface SidebarProps {
 /** Shortcut that collapses and expands the sidebar (⌘\ on macOS, Ctrl+\ elsewhere). */
 export const SIDEBAR_SHORTCUT_KEY = '\\'
 
+/** Width of the traffic-light inset on macOS (overlay title bar). */
+export const TRAFFIC_LIGHT_INSET = 78
+/** Sidebar widths: full column and icon rail. */
+export const SIDEBAR_WIDTH = { expanded: 220, rail: 52 } as const
+
 /**
- * Full sidebar (200px), or a 72px icon rail when the user collapses it or the
- * window is narrower than 1024px. Labels stay available to screen readers and
- * as tooltips in the rail.
+ * Full sidebar (220px), or a 52px icon rail when the user collapses it or the
+ * window is narrower than 1024px. It sits on the darker sidebar tone with a
+ * hairline edge; its top 40px strip is a window drag handle that holds the
+ * macOS traffic lights. Labels stay available to screen readers and as
+ * tooltips in the rail. The collapse toggle lives in the title bar.
  */
 export function Sidebar({ currentPage, onNavigate }: SidebarProps): React.JSX.Element {
   const expanded = useSidebarExpanded()
@@ -37,91 +44,61 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps): React.JSX.El
     <aside
       id="sidebar"
       className={cn(
-        'no-drag relative flex shrink-0 flex-col overflow-hidden border-r border-white/[0.06] transition-[width] duration-200 ease-out',
-        expanded ? 'w-[200px]' : 'w-[72px]'
+        'sidebar-bg relative flex shrink-0 flex-col overflow-hidden border-r border-stroke transition-[width] duration-feedback ease-out',
+        expanded ? 'w-[220px]' : 'w-[52px]'
       )}
     >
-      {/* Title-bar strip: the macOS traffic lights sit here. Matches Layout's strip height. */}
-      <div className="drag h-10 shrink-0" />
-
-      <div className={cn('flex h-9 items-center pb-3', expanded ? 'justify-between pl-4 pr-2.5' : 'justify-center px-2')}>
+      {/* Title-bar strip: drag handle and home of the macOS traffic lights. */}
+      <div
+        data-tauri-drag-region="deep"
+        className={cn('flex h-10 shrink-0 items-center', expanded ? 'justify-end px-3.5' : 'justify-center')}
+        style={isMac && expanded ? { paddingLeft: TRAFFIC_LIGHT_INSET } : undefined}
+      >
         {expanded ? (
-          <>
-            <ClipwardLogo className="h-5" />
-            <SidebarToggle />
-          </>
-        ) : (
-          <SidebarToggle rail />
-        )}
+          <ClipwardLogo className={cn('h-4 opacity-90', !isMac && 'mr-auto')} />
+        ) : !isMac ? (
+          <ClipwardLogo variant="mark" className="h-5" />
+        ) : null}
       </div>
 
-      <nav className={expanded ? 'px-2.5' : 'px-3'} aria-label="Main">
+      <nav className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto overscroll-none px-2 py-3" aria-label="Main">
         <NavGroup label="Studio" expanded={expanded}>
           {NAV_ITEMS.filter((item) => item.group === 'studio').map((item) => (
             <NavButton key={item.id} item={item} expanded={expanded} active={currentPage === item.id} onNavigate={onNavigate} />
           ))}
         </NavGroup>
-        <NavGroup label="App" expanded={expanded} className={cn('mt-4', !expanded && 'mx-2 border-t border-white/[0.06] pt-3 [&>div]:-mx-2')}>
+        <NavGroup label="App" expanded={expanded} divider>
           {NAV_ITEMS.filter((item) => item.group === 'app').map((item) => (
             <NavButton key={item.id} item={item} expanded={expanded} active={currentPage === item.id} onNavigate={onNavigate} />
           ))}
         </NavGroup>
       </nav>
 
-      <div className={cn('mt-auto space-y-1.5', expanded ? 'p-2.5' : 'p-2')}>
+      <div className="flex shrink-0 flex-col gap-1 p-2">
         {currentPage !== 'jobs' && <ActiveJobsCard expanded={expanded} onOpen={() => onNavigate('jobs')} />}
-        <div className={cn('flex items-center gap-1', !expanded && 'justify-center')}>
-          <SetupStatus expanded={expanded} onOpenSettings={() => onNavigate('settings')} />
-          {expanded && <span className="shrink-0 pr-2 font-mono text-[10px] tabular text-ink-faint">v{APP_VERSION}</span>}
-        </div>
+      </div>
+      <div className="shrink-0 border-t border-stroke p-2">
+        <SetupStatus expanded={expanded} onOpenSettings={() => onNavigate('settings')} />
       </div>
     </aside>
   )
 }
 
-/**
- * Collapse/expand control, part of the sidebar itself. Expanded, it sits at
- * the right of the logo row. In the rail, the brand mark is the control and
- * turns into the expand icon on hover or focus. Narrow windows force the rail,
- * so there the mark is only a mark.
- */
-function SidebarToggle({ rail = false }: { rail?: boolean }): React.JSX.Element {
-  const wide = useIsWide()
-  const expanded = useSidebarExpanded()
-  const toggle = useSidebarStore((s) => s.toggle)
-  if (rail && !wide) return <ClipwardLogo variant="mark" className="h-6" />
-  const label = expanded ? 'Collapse sidebar' : 'Expand sidebar'
-  const hint = `${label} (${MOD_KEY}${SIDEBAR_SHORTCUT_KEY})`
-  if (!rail && !wide) return <span />
+function NavGroup({ label, expanded, divider = false, children }: {
+  label: string
+  expanded: boolean
+  /** In the rail, a hairline replaces the label to separate groups. */
+  divider?: boolean
+  children: React.ReactNode
+}): React.JSX.Element {
   return (
-    <button
-      onClick={toggle}
-      aria-label={label}
-      aria-expanded={expanded}
-      aria-controls="sidebar"
-      title={hint}
-      className={cn(
-        'group/toggle relative flex shrink-0 items-center justify-center text-ink-subtle transition-colors duration-150 hover:bg-white/[0.07] hover:text-ink',
-        rail ? 'h-9 w-9 rounded-xl' : 'h-7 w-7 rounded-lg'
-      )}
-    >
-      {rail ? (
-        <>
-          <ClipwardLogo variant="mark" className="h-6 transition-opacity duration-150 group-hover/toggle:opacity-0 group-focus-visible/toggle:opacity-0" />
-          <PanelLeftOpen className="absolute h-4 w-4 opacity-0 transition-opacity duration-150 group-hover/toggle:opacity-100 group-focus-visible/toggle:opacity-100" strokeWidth={1.9} />
-        </>
-      ) : (
-        <PanelLeftClose className="h-4 w-4" strokeWidth={1.9} />
-      )}
-    </button>
-  )
-}
-
-function NavGroup({ label, expanded, className, children }: { label: string; expanded: boolean; className?: string; children: React.ReactNode }): React.JSX.Element {
-  return (
-    <div className={className}>
-      {expanded && <p aria-hidden className="eyebrow mb-1 px-2.5 text-[10px] text-ink-faint">{label}</p>}
-      <div className="space-y-0.5">{children}</div>
+    <div className="flex flex-col gap-px">
+      {expanded ? (
+        <p aria-hidden className="px-2 pb-1 text-xs font-semibold text-content/35">{label}</p>
+      ) : divider ? (
+        <span aria-hidden className="mx-2 mb-1 h-px bg-stroke" />
+      ) : null}
+      {children}
     </div>
   )
 }
@@ -137,38 +114,34 @@ function NavButton({ item, expanded, active, onNavigate }: {
   const badge = item.id === 'jobs' && liveJobs > 0 ? liveJobs : null
   return (
     <button
+      type="button"
       onClick={() => onNavigate(item.id)}
       aria-current={active ? 'page' : undefined}
       aria-label={badge ? `${item.label}, ${badge} active` : item.label}
-      title={expanded ? undefined : badge ? `${item.label} · ${badge} active` : item.label}
+      title={expanded ? undefined : badge ? `${item.label} · ${badge} active` : `${item.label} (${MOD_KEY}${item.shortcut})`}
       className={cn(
-        'group relative flex w-full items-center gap-2.5 text-sm transition-[background,color,box-shadow] duration-200 ease-out',
-        expanded ? 'h-8 justify-start rounded-full px-3' : 'h-9 justify-center rounded-xl',
-        active
-          ? 'bg-white/[0.1] font-medium text-ink shadow-[inset_0_1px_0_rgb(255_255_255/0.16),inset_0_0_0_1px_rgb(255_255_255/0.08)]'
-          : 'text-ink-muted hover:bg-white/[0.05] hover:text-ink'
+        'group relative flex h-8 w-full items-center gap-2 rounded-md text-left transition-colors duration-feedback ease-out',
+        expanded ? 'px-2' : 'justify-center',
+        active ? 'bg-selection text-content' : 'text-content/50 hover:bg-content/10 hover:text-content'
       )}
     >
-      <Icon
-        className={cn(
-          'h-4 w-4 shrink-0 transition-colors',
-          active ? 'text-accent-hover' : 'text-ink-subtle group-hover:text-ink-muted'
-        )}
-        strokeWidth={active ? 2.2 : 1.9}
-      />
+      <Icon className={cn('h-4 w-4 shrink-0', active ? 'opacity-90' : 'opacity-70')} strokeWidth={1.75} />
       {!expanded && badge && (
-        <span aria-hidden className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-accent shadow-[0_0_0_2px_rgb(var(--canvas))]" />
+        <span aria-hidden className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-accent" />
       )}
       {expanded && (
         <>
-          <span className="flex-1 truncate text-left">{item.label}</span>
-          {badge && (
-            <span aria-hidden className="rounded-full bg-accent/20 px-1.5 font-mono text-2xs tabular text-accent-hover group-hover:hidden">{badge}</span>
+          <span className="min-w-0 flex-1 truncate text-sm font-medium leading-tight">{item.label}</span>
+          {badge ? (
+            <span aria-hidden className="grid min-w-4 place-items-center rounded-full bg-accent px-1 text-[10px] font-semibold leading-4 text-accent-ink tabular">
+              {badge > 99 ? '99+' : badge}
+            </span>
+          ) : (
+            <kbd aria-hidden className="shrink-0 font-sans text-[11px] text-content/40">
+              {MOD_KEY}
+              {item.shortcut}
+            </kbd>
           )}
-          <kbd className="font-sans text-2xs text-ink-faint opacity-0 transition-opacity group-hover:opacity-100">
-            {MOD_KEY}
-            {item.shortcut}
-          </kbd>
         </>
       )}
     </button>
@@ -189,19 +162,20 @@ function ActiveJobsCard({ expanded, onOpen }: { expanded: boolean; onOpen: () =>
 
   return (
     <button
+      type="button"
       onClick={onOpen}
       aria-label={`${title}, ${percent}%. Open jobs`}
       title={expanded ? undefined : `${title} · ${percent}%`}
-      className={cn('glass-tile glass-tile-hover group w-full rounded-xl text-left animate-fade-in', expanded ? 'p-2.5' : 'p-1.5')}
+      className={cn('tile tile-hover group w-full rounded-lg text-left animate-fade-in', expanded ? 'px-2.5 py-2' : 'px-1.5 py-1.5')}
     >
       <div className={cn('flex items-center gap-2 text-xs', !expanded && 'justify-center')}>
         {expanded && <StatusDot tone="accent" pulse />}
-        {expanded && <span className="truncate font-medium text-ink">{title}</span>}
-        <span className={cn('font-mono text-2xs tabular text-accent-hover', expanded && 'ml-auto')}>{percent}%</span>
+        {expanded && <span className="truncate font-medium text-content">{title}</span>}
+        <span className={cn('font-mono text-2xs tabular text-accent-fg', expanded && 'ml-auto')}>{percent}%</span>
       </div>
-      <ProgressBar value={percent} className={cn('h-1', expanded ? 'mt-2' : 'mt-1.5')} />
+      <ProgressBar value={percent} className={cn('h-0.5', expanded ? 'mt-2' : 'mt-1.5')} />
       {expanded && (
-        <p className="mt-1.5 flex items-center gap-1 text-2xs text-ink-subtle">
+        <p className="mt-1.5 flex items-center gap-1 text-2xs text-content/45">
           <span className="truncate">{single ? sourceLabel(single.request.videoUrl) : 'View all jobs'}</span>
           <ChevronRight className="ml-auto h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover:opacity-100" />
         </p>
@@ -228,17 +202,25 @@ function SetupStatus({ expanded, onOpenSettings }: { expanded: boolean; onOpenSe
 
   return (
     <button
+      type="button"
       onClick={onOpenSettings}
       aria-label={label}
-      title={expanded ? undefined : label}
+      title={expanded ? undefined : `${label} · v${APP_VERSION}`}
       className={cn(
-        'flex h-8 min-w-0 items-center gap-2 rounded-full text-xs transition-colors hover:bg-white/[0.06]',
-        expanded ? 'flex-1 justify-start px-3' : 'w-9 justify-center',
-        ready ? 'text-ink-subtle hover:text-ink-muted' : 'text-ink-muted hover:text-ink'
+        'flex w-full min-w-0 items-center gap-2.5 rounded-md text-left transition-colors duration-feedback hover:bg-content/10',
+        expanded ? 'px-2 py-1.5' : 'h-8 justify-center',
+        ready ? 'text-content/60 hover:text-content' : 'text-content/80 hover:text-content'
       )}
     >
-      <StatusDot tone={tone} />
-      {expanded && <span className="truncate">{label}</span>}
+      <span className="grid h-4 w-4 shrink-0 place-items-center">
+        <StatusDot tone={tone} />
+      </span>
+      {expanded && (
+        <span className="flex min-w-0 flex-col">
+          <span className="truncate text-[13px] leading-tight">{label}</span>
+          <span className="font-mono text-[11px] leading-tight text-content/40 tabular">v{APP_VERSION}</span>
+        </span>
+      )}
     </button>
   )
 }

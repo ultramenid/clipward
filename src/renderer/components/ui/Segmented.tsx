@@ -35,12 +35,12 @@ export function onRadioKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>): vo
   radios[next].click()
 }
 
-/** Single choice in a glass track; the chosen segment is a raised glass pill. */
+/** Single choice in a hairline track; the chosen segment gets the selection fill. */
 export function Segmented<T extends string>({ label, value, options, onChange, size = 'md', className }: SegmentedProps<T>): React.JSX.Element {
   return (
     <div
       className={cn(
-        'inline-flex items-center gap-0.5 rounded-full bg-black/25 p-[3px] shadow-[inset_0_1px_2px_rgb(0_0_0/0.35),inset_0_0_0_1px_rgb(255_255_255/0.07)]',
+        'inline-flex items-center gap-0.5 rounded-md border border-content/10 p-0.5',
         className
       )}
       role="radiogroup"
@@ -60,12 +60,10 @@ export function Segmented<T extends string>({ label, value, options, onChange, s
             onKeyDown={onRadioKeyDown}
             onClick={() => onChange(option.value)}
             className={cn(
-              'rounded-full font-medium transition-[background,color,box-shadow] duration-200 ease-out',
-              size === 'sm' ? 'h-6 px-2.5 text-xs' : 'h-7 px-3 text-xs',
-              selected
-                ? 'bg-white/[0.12] text-ink shadow-[inset_0_1px_0_rgb(255_255_255/0.2),inset_0_0_0_1px_rgb(255_255_255/0.1),0_2px_8px_-2px_rgb(0_0_0/0.5)]'
-                : 'text-ink-muted hover:text-ink',
-              option.disabled && 'cursor-not-allowed text-ink-faint hover:text-ink-faint'
+              'rounded-[4px] transition-[background-color,color] duration-feedback ease-out',
+              size === 'sm' ? 'h-5 px-2 text-2xs' : 'h-6 px-2.5 text-xs',
+              selected ? 'bg-selection text-content' : 'text-content/50 hover:text-content',
+              option.disabled && 'text-content/25 hover:text-content/25'
             )}
           >
             {option.label}
