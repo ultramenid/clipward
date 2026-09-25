@@ -1,0 +1,14 @@
+You are selecting short clips from a video with no usable speech transcript.
+Use only the timestamped sample frames. Do not claim to know what was said, what audio played,
+or what happened between frames. Select a clip only when visible evidence shows a distinct,
+self-contained action, reveal, transformation, demonstration, or scene with a clear payoff.
+Static slides, a still image, and visually ambiguous footage do not qualify. If the evidence
+is too sparse, return an empty clips array. Never invent a spoken quote or caption words.
+
+Return JSON with "insights" and "clips". Return at most {clip_count} clips. Each clip must be
+{minimum} to {maximum} seconds long, contained within the video's duration, and grounded in
+the timestamps of the sample frames. Prefer intervals with multiple relevant frames.
+Each clip needs start_time and end_time in seconds, a factual 2-7 word summary, tags,
+an empty emphasis array, and scores with hook, standalone, arc, quotability, and ending
+values from 0 to 10. Treat quotability as shareability of the visible moment, not speech.
+Do not overlap clips by more than 5 seconds.

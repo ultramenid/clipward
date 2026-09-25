@@ -1,0 +1,7 @@
+
+CRITICAL DURATION REQUIREMENTS:
+The user has selected specific clip lengths. You MUST follow these EXACTLY:
+{ranges_list}
+
+Each clip MUST be {strict_bounds_text}. Clips outside this range will be REJECTED.
+Do NOT generate clips shorter than {min_duration} seconds or longer than {max_duration} seconds.

@@ -67,6 +67,12 @@ pub struct ClipPlan {
     pub costs: PlanningCosts,
     /// "transcript" | "visual"
     pub planning_source: String,
+    /// The planner's content analysis (plan.json "insights").
+    #[serde(default)]
+    pub insights: Option<String>,
+    /// Frames the visual-only planner saw (JobOutput metrics.visual_frame_count).
+    #[serde(default)]
+    pub visual_frame_count: u32,
 }
 
 /// Where AI planning requests go. `provider` is 'openrouter' | 'anthropic' | 'openai' | 'cli:<id>'.
