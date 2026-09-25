@@ -22,6 +22,10 @@ which = "7"
 tempfile = "3"
 whisper-rs = "0.16"
 tract-onnx = "0.23"
+fs4 = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 whisper-rs = { version = "0.16", features = ["metal"] }
