@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { errorMessage } from '../lib/utils'
 import { getApi } from '../lib/ipc'
-import type { ClipSettings, ToolStatus } from '../../preload/index'
+import type { ClipSettings, ToolStatus } from '../../shared/api'
 import type { ApiKeyName, DetectedCli } from '../../shared/ai-providers'
 import type { WhisperModelStatus } from '../../shared/whisper-models'
 

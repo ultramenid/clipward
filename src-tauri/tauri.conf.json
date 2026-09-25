@@ -4,32 +4,71 @@
   "version": "0.2.0",
   "identifier": "com.clipward.desktop",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run dev:web",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run build:web",
     "frontendDist": "../dist"
   },
   "app": {
     "windows": [
       {
         "label": "main",
+        "create": false,
         "title": "Clipward",
         "width": 1280,
         "height": 800,
-        "minWidth": 900,
-        "minHeight": 600,
+        "minWidth": 720,
+        "minHeight": 520,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "backgroundColor": "#171717"
+        "trafficLightPosition": { "x": 16, "y": 14 },
+        "transparent": false,
+        "backgroundColor": "#171717",
+        "shadow": true
       }
     ],
     "security": {
-      "csp": null
+      "csp": {
+        "default-src": "'none'",
+        "script-src": "'self'",
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' local-file: http://local-file.localhost https://i.ytimg.com data:",
+        "media-src": "'self' local-file: http://local-file.localhost",
+        "font-src": "'self'",
+        "connect-src": "ipc: http://ipc.localhost",
+        "object-src": "'none'",
+        "base-uri": "'none'",
+        "form-action": "'none'",
+        "frame-src": "'none'"
+      },
+      "devCsp": {
+        "default-src": "'none'",
+        "script-src": "'self'",
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' local-file: http://local-file.localhost https://i.ytimg.com data:",
+        "media-src": "'self' local-file: http://local-file.localhost",
+        "font-src": "'self'",
+        "connect-src": "'self' ipc: http://ipc.localhost ws://localhost:1420 ws://127.0.0.1:1420",
+        "object-src": "'none'",
+        "base-uri": "'none'",
+        "form-action": "'none'",
+        "frame-src": "'none'"
+      },
+      "dangerousDisableAssetCspModification": ["style-src"],
+      "freezePrototype": true
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"]
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "resources": {
+      "../engine/assets/fonts/": "assets/fonts/",
+      "../engine/assets/models/": "assets/models/"
+    },
+    "copyright": "MIT License",
+    "category": "Video",
+    "shortDescription": "AI clipping for content-reward campaigns",
+    "longDescription": "Turn long videos into captioned clips that follow a campaign brief, with offline Whisper and your own AI CLI or API key."
   }
 }

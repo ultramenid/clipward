@@ -1,11 +1,13 @@
-import type { ClipwardAPI } from '../../preload/index'
+import type { ClipwardAPI } from '../../shared/api'
+import { bridge } from './bridge'
 
 declare global {
   interface Window {
-    clipward: ClipwardAPI
+    /** Test seam: renderer tests inject a stand-in API here. The app itself uses the Tauri bridge. */
+    clipward?: ClipwardAPI
   }
 }
 
 export function getApi(): ClipwardAPI {
-  return window.clipward
+  return window.clipward ?? bridge
 }

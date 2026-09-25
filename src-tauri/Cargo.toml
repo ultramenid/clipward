@@ -16,6 +16,7 @@ clip_engine = { path = "../crates/engine" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
 tokio.workspace = true
 tokio-util.workspace = true
 serde.workspace = true
@@ -23,3 +24,27 @@ serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 reqwest.workspace = true
+chrono = "0.4"
+file-id = "0.2"
+percent-encoding = "2"
+regex = "1"
+same-file = "1"
+sha2 = "0.10"
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+which = "7"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# API keys live in the OS keychain (Keychain, Credential Manager, Secret Service),
+# as Electron's safeStorage kept them.
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }

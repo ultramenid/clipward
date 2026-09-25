@@ -1,3 +1,4 @@
+import { convertFileSrc } from '@tauri-apps/api/core'
 import { twitchVodId } from '../../shared/video-source'
 import { type ClassValue, clsx } from 'clsx'
 import { twMerge } from 'tailwind-merge'
@@ -42,12 +43,15 @@ export function parseTimecode(input: string): number | null {
   return Number.isFinite(seconds) ? seconds : NaN
 }
 
-/** URL for a file on disk, served by the main process's local-file:// protocol. */
+/**
+ * URL for a file on disk, served by the app shell's `local-file` protocol
+ * (local-file://localhost/… on macOS and Linux, http://local-file.localhost/… on Windows).
+ */
 export function localFileUrl(filePath: string): string {
-  return `local-file://${encodeURIComponent(filePath)}`
+  return convertFileSrc(filePath, 'local-file')
 }
 
-/** Readable message from an IPC rejection (drops Electron's "Error invoking remote method" prefix). */
+/** Readable message from a command rejection (Tauri rejects with the error string; drops Electron's old prefix too). */
 export function errorMessage(err: unknown, fallback = 'Something went wrong'): string {
   const raw = err instanceof Error ? err.message : typeof err === 'string' ? err : ''
   const cleaned = raw.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '').trim()

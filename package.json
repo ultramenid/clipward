@@ -15,9 +15,15 @@
     "url": "https://github.com/clipward/clipward/issues"
   },
   "scripts": {
-    "dev": "electron-vite dev",
-    "build": "electron-vite build",
-    "preview": "electron-vite preview",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "tauri": "tauri",
+    "dev:web": "vite",
+    "build:web": "vite build",
+    "preview": "vite preview",
+    "electron:dev": "electron-vite dev",
+    "electron:build": "electron-vite build",
+    "electron:preview": "electron-vite preview",
     "postinstall": "electron-builder install-app-deps",
     "dist": "electron-vite build && electron-builder",
     "dist:mac": "electron-vite build && electron-builder --mac --$(node -p 'process.arch')",
@@ -40,11 +46,13 @@
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.1",
     "@electron-toolkit/utils": "^3.0.0",
+    "@tauri-apps/api": "^2.11.1",
     "electron-updater": "^6.8.9",
     "undici": "^6.28.1"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config-ts": "^3.0.0",
+    "@tauri-apps/cli": "^2.11.5",
     "@types/node": "^22.10.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.3.0",
