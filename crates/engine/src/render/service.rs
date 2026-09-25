@@ -1573,29 +1573,30 @@ pub async fn render_clips(
     progress: Option<crate::types::ProgressFn>,
     cancel: &CancellationToken,
 ) -> Vec<Result<RenderResult>> {
-    use futures::StreamExt;
     use std::sync::atomic::{AtomicU32, Ordering};
+    // A semaphore and join_all rather than stream::buffered: buffered's closure makes
+    // the future's Send bound higher-ranked, which tokio::spawn callers cannot satisfy.
     let total = requests.len() as u32;
     let finished = AtomicU32::new(0);
-    futures::stream::iter(requests.iter())
-        .map(|request| {
-            let (finished, progress) = (&finished, progress.clone());
-            async move {
-                let result = renderer.render_clip(request, cancel).await;
-                let done = finished.fetch_add(1, Ordering::SeqCst) + 1;
-                if let Some(progress) = progress {
-                    progress(crate::types::Progress {
-                        stage: crate::types::Stage::Rendering,
-                        percent: 50.0 + 40.0 * done as f64 / total.max(1) as f64,
-                        step: format!("Rendered {done} of {total} clip{}", if total != 1 { "s" } else { "" }),
-                        clips_done: done,
-                        clips_total: total,
-                    });
-                }
-                result
+    let slots = tokio::sync::Semaphore::new(max_concurrent.max(1));
+    let mut jobs = Vec::with_capacity(requests.len());
+    for request in requests {
+        let (finished, slots, progress) = (&finished, &slots, progress.as_ref());
+        jobs.push(async move {
+            let _slot = slots.acquire().await.map_err(|_| EngineError::Cancelled)?;
+            let result = renderer.render_clip(request, cancel).await;
+            let done = finished.fetch_add(1, Ordering::SeqCst) + 1;
+            if let Some(progress) = progress {
+                progress(crate::types::Progress {
+                    stage: crate::types::Stage::Rendering,
+                    percent: 50.0 + 40.0 * done as f64 / total.max(1) as f64,
+                    step: format!("Rendered {done} of {total} clip{}", if total != 1 { "s" } else { "" }),
+                    clips_done: done,
+                    clips_total: total,
+                });
             }
-        })
-        .buffered(max_concurrent.max(1))
-        .collect()
-        .await
+            result
+        });
+    }
+    futures::future::join_all(jobs).await
 }

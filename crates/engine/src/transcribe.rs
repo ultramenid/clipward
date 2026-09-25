@@ -265,7 +265,7 @@ fn ensure_model(path: &Path) -> Result<()> {
 
 fn audio_duration_seconds(samples: usize) -> Result<f64> {
     let duration = samples as f64 / SAMPLE_RATE as f64;
-    if !duration.is_finite() || !(duration > 0.0 && duration <= MAX_AUDIO_SECONDS) {
+    if !(duration.is_finite() && duration > 0.0 && duration <= MAX_AUDIO_SECONDS) {
         return Err(EngineError::msg("audio duration could not be determined"));
     }
     Ok(duration)
@@ -356,7 +356,7 @@ pub fn find_sentence_end_boundary(
                     *end <= timestamp_ms && *end >= timestamp_ms - max_extension_ms && ends_sentence(word)
                 })
                 .map(|(_, end)| *end)
-                .last();
+                .next_back();
             if let Some(end) = last {
                 return end;
             }
