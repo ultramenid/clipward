@@ -1,0 +1,27 @@
+[package]
+name = "clip_engine"
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+tokio.workspace = true
+tokio-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+reqwest.workspace = true
+futures = "0.3"
+regex = "1"
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.22"
+which = "7"
+tempfile = "3"
+whisper-rs = "0.16"
+tract-onnx = "0.23"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+whisper-rs = { version = "0.16", features = ["metal"] }
