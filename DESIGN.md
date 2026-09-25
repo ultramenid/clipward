@@ -52,8 +52,9 @@ Text ladder on the base: title `text-content`, body `text-content/80`, secondary
 
 | Class | What it is | Use |
 | --- | --- | --- |
-| `app-bg` | Solid base | Window, sticky strips that content scrolls under |
-| `sidebar-bg` | Solid sidebar tone | The sidebar |
+| `window-bg` | Base (a tint in glass mode) | The window backdrop behind the title bar and pages |
+| `app-bg` | Solid base (82% with blur in glass mode) | Sticky strips that content scrolls under, insets inside a card |
+| `sidebar-bg` | Solid sidebar tone (a tint in glass mode) | The sidebar |
 | `card` | content 3% fill, content 8% border | Panels, empty states, media cards. Use `rounded-xl`. |
 | `tile` (+ `tile-hover`) | Same recipe, for rows and options inside a card | Option cards, setting rows. `rounded-lg`. |
 | `tile-selected` | Accent 10% fill, accent 70% border | The chosen option |
@@ -61,7 +62,22 @@ Text ladder on the base: title `text-content`, body `text-content/80`, secondary
 | `popover-surface` | Base at 86% with `blur(24px)`, content 10% border, soft shadow; opaque in light mode | Menus, hover cards, dialogs, the floating clip toolbar |
 | `media-chip` | Black 50% with blur, white text | Labels and buttons over video or artwork |
 
-`prefers-reduced-transparency` makes floating surfaces solid; `prefers-reduced-motion` stops animation.
+`prefers-reduced-transparency` makes floating surfaces solid and turns window glass off; `prefers-reduced-motion` stops animation.
+
+### Window glass
+
+The second glass layer, after the CSS blur on floating surfaces. On macOS and Windows the app shell (`src-tauri/src/window_glass.rs`) creates the window transparent and draws a native material behind the webview: macOS vibrancy with the sidebar material, Windows 11 Mica, or acrylic on Windows 10. Linux stays opaque. Settings → Appearance → **Window transparency** switches it at runtime (`settings.setWindowGlass`, the `window_set_glass` command); it is stored in `settings.json` and on by default.
+
+The renderer sets `html.glass` (`src/renderer/lib/glass.ts`) when the platform supports it, the setting is on and the OS does not ask for reduced transparency. The page, `body` and `#root` go clear, and a few variables in `globals.css` turn chrome into tints of the base over the material:
+
+| Variable | Glass | Opaque | Paints |
+| --- | --- | --- | --- |
+| `--glass-window` | 0.72 | 1 | `window-bg`: backdrop and title bar |
+| `--glass-sidebar` | 0.5 | 1 | `sidebar-bg` |
+| `--glass-strip` | 0.82 | 1 | `app-bg` sticky strips and insets (also blurred) |
+| `--glass-surface` | 0.72 | 0 | A layer of base under `card` and `field`, so text, inputs and thumbnails stay readable |
+
+Video, thumbnails and `media-chip` are unchanged. Light mode keeps the opaque values (pale desktops make translucent UI illegible), so glass is a dark-mode look. Don't add new translucent chrome with raw alphas: use these classes, so opaque mode and reduced transparency keep working.
 
 ---
 

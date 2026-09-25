@@ -40,7 +40,8 @@ export const bridge: ClipwardAPI = {
     load: () => invoke('settings_load'),
     save: (settings) => invoke('settings_save', { settings }),
     replaceApiKey: (key, value) => invoke('settings_replace_api_key', { key, value }),
-    selectOutputDir: () => invoke('settings_select_output_dir')
+    selectOutputDir: () => invoke('settings_select_output_dir'),
+    setWindowGlass: (enabled) => invoke('window_set_glass', { enabled })
   },
   job: {
     start: (config) => invoke('job_start', { config }),

@@ -9,6 +9,7 @@
     "allow-settings-load",
     "allow-settings-save",
     "allow-settings-replace-api-key",
+    "allow-window-set-glass",
     "allow-settings-select-output-dir",
     "allow-ai-detect",
     "allow-ai-test",

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { ArrowUpRight, AudioLines, BookA, Check, ChevronDown, Cpu, FolderOpen, Github, Info, Loader2, RefreshCw, ScrollText, Sparkles } from 'lucide-react'
+import { AppWindow, ArrowUpRight, AudioLines, BookA, Check, ChevronDown, Cpu, FolderOpen, Github, Info, Loader2, RefreshCw, ScrollText, Sparkles } from 'lucide-react'
 import { useSettingsStore, useSetupState } from '../store/use-settings-store'
 import { getApi } from '../lib/ipc'
 import { cn, errorMessage } from '../lib/utils'
@@ -18,8 +18,11 @@ import { Field, TextArea, TextInput } from '../components/ui/Field'
 import { Badge, StatusDot } from '../components/ui/Badge'
 import { IconTile } from '../components/ui/IconTile'
 import { Callout } from '../components/ui/Callout'
+import { SettingRow } from '../components/ui/SettingRow'
+import { Switch } from '../components/ui/Switch'
+import { useReducedTransparency } from '../lib/glass'
 
-type SectionId = 'ai' | 'transcription' | 'vocabulary' | 'output' | 'system' | 'about'
+type SectionId = 'ai' | 'transcription' | 'vocabulary' | 'output' | 'appearance' | 'system' | 'about'
 type SectionTone = 'success' | 'warning' | 'danger' | 'idle'
 
 export function SettingsPage(): React.JSX.Element {
@@ -57,6 +60,7 @@ export function SettingsPage(): React.JSX.Element {
     { id: 'transcription', label: 'Transcription', icon: <AudioLines />, tone: whisperReady ? 'success' : 'warning' },
     { id: 'vocabulary', label: 'Vocabulary', icon: <BookA />, tone: 'idle' },
     { id: 'output', label: 'Output', icon: <FolderOpen />, tone: 'idle' },
+    { id: 'appearance', label: 'Appearance', icon: <AppWindow />, tone: 'idle' },
     { id: 'system', label: 'System check', icon: <Cpu />, tone: !toolsChecked ? 'idle' : toolsMissing ? 'danger' : 'success' },
     { id: 'about', label: 'About', icon: <Info />, tone: 'idle' }
   ]
@@ -162,6 +166,15 @@ export function SettingsPage(): React.JSX.Element {
               description="Every run gets its own folder of clips, transcript and plan."
             />
             <OutputFolder value={outputDirectory} onCommit={(dir) => commit({ outputDirectory: dir })} />
+          </Section>
+
+          <Section id="appearance">
+            <PanelHeader
+              icon={<IconTile size="sm"><AppWindow /></IconTile>}
+              title="Appearance"
+              description="How the window looks on this computer."
+            />
+            <WindowGlassRow onError={setSaveError} onSaved={() => { setSaveError(null); setSavedAt(Date.now()) }} />
           </Section>
 
           <Section id="system">
@@ -295,6 +308,48 @@ function useActiveSection(ids: SectionId[]): [SectionId, (id: SectionId) => void
     document.getElementById(`settings-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
   return [active, jump]
+}
+
+/** Native window glass: on or off, applied at once by the app shell. */
+function WindowGlassRow({ onSaved, onError }: { onSaved: () => void; onError: (message: string) => void }): React.JSX.Element {
+  const supported = useSettingsStore((s) => s.windowGlassSupported)
+  const enabled = useSettingsStore((s) => s.windowGlass)
+  const setWindowGlass = useSettingsStore((s) => s.setWindowGlass)
+  const reduced = useReducedTransparency()
+  const [pending, setPending] = useState(false)
+
+  const toggle = async (next: boolean): Promise<void> => {
+    setPending(true)
+    try {
+      await setWindowGlass(next)
+      onSaved()
+    } catch (err) {
+      onError(errorMessage(err, 'Could not change window transparency'))
+    } finally {
+      setPending(false)
+    }
+  }
+
+  const description = !supported
+    ? 'Available on macOS and Windows.'
+    : reduced
+      ? 'Your system asks for reduced transparency, so the window stays opaque.'
+      : 'The desktop shows softly through the sidebar and window background in dark mode. Video, cards and fields stay solid.'
+
+  return (
+    <SettingRow
+      title="Window transparency"
+      description={description}
+      control={
+        <Switch
+          label="Window transparency"
+          checked={supported && enabled}
+          disabled={!supported || pending}
+          onChange={(next) => void toggle(next)}
+        />
+      }
+    />
+  )
 }
 
 function SaveIndicator({ saving, savedAt, error }: { saving: boolean; savedAt: number | null; error: string | null }): React.JSX.Element | null {

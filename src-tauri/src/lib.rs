@@ -20,6 +20,7 @@ mod shared;
 mod tools;
 mod validation;
 mod whisper;
+mod window_glass;
 
 use paths::AppPaths;
 use serde_json::json;
@@ -81,9 +82,21 @@ fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
     else {
         return Err(tauri::Error::WindowNotFound);
     };
+    // Glass needs a transparent window from the start; the config keeps
+    // `transparent: false` so Linux stays opaque (see window_glass.rs).
+    let glass = app
+        .state::<AppState>()
+        .settings
+        .load()
+        .map(|settings| settings.window_glass)
+        .unwrap_or(true);
     let nav_app = app.clone();
     let popup_app = app.clone();
-    WebviewWindowBuilder::from_config(app, &config)?
+    let builder = WebviewWindowBuilder::from_config(app, &config)?
+        .background_color(window_glass::initial_background(glass));
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let builder = builder.transparent(true);
+    let window = builder
         // Never navigate away from the app; trusted links open in the browser.
         .on_navigation(move |url| {
             if is_app_url(&nav_app, url) {
@@ -98,6 +111,9 @@ fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
         })
         .visible(config.visible && !hidden_for_tests())
         .build()?;
+    if glass {
+        window_glass::apply(&window, true);
+    }
     Ok(())
 }
 
@@ -192,6 +208,7 @@ pub fn run() {
             commands::settings_load,
             commands::settings_save,
             commands::settings_replace_api_key,
+            commands::window_set_glass,
             commands::settings_select_output_dir,
             commands::ai_detect,
             commands::ai_test,

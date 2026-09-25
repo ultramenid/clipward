@@ -40,6 +40,9 @@ pub struct AppSettings {
     pub python_path: String,
     /// Names and jargon the speech-to-text should spell correctly, one per line.
     pub custom_vocabulary: String,
+    /// Native window glass (macOS vibrancy, Windows Mica/acrylic). Not a secret;
+    /// ignored where the platform has none (see window_glass.rs).
+    pub window_glass: bool,
 }
 
 impl AppSettings {
@@ -105,6 +108,9 @@ pub struct PublicSettings {
     pub openrouter_configured: bool,
     pub anthropic_configured: bool,
     pub openai_configured: bool,
+    pub window_glass: bool,
+    /// Whether this platform can draw window glass; the renderer stays opaque otherwise.
+    pub window_glass_supported: bool,
 }
 
 /// The fields the renderer may change with settings:save.
@@ -134,6 +140,13 @@ struct PersistedSettings {
     /// keychain (and never prompts) for a key that was never saved.
     #[serde(default)]
     stored_keys: Vec<String>,
+    /// Missing in files written before window glass existed: on by default.
+    #[serde(default = "default_window_glass")]
+    window_glass: bool,
+}
+
+fn default_window_glass() -> bool {
+    true
 }
 
 pub fn public_settings(settings: &AppSettings) -> PublicSettings {
@@ -147,6 +160,8 @@ pub fn public_settings(settings: &AppSettings) -> PublicSettings {
         openrouter_configured: !settings.openrouter_api_key.is_empty(),
         anthropic_configured: !settings.anthropic_api_key.is_empty(),
         openai_configured: !settings.openai_api_key.is_empty(),
+        window_glass: settings.window_glass,
+        window_glass_supported: crate::window_glass::SUPPORTED,
     }
 }
 
@@ -202,6 +217,7 @@ impl SettingsStore {
                     "python3".into()
                 },
                 custom_vocabulary: String::new(),
+                window_glass: default_window_glass(),
             },
             cache: Mutex::new(None),
         }
@@ -250,6 +266,7 @@ impl SettingsStore {
             ),
             python_path: or_default(&settings.python_path, &self.defaults.python_path),
             custom_vocabulary: vocabulary_terms(&settings.custom_vocabulary).join("\n"),
+            window_glass: settings.window_glass,
         };
         if !Path::new(&normalized.output_directory).is_absolute() {
             return Err("Settings folders must be absolute paths".into());
@@ -300,6 +317,7 @@ impl SettingsStore {
             output_directory: persisted.output_directory,
             python_path: persisted.python_path,
             custom_vocabulary: persisted.custom_vocabulary,
+            window_glass: persisted.window_glass,
             ..self.defaults.clone()
         };
         for key in SECRET_KEYS {
@@ -368,6 +386,7 @@ impl SettingsStore {
             output_directory: settings.output_directory.clone(),
             python_path: settings.python_path.clone(),
             custom_vocabulary: settings.custom_vocabulary.clone(),
+            window_glass: settings.window_glass,
             stored_keys: SECRET_KEYS
                 .iter()
                 .filter(|key| !settings.secret(key).is_empty())
@@ -405,6 +424,15 @@ impl SettingsStore {
             ..current
         })?;
         Ok(public_settings(&saved))
+    }
+
+    /// Remember whether the window draws native glass.
+    pub fn set_window_glass(&self, enabled: bool) -> Result<PublicSettings, String> {
+        let current = self.load()?;
+        Ok(public_settings(&self.save(AppSettings {
+            window_glass: enabled,
+            ..current
+        })?))
     }
 
     pub fn replace_api_key(&self, key: &str, value: &str) -> Result<PublicSettings, String> {
@@ -464,6 +492,34 @@ mod tests {
             "Clipward, clipward\n  Open   AI \n<bad>\none two three four five six",
         );
         assert_eq!(terms, vec!["Clipward", "Open AI"]);
+    }
+
+    #[test]
+    fn window_glass_defaults_on_and_round_trips() {
+        let old: PersistedSettings = serde_json::from_str(
+            r#"{"version":1,"aiProvider":"openrouter","aiModel":"","whisperModel":"base","outputDirectory":"/x","pythonPath":"python3"}"#,
+        )
+        .unwrap();
+        assert!(old.window_glass);
+
+        let dir = std::env::temp_dir().join(format!("clipward-glass-{}", uuid::Uuid::new_v4()));
+        let home = std::env::temp_dir();
+        let store = SettingsStore::new(&dir, None, &home);
+        assert!(store.load().unwrap().window_glass);
+        let public = store.set_window_glass(false).unwrap();
+        assert!(!public.window_glass);
+        assert_eq!(
+            public.window_glass_supported,
+            crate::window_glass::SUPPORTED
+        );
+        // A fresh store reads the choice back from disk.
+        assert!(
+            !SettingsStore::new(&dir, None, &home)
+                .load()
+                .unwrap()
+                .window_glass
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]

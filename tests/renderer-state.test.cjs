@@ -10,7 +10,8 @@ const bundle = buildSync({
       export { useSettingsStore } from './src/renderer/store/use-settings-store';
       export { parseTimecode } from './src/renderer/lib/utils';
       export { parseJobOutput } from './src/shared/job-output';
-      export { loadThumbnail } from './src/renderer/lib/thumbnails';`,
+      export { loadThumbnail } from './src/renderer/lib/thumbnails';
+      export { glassActive } from './src/renderer/lib/glass';`,
     resolveDir: path.resolve(__dirname, '..'),
     loader: 'ts'
   },
@@ -164,6 +165,47 @@ test('API key changes share the settings queue and keep the saving indicator act
   await key
   assert.equal(useSettingsStore.getState().openrouterConfigured, true)
   assert.equal(useSettingsStore.getState().saving, false)
+})
+
+test('window glass changes share the settings queue and take the shell\'s answer', async () => {
+  const first = deferred()
+  const calls = []
+  const { useSettingsStore } = load({ settings: {
+    load: async () => ({ ...settings, windowGlass: true, windowGlassSupported: true }),
+    save: async (next) => {
+      calls.push('settings')
+      await first.promise
+      return next
+    },
+    setWindowGlass: async (enabled) => {
+      calls.push(`glass:${enabled}`)
+      return { ...settings, windowGlass: enabled, windowGlassSupported: true }
+    }
+  } })
+  await useSettingsStore.getState().load()
+  assert.equal(useSettingsStore.getState().windowGlass, true)
+  const folder = useSettingsStore.getState().save({ outputDirectory: '/new-clips' })
+  const glass = useSettingsStore.getState().setWindowGlass(false)
+  await Promise.resolve()
+  assert.deepEqual(calls, ['settings'])
+  first.resolve()
+  await Promise.all([folder, glass])
+  assert.deepEqual(calls, ['settings', 'glass:false'])
+  assert.equal(useSettingsStore.getState().windowGlass, false)
+  assert.equal(useSettingsStore.getState().windowGlassSupported, true)
+  assert.equal(useSettingsStore.getState().saving, false)
+})
+
+test('glass is drawn only where supported, switched on, and transparency is not reduced', () => {
+  const { glassActive, useSettingsStore } = load({ settings: { load: async () => settings } })
+  assert.equal(glassActive(true, true, false), true)
+  assert.equal(glassActive(false, true, false), false)
+  assert.equal(glassActive(true, false, false), false)
+  assert.equal(glassActive(true, true, true), false)
+  // Settings from a shell that predates glass read as unsupported.
+  return useSettingsStore.getState().load().then(() => {
+    assert.equal(useSettingsStore.getState().windowGlassSupported, false)
+  })
 })
 
 test('tool check errors clear stale successful status and remain retryable', async () => {

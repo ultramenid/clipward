@@ -104,6 +104,58 @@
     color-scheme: light;
   }
 
+  /* Window glass (html.glass, set by src/renderer/lib/glass.ts on macOS and
+     Windows): the app shell draws a native material behind a transparent
+     window, and chrome becomes a tint of the base over it. Each strength is
+     the base colour's alpha; the defaults below are the opaque look. Light
+     mode and reduced transparency stay opaque, because pale desktops make
+     translucent UI illegible. See DESIGN.md. */
+  :root {
+    --glass-window: 1;   /* app backdrop and title bar */
+    --glass-sidebar: 1;  /* sidebar column */
+    --glass-strip: 1;    /* sticky strips and insets over content */
+    --glass-surface: 0;  /* extra base under cards and fields */
+  }
+
+  :root.glass {
+    --glass-window: 0.72;
+    --glass-sidebar: 0.5;
+    --glass-strip: 0.82;
+    --glass-surface: 0.72;
+  }
+
+  :root.glass.theme-light {
+    --glass-window: 1;
+    --glass-sidebar: 1;
+    --glass-strip: 1;
+    --glass-surface: 0;
+  }
+
+  @media (prefers-color-scheme: light) {
+    :root.glass:not(.theme-dark) {
+      --glass-window: 1;
+      --glass-sidebar: 1;
+      --glass-strip: 1;
+      --glass-surface: 0;
+    }
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    :root.glass {
+      --glass-window: 1;
+      --glass-sidebar: 1;
+      --glass-strip: 1;
+      --glass-surface: 0;
+    }
+  }
+
+  /* The window itself is clear; .window-bg paints the tinted backdrop. */
+  html.glass,
+  html.glass body,
+  html.glass #root {
+    background: transparent;
+  }
+
   * {
     @apply border-stroke;
   }
@@ -179,18 +231,34 @@
 
   /* ─── Surfaces ────────────────────────────────────────────────────────── */
 
+  /* The window backdrop: the app shell and the title bar over it. A tint
+     over the native material in glass mode. */
+  .window-bg {
+    background: rgb(var(--bg) / var(--glass-window));
+  }
+
+  /* The base colour on a strip or inset that sits over content (sticky
+     footers, setup steps). Nearly solid in glass mode, blurring what
+     scrolls beneath. */
   .app-bg {
-    background: rgb(var(--bg));
+    background: rgb(var(--bg) / var(--glass-strip));
+  }
+
+  html.glass .app-bg {
+    -webkit-backdrop-filter: blur(20px) saturate(150%);
+    backdrop-filter: blur(20px) saturate(150%);
   }
 
   .sidebar-bg {
-    background: rgb(var(--sidebar));
+    background: rgb(var(--sidebar) / var(--glass-sidebar));
   }
 
-  /* A group of related content: faint fill, hairline border. */
+  /* A group of related content: faint fill, hairline border. In glass mode
+     a layer of the base underneath keeps footage and text readable. */
   .card {
     position: relative;
-    background: rgb(var(--content) / 0.03);
+    background: linear-gradient(rgb(var(--content) / 0.03), rgb(var(--content) / 0.03)),
+      rgb(var(--bg) / var(--glass-surface));
     border: 1px solid rgb(var(--content) / 0.08);
   }
 
@@ -220,7 +288,8 @@
 
   /* Text inputs, selects and inset lists. */
   .field {
-    background: rgb(var(--content) / 0.03);
+    background: linear-gradient(rgb(var(--content) / 0.03), rgb(var(--content) / 0.03)),
+      rgb(var(--bg) / var(--glass-surface));
     border: 1px solid rgb(var(--content) / 0.1);
   }
 
