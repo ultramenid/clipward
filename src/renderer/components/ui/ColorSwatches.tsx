@@ -182,7 +182,7 @@ export function ColorPicker({ value, onChange }: { value: string; onChange: (hex
           aria-label="Hex color"
           onChange={(event) => onHexInput(event.target.value)}
           onBlur={() => setDraft(null)}
-          className="field h-7 min-w-0 flex-1 rounded-md px-2 font-mono text-xs text-content outline-none focus:border-accent"
+          className="field h-7 min-w-0 flex-1 rounded-md px-2 font-mono text-caption text-content outline-none focus:border-accent"
         />
       </div>
     </div>

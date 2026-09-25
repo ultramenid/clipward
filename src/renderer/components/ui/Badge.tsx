@@ -4,7 +4,7 @@ import { cn } from '../../lib/utils'
 export type Tone = 'neutral' | 'accent' | 'success' | 'danger' | 'warning'
 
 const TONES: Record<Tone, string> = {
-  neutral: 'bg-content/5 text-ink-muted border-content/10',
+  neutral: 'bg-content/5 text-ink-secondary border-content/10',
   accent: 'bg-accent/10 text-accent-fg border-accent/25',
   success: 'bg-success/10 text-success border-success/25',
   danger: 'bg-danger/10 text-danger border-danger/25',
@@ -18,12 +18,12 @@ interface BadgeProps {
   className?: string
 }
 
-/** A compact status label: tinted fill, hairline border, 18px tall. */
+/** A compact status label: tinted fill, hairline border, 18px tall, `text-meta`. */
 export function Badge({ tone = 'neutral', icon, children, className }: BadgeProps): React.JSX.Element {
   return (
     <span
       className={cn(
-        'inline-flex min-h-[18px] shrink-0 items-center gap-1 rounded border px-1.5 py-px text-2xs font-medium',
+        'inline-flex min-h-[1.125rem] shrink-0 items-center gap-1 rounded border px-1.5 py-px text-meta font-medium',
         TONES[tone],
         className
       )}

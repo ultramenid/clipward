@@ -133,7 +133,7 @@ export function ClipList({ output, outputDir: runDirectory, leading, onNewClip }
       />
 
       {typeof videoSpeed === 'number' && videoSpeed > 1 && (
-        <p className="mt-3 text-xs text-ink-muted">All clips exported at {videoSpeed}× speed · Original voice pitch</p>
+        <p className="mt-3 text-caption text-ink-secondary">All clips exported at {videoSpeed}× speed · Original voice pitch</p>
       )}
 
       {exportError && (
@@ -148,13 +148,13 @@ export function ClipList({ output, outputDir: runDirectory, leading, onNewClip }
 
       {framingNotice && (
         <Callout tone="warning" className="mt-3">
-          <span className="text-ink-muted">{framingNotice}</span>
+          <span className="text-ink-secondary">{framingNotice}</span>
         </Callout>
       )}
 
       {analysisNotice && (
         <Callout tone="warning" className="mt-3">
-          <span className="text-ink-muted">{analysisNotice}</span>
+          <span className="text-ink-secondary">{analysisNotice}</span>
         </Callout>
       )}
 
@@ -167,7 +167,7 @@ export function ClipList({ output, outputDir: runDirectory, leading, onNewClip }
             onChange={() => setSelected(allSelected ? new Set() : new Set(clips.map((c) => c.clip_index)))}
             label="Select all clips"
           />
-          <span className="whitespace-nowrap text-xs text-content/60">
+          <span className="whitespace-nowrap text-caption text-ink-secondary">
             {selected.size > 0 ? (
               <>
                 <span className="font-medium text-ink">{selected.size}</span> selected
@@ -177,9 +177,9 @@ export function ClipList({ output, outputDir: runDirectory, leading, onNewClip }
             )}
           </span>
           {notice && (
-            <span className="inline-flex h-[18px] min-w-0 items-center gap-1 truncate rounded border border-success/25 bg-success/10 px-1.5 text-2xs font-medium text-success animate-fade-in">
+            <span className="inline-flex h-[1.125rem] min-w-0 items-center gap-1 truncate rounded border border-success/25 bg-success/10 px-1.5 text-meta font-medium text-success animate-fade-in">
               <Check className="h-2.5 w-2.5 shrink-0" strokeWidth={3} />
-              <span className="truncate">{notice}</span>
+              <span className="truncate" title={notice}>{notice}</span>
             </span>
           )}
         </div>
@@ -255,7 +255,7 @@ export function BackLink({ label, onClick }: { label: string; onClick: () => voi
     <button
       type="button"
       onClick={onClick}
-      className="-ml-2 inline-flex h-6 items-center gap-1 rounded-md pl-1.5 pr-2 text-xs text-content/50 transition-colors duration-feedback hover:bg-content/10 hover:text-content"
+      className="-ml-2 inline-flex h-6 items-center gap-1 rounded-md pl-1.5 pr-2 text-caption text-ink-secondary transition-colors duration-feedback hover:bg-content/10 hover:text-content"
     >
       <ArrowLeft className="h-3.5 w-3.5" strokeWidth={1.75} />
       {label}

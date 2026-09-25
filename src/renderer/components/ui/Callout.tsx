@@ -23,7 +23,7 @@ const TONES: Record<CalloutTone, { box: string; icon: string; Icon: typeof Info 
   },
   info: {
     box: 'border-content/10 bg-content/[0.03]',
-    icon: 'text-ink-muted',
+    icon: 'text-ink-secondary',
     Icon: Info
   }
 }
@@ -68,9 +68,9 @@ export function Callout({
         {icon ?? <t.Icon strokeWidth={tone === 'success' ? 3 : 2} />}
       </span>
       <div className="min-w-0 flex-1">
-        {title && <p className="text-[13px] font-medium text-ink">{title}</p>}
+        {title && <p className="text-label text-ink">{title}</p>}
         {children && (
-          <div className={cn('text-xs leading-relaxed', title ? 'mt-0.5 text-ink-muted' : 'text-ink')} data-selectable>
+          <div className={cn('text-caption', title ? 'mt-0.5 text-ink-secondary' : 'text-ink')} data-selectable>
             {children}
           </div>
         )}

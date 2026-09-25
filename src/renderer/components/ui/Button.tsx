@@ -21,15 +21,15 @@ const VARIANTS: Record<Variant, string> = {
     'bg-accent text-accent-ink hover:brightness-110 disabled:bg-accent/30 disabled:text-accent-ink/60 disabled:hover:brightness-100',
   secondary:
     'border border-content/10 text-content/80 hover:bg-content/10 hover:text-content disabled:text-content/35 disabled:hover:bg-transparent',
-  ghost: 'text-content/60 hover:bg-content/10 hover:text-content disabled:text-content/30 disabled:hover:bg-transparent',
+  ghost: 'text-ink-secondary hover:bg-content/10 hover:text-content disabled:text-content/30 disabled:hover:bg-transparent',
   danger:
     'border border-danger/30 text-danger hover:border-danger/50 hover:bg-danger/10 disabled:opacity-40 disabled:hover:bg-transparent'
 }
 
 const SIZES: Record<Size, string> = {
-  sm: 'h-6 px-2 text-xs gap-1.5',
-  md: 'h-7 px-2.5 text-xs gap-1.5',
-  lg: 'h-8 px-3 text-sm gap-2'
+  sm: 'h-6 px-2 text-caption gap-1.5',
+  md: 'h-7 px-2.5 text-caption gap-1.5',
+  lg: 'h-8 px-3 text-body gap-2'
 }
 
 const ICON_ONLY: Record<Size, string> = {

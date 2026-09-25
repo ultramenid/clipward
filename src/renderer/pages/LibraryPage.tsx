@@ -163,8 +163,8 @@ export function LibraryPage({ onNavigate }: { onNavigate: (page: AppPage) => voi
           />
         ) : filtered.length === 0 ? (
           <div className="card flex flex-col items-center rounded-xl px-5 py-10 text-center">
-            <Search className="h-4 w-4 text-content/40" strokeWidth={1.75} />
-            <p className="mt-2.5 text-[13px] text-content/60">No runs match “{query}”.</p>
+            <Search className="h-4 w-4 text-ink-tertiary" strokeWidth={1.75} />
+            <p className="mt-2.5 text-body text-ink-secondary">No runs match “{query}”.</p>
           </div>
         ) : (
           <div className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-2.5">
@@ -229,22 +229,22 @@ function RunCard({ entry, onOpen, onOpenFolder }: {
           <Skeleton className="h-full rounded-none" />
         )}
         {!failed && (
-          <span className="media-chip absolute bottom-2 right-2 inline-flex h-[18px] items-center gap-1 rounded px-1.5 text-2xs font-medium">
+          <span className="media-chip absolute bottom-2 right-2 inline-flex h-[1.125rem] items-center gap-1 rounded px-1.5 text-meta font-medium tabular-nums">
             <Clapperboard className="h-3 w-3" />
             {entry.clipCount} clip{entry.clipCount === 1 ? '' : 's'}
           </span>
         )}
       </div>
       <div className="px-1.5 pb-1.5 pt-2">
-        <p className="truncate text-[13px] font-medium text-ink" title={entry.videoTitle}>
+        <p className="line-clamp-2 min-h-[2.25rem] break-words text-label text-ink" title={entry.videoTitle}>
           {failed ? `${entry.status === 'incomplete' ? 'Unfinished' : 'Unreadable'} run · Open folder` : entry.videoTitle}
         </p>
-        <p className="mt-0.5 flex items-center gap-1.5 text-2xs text-content/45">
-          <span>{formatRelativeDate(entry.date)}</span>
+        <p className="mt-0.5 flex items-center gap-1.5 text-meta text-ink-secondary">
+          <span className="whitespace-nowrap tabular-nums">{formatRelativeDate(entry.date)}</span>
           {entry.totalCostUsd != null && (
             <>
-              <span className="text-content/25">·</span>
-              <span className="font-mono tabular">{formatUsd(entry.totalCostUsd)}</span>
+              <span className="text-ink-tertiary">·</span>
+              <span className="tabular-nums">{formatUsd(entry.totalCostUsd)}</span>
             </>
           )}
         </p>

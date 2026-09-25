@@ -16,8 +16,8 @@ export function EmptyState({ icon, title, description, action, className }: Empt
       <IconTile size="md" className="mb-3">
         {icon}
       </IconTile>
-      <p className="text-[13px] font-semibold text-ink">{title}</p>
-      {description && <p className="mt-1 max-w-sm text-xs leading-relaxed text-ink-muted">{description}</p>}
+      <p className="text-section text-ink">{title}</p>
+      {description && <p className="mt-1 max-w-[48ch] text-balance text-caption text-ink-secondary">{description}</p>}
       {action && <div className="mt-4">{action}</div>}
     </div>
   )

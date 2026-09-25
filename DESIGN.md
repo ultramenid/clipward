@@ -27,7 +27,7 @@ Dark is the default. Settings → Appearance → Theme picks System, Dark or Lig
 | `sidebar` | `#141414` | `#F7F7F7` | Sidebar column (base mixed 10% toward black) |
 | `elevated` | `#1F1F1F` | `#FFFFFF` | Solid popover fallback (light mode, reduced transparency) |
 | `content` / `ink` | `#EBEBEB` | `#2E2E2E` | Text, and the source of every tint |
-| `ink-muted` · `ink-subtle` · `ink-faint` | 163 · 125 · 94 grey | 102 · 128 · 166 grey | Secondary text, hints, placeholders. For new code prefer `text-content/60`, `/45`, `/35`. |
+| `ink-muted` · `ink-subtle` · `ink-faint` | 163 · 125 · 94 grey | 102 · 128 · 166 grey | Solid greys kept for older non-text uses. Text uses `text-ink-secondary` / `text-ink-tertiary` (see Typography). |
 | `stroke` | content 7% | content 7% | Structural hairlines: `border-stroke`, `divide-stroke`, `bg-stroke` |
 | `selection` · `-subtle` · `-strong` · `-hover` | content 10 · 8 · 12 · 15% | 6 · 5 · 7 · 10% | Selected and raised fills |
 | `accent` | `hsl(211 92% 62%)` | `#2986EE` | Primary button, chosen edges, progress, focus ring |
@@ -37,16 +37,61 @@ Dark is the default. Settings → Appearance → Theme picks System, Dark or Lig
 
 A custom accent (Appearance → Accent color) replaces `accent` in both schemes; `accent-fg` becomes it lightened 30% toward white in dark mode and darkened 25% in light mode, and `accent-ink` black or white by luminance.
 
-Text ladder on the base: title `text-content`, body `text-content/80`, secondary `/60`, descriptions `/45`, group labels `/35`, placeholders `/35`, disabled `/25`.
+Text ladder on the base: title `text-ink`, body `text-content/80`, secondary and descriptions `text-ink-secondary`, group labels and placeholders `text-ink-tertiary`, disabled `text-content/25`. The emphasis strengths are per scheme; see Typography.
 
 ---
 
 ## Typography
 
-- The system UI font (`system-ui`, SF Pro on macOS, Segoe UI on Windows) for text, `ui-monospace` for numbers, timecodes, paths and costs. Vendored Geist and Geist Mono (SIL OFL 1.1, `assets/fonts/`) are fallbacks where the system has none.
-- Scale: `3xs` 10, `2xs` 11, `xs` 12, `sm` 13, `base` 14, `lg` 16, `xl` 20. UI text is 13px (`text-sm` or `text-[13px]`), descriptions and controls 12px, shortcuts and meta 11px.
-- Page title: `text-xl font-medium leading-tight`. Card title: `text-[13px] font-semibold`. Group label (`.eyebrow`): `text-xs font-semibold text-content/40`, sentence case.
-- Numbers that change or line up use `font-mono tabular`.
+One small, named scale. Tokens live in the **Typography** block of `globals.css` (rem sizes and line heights, font stacks, text emphasis, smoothing) and are mapped in `tailwind.config.ts` (`TYPE_SCALE`, `TYPE_FAMILIES`, `TYPE_COLORS`). Each `text-*` token sets size, line height, weight and tracking together; add a `font-*` or `leading-*` utility only to depart from it on purpose. Sizes are rem, so Settings → Appearance → Interface scale (webview zoom, or a root font size) scales all text.
+
+| Token | Size / line | Weight | Tracking | Use |
+| --- | --- | --- | --- | --- |
+| `text-display` | 28 / 32 | 600 | −0.02em | One big live number per screen (job progress) |
+| `text-title` | 20 / 26 | 600 | −0.012em | Page titles (`PageHeader`, failure and progress pages), stat values, the update dialog |
+| `text-heading` | 15 / 20 | 600 | −0.006em | Dialog titles, hero cards (setup card, "Clipping started"), About |
+| `text-section` | 13 / 18 | 600 | 0 | Card and step titles (`PanelHeader`, wizard step, empty states) |
+| `text-label` | 13 / 18 | 500 | 0 | Row, option, field and nav labels; clip and run titles |
+| `text-body` | 13 / 20 | 400 | 0 | Running text, values, breadcrumbs, dialog bodies, text areas (the `body` default) |
+| `text-caption` | 12 / 18 | 400 | 0 | Descriptions, hints, errors under fields, control text (buttons, inputs, menus, tabs) |
+| `text-meta` | 11 / 16 | 400 | 0.005em | Metadata under a title, badges, chips over video, shortcuts, counts |
+| `text-micro` | 10 / 14 | 500 | 0.01em | Step numbers, counters inside a ring or pill. Never prose. |
+
+`.eyebrow` (group labels, stat labels) is `text-caption font-semibold text-ink-tertiary`, sentence case. There is no all-caps text in the UI (caption presets preview their own styling).
+
+The old `text-3xs` … `text-3xl` sizes remain as rem aliases so older code keeps working; new code uses the names above, never `text-[13px]`-style values. `cn()` (`lib/utils.ts`) teaches tailwind-merge the token names (`TYPE_TOKENS`); without that it would treat `text-label` as a colour and drop `text-ink` next to it. Add new tokens to both lists.
+
+### Hierarchy
+
+Page title (`title`) › card title (`section`) › row label (`label`) › description (`caption`, secondary) › metadata (`meta`, secondary or tertiary). Adjacent levels differ in at least two of size, weight and emphasis. A card's title and its rows share 13px, so the title is semibold and the rows medium.
+
+### Emphasis and contrast
+
+| Class | Strength (dark · glass · light) | Use |
+| --- | --- | --- |
+| `text-ink` | 100% | Titles, labels, values |
+| `text-content/80` | 80% | Body prose, emphasised numbers inside secondary text |
+| `text-ink-secondary` | 56% · 64% · 70% | Anything the user must read: descriptions, details, metadata, inactive tabs and nav. At least 4.5:1 (WCAG AA) on the base and on cards: 5.4:1 on `#171717`, 5.0:1 on `#F7F7F7`. |
+| `text-ink-tertiary` | 40% · 48% · 54% | Group labels, shortcuts, counts, placeholders, separators, "or". At least 3:1. |
+| `text-content/25` | 25% | Disabled only |
+
+Light text on a dark base needs less strength than dark text on a light base for the same contrast, so the two emphasis levels are per-scheme variables (`--ink-secondary-alpha`, `--ink-tertiary-alpha`) rather than fixed `/45`-style alphas; glass lifts them because the base under the text is translucent, and in dark mode they rise with the Appearance lightness slider (at the 30% maximum, secondary is 79%, still 5.2:1). Don't write `text-content/45` or `/50` for text: it is 3.9:1 in dark mode and 2.6:1 in light mode. The solid `ink-muted`/`ink-subtle`/`ink-faint` greys are kept for existing non-text uses.
+
+### Families
+
+- `font-sans`: SF Pro on macOS (`-apple-system`), Segoe UI on Windows, and the bundled **Geist** everywhere else. Geist comes before `system-ui` on purpose: on Linux `system-ui` resolves to the fontconfig default, usually DejaVu Sans, which is about 15% wider and wrapped dates and cut labels the layout was sized for.
+- `font-mono` (`ui-monospace`, SF Mono, Menlo, Cascadia Mono, Consolas, then the bundled **Geist Mono**) is for machine text only: file paths, versions, engine error output, failure codes, the hex colour field, and typed timecodes in inputs (`TextInput mono`).
+- Numbers are **not** mono. Timecodes, durations, costs, percentages, counts, speeds and dates use the UI face with `tabular-nums`, so they line up in columns and don't jitter while they count, without switching typeface mid-sentence. (`.tabular` remains as an alias.)
+
+### Rules
+
+- **Measure.** Descriptions stop at about 70 characters (`max-w-[70ch]` in `PageHeader` and `PanelHeader`, `65ch` in `SettingRow`, `48ch` in `EmptyState`). Don't let 12px prose run the full card width.
+- **Line height** comes from the token. Don't add `leading-relaxed` to captions (18px on 12px is already 1.5); use `leading-tight`/`leading-none` only for single-line text inside a fixed-size mark.
+- **Truncation.** Truncate only where the full text is one hover away (`title=`) or elsewhere on screen. Titles that identify something may wrap: page titles clamp to two lines with `text-balance`, clip and run card titles clamp to two lines (run cards reserve both lines so meta rows align). Status words ("Failed", "Cancelled") never truncate; the error after them gives way first and is in the row's tooltip.
+- **Columns.** Right-aligned numeric columns are `tabular-nums whitespace-nowrap` at a fixed rem width wide enough for the longest value in Geist, SF Pro and Segoe UI ("Yesterday, 12:58 PM" needs `w-32`).
+- **Weights.** 400, 500 and 600 only; never bold (700) in the UI.
+- **Case.** Sentence case everywhere, including group labels and buttons.
+- **Rendering.** Grayscale antialiasing in dark mode (light text on dark), the platform default in light mode; `kbd` uses the UI face.
 
 ---
 
@@ -137,7 +182,7 @@ Nested shapes step down one size (card `xl` with `p-1` → media `lg`).
 ```
 
 - **Window**: Tauri overlay title bar with a hidden title (`titleBarStyle: "Overlay"`, `hiddenTitle: true`). The sidebar's top 40px strip and the page title bar are `data-tauri-drag-region="deep"`; buttons inside carry `data-tauri-drag-region="false"`. On macOS the sidebar strip pads 78px for the traffic lights (`TRAFFIC_LIGHT_INSET`); when the sidebar is a rail, the title bar adds the difference.
-- **Sidebar**: 220px, or a 52px icon rail when collapsed or when the window is narrower than 1024px. Nav rows are 32px, `rounded-md`, icon at 70% opacity, `text-sm font-medium`; active rows get `bg-selection`, others `text-content/50` and `hover:bg-content/10`. The shortcut sits at the right in `text-[11px] text-content/40`; Jobs shows a solid accent count instead while jobs run. Group labels are `text-xs font-semibold text-content/35`; in the rail a hairline replaces them. The footer, above a hairline, shows setup status and the version.
+- **Sidebar**: 220px, or a 52px icon rail when collapsed or when the window is narrower than 1024px. Nav rows are 32px, `rounded-md`, icon at 70% opacity, `text-label`; active rows get `bg-selection`, others `text-ink-secondary` and `hover:bg-content/10`. The shortcut sits at the right in `text-meta text-ink-tertiary`; Jobs shows a solid accent count instead while jobs run. Group labels are `text-caption font-semibold text-ink-tertiary`; in the rail a hairline replaces them. The footer, above a hairline, shows setup status and the version.
 - **Title bar**: the sidebar toggle (⌘\, saved as Settings → Appearance → Collapsed rail) and a breadcrumb, group › page. Pages scroll below it, so sticky elements use small offsets (`top-2`, `top-6`).
 - **Page**: wrap every page in `<Page width>`: `focus` 720, `narrow` 880, `default` 1280, `wide` 1680. Gutters `px-5`/`sm:px-8`, `pt-6`. Stacks use `gap-2.5`/`space-y-3`; cards pad `p-4`.
 - **Create** is a wizard: Video → Brief → Format → Clips → Captions → Review. Its step strip uses the tab style (active `bg-selection`), the step card has a header row above a hairline, and Back/Next/Generate stick to the bottom on an `app-bg` strip. ⌘↵ generates from any step.
@@ -148,7 +193,7 @@ Nested shapes step down one size (card `xl` with `p-1` → media `lg`).
 
 | Component | Notes |
 | --- | --- |
-| `Page`, `PageHeader` | Page column; title, description (`text-xs text-content/50`), actions, optional `leading` back link. |
+| `Page`, `PageHeader` | Page column; title (`text-title`, up to two lines), description (`text-caption text-ink-secondary`, 70ch), actions, optional `leading` back link. |
 | `Panel` / `PanelHeader` | `card rounded-xl p-4`; header takes an `IconTile` (`sm`), title and description. |
 | `Button` | `primary` (solid accent) · `secondary` (hairline) · `ghost` · `danger` (red hairline). Sizes `sm` 24, `md` 28, `lg` 32. `iconOnly` squares it (needs `aria-label`). `loading`. |
 | `TextInput` · `TextArea` | `field` surfaces matching Button heights (`sm` 24, `md` 28, `lg` 32), `leading`/`trailing` slots, `mono`. |
@@ -179,7 +224,7 @@ Brand: `components/brand/ClipwardLogo` renders the lockup (switching to the dark
 
 - **Option cards** (format, framing, speed, provider): `tile tile-hover rounded-lg`, plus `tile-selected` when chosen.
 - **Filter chips and tabs** (job filters, wizard steps): `rounded-md h-6/h-7`, `bg-selection text-content` when chosen, `text-content/50 hover:bg-content/5` otherwise.
-- **Lists** (jobs, system check, review): one card, rows separated by `divide-stroke`, hover `bg-content/[0.04]`. Row title 13px, detail 12px `text-content/50`, numbers mono.
+- **Lists** (jobs, system check, review): one card, rows separated by `divide-stroke`, hover `bg-content/[0.04]`. Row title `text-body`/`text-label`, detail `text-caption text-ink-secondary`, numbers `tabular-nums` in fixed-width right-aligned columns.
 - **Media cards** (clips, runs): `card rounded-xl p-1` with the media inset `rounded-lg`. Hover brightens the border and fill; selection gives an accent border. Overlays over footage are `media-chip`s. The media is the play button.
 - **Floating toolbar** (clip selection): `popover-surface rounded-lg`, sticky at `top-2`.
 - **Autosave**: Settings has no Save button; a "Saved" badge confirms it in the header.
@@ -200,7 +245,7 @@ Brand: `components/brand/ClipwardLogo` renders the lockup (switching to the dark
 
 - `:focus-visible` shows a 2px accent outline on every control. Icon-only buttons carry `aria-label`.
 - Radio-like groups use `role="radiogroup"`/`role="radio"` with `aria-checked` and a roving tab stop; toggles use `aria-pressed`; switches use `role="switch"`.
-- Anything the user must read is at least `text-content/45`; `/35` and below is for placeholders, separators and group labels.
+- Anything the user must read is at least `text-ink-secondary` (4.5:1 in every scheme); `text-ink-tertiary` is for placeholders, separators, counts and group labels.
 - Keyboard: ⌘1–⌘3 and ⌘, switch pages, ⌘\ toggles the sidebar, ⌘↵ generates clips (Ctrl on Windows and Linux).
 
 ---

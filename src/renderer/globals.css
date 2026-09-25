@@ -7,9 +7,118 @@
    grey base, content-tinted fills and hairlines, a single blue accent.
    See DESIGN.md. */
 
-/* Geist is vendored (SIL OFL 1.1, see assets/fonts/Geist-OFL.txt). UI text
-   uses the system font; Geist is the fallback where no system UI font
-   resolves, and Geist Mono carries numbers on platforms without ui-monospace. */
+/* ═══ Typography ════════════════════════════════════════════════════════
+   The type scale, font stacks, text emphasis and rendering. Colour tokens
+   live in the blocks below; this block only sets how text is drawn. Sizes
+   are rem, so the interface scale (root font size or webview zoom) scales
+   every piece of text. Tailwind maps these to `text-display` … `text-micro`,
+   `font-sans`/`font-mono` and `text-ink-secondary`/`-tertiary`
+   (tailwind.config.ts). See DESIGN.md → Typography. */
+@layer base {
+  :root {
+    /* The platform's UI face on macOS (SF Pro) and Windows (Segoe UI);
+       everywhere else the bundled Geist, whose metrics the layout is tuned
+       for, rather than whatever `system-ui` resolves to (often the wide
+       DejaVu Sans on Linux, which wrapped dates and cut labels). */
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', 'Geist', system-ui, sans-serif,
+      'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji';
+    /* Machine text only: paths, versions, error output, codes, typed timecodes. */
+    --font-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, 'Cascadia Mono', Consolas, 'Geist Mono', monospace;
+
+    /*               size        line height */
+    --text-display: 1.75rem;   --text-display-lh: 2rem;       /* 28/32 */
+    --text-title: 1.25rem;     --text-title-lh: 1.625rem;     /* 20/26 */
+    --text-heading: 0.9375rem; --text-heading-lh: 1.25rem;    /* 15/20 */
+    --text-section: 0.8125rem; --text-section-lh: 1.125rem;   /* 13/18 */
+    --text-label: 0.8125rem;   --text-label-lh: 1.125rem;     /* 13/18 */
+    --text-body: 0.8125rem;    --text-body-lh: 1.25rem;       /* 13/20 */
+    --text-caption: 0.75rem;   --text-caption-lh: 1.125rem;   /* 12/18 */
+    --text-meta: 0.6875rem;    --text-meta-lh: 1rem;          /* 11/16 */
+    --text-micro: 0.625rem;    --text-micro-lh: 0.875rem;     /* 10/14 */
+
+    /* Text emphasis: content at these strengths. Secondary is anything the
+       user must read (descriptions, details, metadata) and passes WCAG AA
+       (≥ 4.5:1) on the base and on cards; tertiary is for group labels,
+       shortcuts, counts and placeholders (≥ 3:1). Light text on a dark base
+       needs less strength than dark text on a light one for the same
+       contrast, so each scheme has its own values. In dark mode they rise
+       with the Appearance lightness slider (a lighter base needs stronger
+       text): 56% at the default 9% base is 5.4:1 on #171717, and at the
+       30% maximum 79% is still 5.2:1. */
+    --ink-secondary-alpha: max(56%, calc(56% + (var(--theme-dark-lightness, 9%) - 9%) * 1.1));
+    --ink-tertiary-alpha: max(40%, calc(40% + (var(--theme-dark-lightness, 9%) - 9%) * 1.1)); /* 3.4:1 */
+  }
+
+  /* Glass: the base under text is translucent (down to the opacity slider's
+     minimum), so lift both. */
+  :root.glass {
+    --ink-secondary-alpha: max(64%, calc(64% + (var(--theme-dark-lightness, 9%) - 9%) * 1.1));
+    --ink-tertiary-alpha: max(48%, calc(48% + (var(--theme-dark-lightness, 9%) - 9%) * 1.1));
+  }
+
+  /* Light (after glass: light mode is always opaque and its base fixed). */
+  @media (prefers-color-scheme: light) {
+    :root:not(.theme-dark) {
+      --ink-secondary-alpha: 70%; /* 5.0:1 on #F7F7F7 */
+      --ink-tertiary-alpha: 54%;  /* 3.1:1 */
+    }
+  }
+
+  :root.theme-light {
+    --ink-secondary-alpha: 70%;
+    --ink-tertiary-alpha: 54%;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  /* Light text on a dark base reads best with grayscale smoothing; dark text
+     on a light base keeps the platform's default, which is a touch heavier. */
+  body {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    font-kerning: normal;
+  }
+
+  @media (prefers-color-scheme: light) {
+    :root:not(.theme-dark) body {
+      -webkit-font-smoothing: auto;
+      -moz-osx-font-smoothing: auto;
+    }
+  }
+
+  :root.theme-light body {
+    -webkit-font-smoothing: auto;
+    -moz-osx-font-smoothing: auto;
+  }
+
+  /* Shortcuts read as UI text, not code (preflight makes kbd monospace). */
+  kbd {
+    font-family: inherit;
+  }
+}
+
+@layer components {
+  /* Numbers that change or line up (timecodes, durations, costs, counts).
+     Kept as an alias of Tailwind's `tabular-nums`. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Group label: small, semibold, quiet, sentence case (sidebar groups,
+     option groups in a card, stat labels). */
+  .eyebrow {
+    @apply text-caption font-semibold text-ink-tertiary;
+  }
+}
+/* ═══ End of Typography ═════════════════════════════════════════════════ */
+
+/* Geist is vendored (SIL OFL 1.1, see assets/fonts/Geist-OFL.txt): the UI
+   face on Linux and anywhere without SF Pro or Segoe UI, and Geist Mono for
+   machine text where there is no platform monospace. */
 @font-face {
   font-family: 'Geist';
   src: url('./assets/fonts/Geist-Variable.woff2') format('woff2');
@@ -218,10 +327,8 @@
   }
 
   body {
-    @apply bg-canvas font-sans text-sm text-ink antialiased;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-    text-rendering: optimizeLegibility;
+    /* Font family, size and smoothing: see the Typography block below. */
+    @apply bg-canvas font-sans text-body text-ink;
     /* Desktop app: chrome isn't selectable; content opts in below. */
     -webkit-user-select: none;
     user-select: none;
@@ -267,16 +374,6 @@
 }
 
 @layer components {
-  .tabular {
-    font-variant-numeric: tabular-nums;
-  }
-
-  /* Group label: small, semibold, quiet. Sentence case, like section labels
-     in the sidebar. */
-  .eyebrow {
-    @apply text-xs font-semibold text-content/40;
-  }
-
   /* ─── Surfaces ────────────────────────────────────────────────────────── */
 
   /* The window backdrop: the app shell and the title bar over it. A tint

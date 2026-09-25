@@ -22,8 +22,8 @@ export function SettingRow({ title, description, control, bare = false, classNam
       )}
     >
       <div className="min-w-0">
-        <p className="text-[13px] font-medium text-ink">{title}</p>
-        {description && <p className="mt-0.5 text-xs leading-relaxed text-content/45">{description}</p>}
+        <p className="text-label text-ink">{title}</p>
+        {description && <p className="mt-0.5 max-w-[65ch] text-caption text-ink-secondary">{description}</p>}
       </div>
       {control}
     </div>

@@ -41,7 +41,7 @@ export function ApiKeyInput({
         <>
           {label}
           {(hasValue || configured) && (
-            <span className="inline-flex h-[18px] items-center gap-1 rounded border border-success/25 bg-success/10 px-1.5 text-2xs font-medium text-success animate-fade-in">
+            <span className="inline-flex h-[1.125rem] items-center gap-1 rounded border border-success/25 bg-success/10 px-1.5 text-meta font-medium text-success animate-fade-in">
               <Check className="h-2.5 w-2.5" strokeWidth={3} />
               Added
             </span>
@@ -54,7 +54,7 @@ export function ApiKeyInput({
             <button
               type="button"
               onClick={onRemove}
-              className="rounded-md px-2 py-1 text-xs text-content/45 transition-colors duration-feedback hover:bg-danger/10 hover:text-danger"
+              className="rounded-md px-2 py-1 text-caption text-ink-secondary transition-colors duration-feedback hover:bg-danger/10 hover:text-danger"
             >
               Remove key
             </button>
@@ -63,7 +63,7 @@ export function ApiKeyInput({
             <button
               type="button"
               onClick={() => getApi().shell.openPath(getKeyUrl)}
-              className="inline-flex items-center gap-0.5 rounded-md px-2 py-1 text-xs text-content/60 transition-colors duration-feedback hover:bg-content/10 hover:text-content"
+              className="inline-flex items-center gap-0.5 rounded-md px-2 py-1 text-caption text-ink-secondary transition-colors duration-feedback hover:bg-content/10 hover:text-content"
             >
               Get a key
               <ArrowUpRight className="h-3 w-3" />

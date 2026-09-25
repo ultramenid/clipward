@@ -61,8 +61,8 @@ export function Segmented<T extends string>({ label, value, options, onChange, s
             onClick={() => onChange(option.value)}
             className={cn(
               'rounded-[4px] transition-[background-color,color] duration-feedback ease-out',
-              size === 'sm' ? 'h-5 px-2 text-2xs' : 'h-6 px-2.5 text-xs',
-              selected ? 'bg-selection text-content' : 'text-content/50 hover:text-content',
+              size === 'sm' ? 'h-5 px-2 text-meta' : 'h-6 px-2.5 text-caption',
+              selected ? 'bg-selection text-content' : 'text-ink-secondary hover:text-content',
               option.disabled && 'text-content/25 hover:text-content/25'
             )}
           >

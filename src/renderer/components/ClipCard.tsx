@@ -116,9 +116,9 @@ export function ClipCard({
             onError={() => setThumb(null)}
           />
         ) : thumb === null ? (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-content/40">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-ink-tertiary">
             <ImageOff className="h-5 w-5" strokeWidth={1.75} />
-            <span className="text-xs">Preview unavailable</span>
+            <span className="text-caption">Preview unavailable</span>
           </div>
         ) : (
           <Skeleton className="absolute inset-0 rounded-none" />
@@ -161,19 +161,19 @@ export function ClipCard({
         </div>
         <div className="pointer-events-none absolute right-2 top-2 z-10 flex items-center gap-1">
           {topPick && (
-            <span className="inline-flex h-[18px] items-center rounded bg-accent px-1.5 text-2xs font-semibold text-white">
+            <span className="inline-flex h-[1.125rem] items-center rounded bg-accent px-1.5 text-meta font-semibold text-white">
               Top pick
             </span>
           )}
           <span
-            className="media-chip pointer-events-auto inline-flex h-[18px] items-center gap-1 rounded px-1.5 font-mono text-2xs font-medium tabular"
+            className="media-chip pointer-events-auto inline-flex h-[1.125rem] items-center gap-1 rounded px-1.5 text-meta font-medium tabular-nums"
             title="Virality score"
           >
             <TrendingUp className="h-3 w-3 text-brand-gold" />
             {score}
           </span>
         </div>
-        <span className="media-chip pointer-events-none absolute bottom-2 left-2 z-10 rounded px-1 py-px font-mono text-2xs tabular">
+        <span className="media-chip pointer-events-none absolute bottom-2 left-2 z-10 rounded px-1 py-px text-meta font-medium tabular-nums">
           {formatTimecode(clip.duration_ms)}
         </span>
         {!selecting && (
@@ -184,11 +184,11 @@ export function ClipCard({
       </div>
 
       <div className="px-1.5 pb-1 pt-2">
-        <h3 className="line-clamp-2 text-[13px] font-medium leading-[18px] text-ink" title={title}>
+        <h3 className="line-clamp-2 text-label text-ink" title={title}>
           {title}
         </h3>
-        <p className="mt-0.5 truncate text-2xs text-content/45">
-          <span className="font-mono tabular" title="Position in the source video">
+        <p className="mt-0.5 text-meta text-ink-secondary">
+          <span className="tabular-nums" title="Position in the source video">
             {formatTimecode(clip.start_time_ms)} – {formatTimecode(clip.end_time_ms)}
           </span>
           {layout && <span title="How this clip was framed"> · {layout}</span>}
@@ -204,7 +204,7 @@ export function ClipCard({
             </span>
           </Badge>
         )}
-        {actionError && <p role="alert" className="mt-1.5 text-xs text-danger">{actionError}</p>}
+        {actionError && <p role="alert" className="mt-1.5 text-caption text-danger">{actionError}</p>}
       </div>
     </article>
   )

@@ -241,7 +241,7 @@ function JobsList({ active, entries, filter, query, error, refreshing, onFilter,
             <section aria-label="Active jobs">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-stroke py-2 pl-4 pr-3">
                 <SectionTitle label="Active" count={active.length} />
-                <p className="text-2xs text-content/40">
+                <p className="text-meta tabular-nums text-ink-secondary">
                   {running} running{queued > 0 && ` · ${queued} queued`} · up to {MAX_PARALLEL_JOBS} at once
                 </p>
               </div>
@@ -284,12 +284,12 @@ function JobsList({ active, entries, filter, query, error, refreshing, onFilter,
                             onClick={() => onFilter(option.id)}
                             aria-pressed={selected}
                             className={cn(
-                              'inline-flex h-6 items-center gap-1.5 rounded-md px-2 text-xs transition-colors duration-feedback',
-                              selected ? 'bg-selection text-content' : 'text-content/50 hover:bg-content/5 hover:text-content'
+                              'inline-flex h-6 items-center gap-1.5 rounded-md px-2 text-caption transition-colors duration-feedback',
+                              selected ? 'bg-selection text-content' : 'text-ink-secondary hover:bg-content/5 hover:text-content'
                             )}
                           >
                             {option.label}
-                            <span className={cn('font-mono text-2xs tabular', selected ? 'text-content/60' : 'text-content/30')}>{counts[option.id] ?? 0}</span>
+                            <span className={cn('text-meta tabular-nums', selected ? 'text-ink-secondary' : 'text-ink-tertiary')}>{counts[option.id] ?? 0}</span>
                           </button>
                         )
                       })}
@@ -317,9 +317,9 @@ function JobsList({ active, entries, filter, query, error, refreshing, onFilter,
                   ))}
                 </ul>
               ) : previous.length === 0 ? (
-                <p className="px-4 py-3 text-xs text-content/45">Finished jobs will appear here.</p>
+                <p className="px-4 py-3 text-caption text-ink-secondary">Finished jobs will appear here.</p>
               ) : visible.length === 0 ? (
-                <p className="px-4 py-3 text-xs text-content/45">No jobs match this filter.</p>
+                <p className="px-4 py-3 text-caption text-ink-secondary">No jobs match this filter.</p>
               ) : (
                 <ul className="divide-y divide-stroke">
                   {visible.map((entry) => (
@@ -339,7 +339,7 @@ function SectionTitle({ label, count, className }: { label: string; count: numbe
   return (
     <h2 className={cn('flex items-center gap-2', className)}>
       <span className="eyebrow">{label}</span>
-      <span className="font-mono text-2xs tabular text-content/30">{count}</span>
+      <span className="text-meta tabular-nums text-ink-tertiary">{count}</span>
     </h2>
   )
 }
@@ -360,28 +360,28 @@ function ActiveJobRow({ job, position, onOpen, onCancel }: { job: Job; position:
     <li className="flex items-center pr-2 transition-colors duration-feedback hover:bg-content/[0.04]">
       <button type="button" onClick={onOpen} className="flex min-w-0 flex-1 items-center gap-3 py-2 pl-4 pr-3 text-left" title={job.request.videoUrl}>
         {queued ? (
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-content/15 font-mono text-2xs tabular text-content/60">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-content/15 text-meta font-medium tabular-nums text-ink-secondary">
             #{position}
           </span>
         ) : (
           <ProgressRing value={job.percent} size={32} stroke={3}>
-            <span className="font-mono text-[9px] tabular text-accent-fg">{Math.round(job.percent)}%</span>
+            <span className="text-micro leading-none tracking-tight tabular-nums text-accent-fg">{Math.round(job.percent)}%</span>
           </ProgressRing>
         )}
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-[13px] font-medium leading-5 text-ink">{sourceLabel(job.request.videoUrl)}</span>
-          <span className="block truncate text-xs text-content/50">
-            <span className={queued ? 'text-content/40' : 'text-accent-fg'}>{stage}</span>
+          <span className="block truncate text-label text-ink">{sourceLabel(job.request.videoUrl)}</span>
+          <span className="block truncate text-caption text-ink-secondary">
+            <span className={queued ? 'text-ink-tertiary' : 'text-accent-fg'}>{stage}</span>
             {detail && detail !== stage && ` · ${detail}`}
           </span>
         </span>
         {job.clipsTotal > 0 && (
-          <span className="hidden shrink-0 text-right font-mono text-xs tabular text-ink-muted sm:block">
-            {job.clipsDone}/{job.clipsTotal} <span className="font-sans">clips</span>
+          <span className="hidden shrink-0 whitespace-nowrap text-right text-caption tabular-nums text-ink-secondary sm:block">
+            {job.clipsDone}/{job.clipsTotal} clips
           </span>
         )}
-        <span className="w-24 shrink-0 text-right text-xs text-content/45">
-          <span className="font-mono tabular">{formatTimecode(elapsed)}</span> {queued ? 'waiting' : 'elapsed'}
+        <span className="w-28 shrink-0 whitespace-nowrap text-right text-caption text-ink-secondary">
+          <span className="tabular-nums text-content/80">{formatTimecode(elapsed)}</span> {queued ? 'waiting' : 'elapsed'}
         </span>
       </button>
       <Button
@@ -411,7 +411,7 @@ const STATUS_TEXT: Record<HistoryEntry['status'], string> = {
   completed: 'text-success',
   running: 'text-accent-fg',
   failed: 'text-danger',
-  cancelled: 'text-ink-subtle',
+  cancelled: 'text-ink-secondary',
   interrupted: 'text-warning',
   incomplete: 'text-warning'
 }
@@ -426,22 +426,23 @@ function PreviousJobRow({ entry, hasDetails, onOpen, onOpenFolder }: { entry: Hi
   const cells = (
     <>
       <StatusDot tone={STATUS_DOT[entry.status]} />
-      <span className="min-w-0 flex-1 truncate text-xs" title={entry.errorMessage ?? entry.videoTitle}>
+      {/* The title keeps its room; the status stays whole and the error takes what is left. */}
+      <span className="flex min-w-0 flex-1 items-baseline gap-2" title={entry.errorMessage ? `${entry.videoTitle} · ${entry.errorMessage}` : entry.videoTitle}>
         <span className="sr-only">{status.label}: </span>
-        <span className="text-[13px] text-ink">{entry.videoTitle}</span>
-        {!completed && <span className={cn('ml-2 font-medium', STATUS_TEXT[entry.status])} aria-hidden>{status.label}</span>}
-        {entry.errorMessage && <span className="text-content/45" data-selectable> · {entry.errorMessage}</span>}
+        <span className="min-w-0 truncate text-body text-ink">{entry.videoTitle}</span>
+        {!completed && <span className={cn('shrink-0 text-caption font-medium', STATUS_TEXT[entry.status])} aria-hidden>{status.label}</span>}
+        {entry.errorMessage && <span className="hidden min-w-0 flex-1 truncate text-caption text-ink-secondary xl:block" data-selectable> · {entry.errorMessage}</span>}
       </span>
-      <span className="hidden w-16 shrink-0 text-right text-xs text-ink-muted sm:block">
+      <span className="hidden w-16 shrink-0 whitespace-nowrap text-right text-caption tabular-nums text-ink-secondary sm:block">
         {completed ? `${entry.clipCount} clip${entry.clipCount === 1 ? '' : 's'}` : ''}
       </span>
-      <span className="hidden w-16 shrink-0 text-right font-mono text-2xs tabular text-ink-subtle md:block">
+      <span className="hidden w-16 shrink-0 whitespace-nowrap text-right text-caption tabular-nums text-ink-secondary md:block">
         {entry.durationMs != null ? formatDuration(entry.durationMs) : ''}
       </span>
-      <span className="hidden w-14 shrink-0 text-right font-mono text-2xs tabular text-ink-subtle md:block">
+      <span className="hidden w-14 shrink-0 whitespace-nowrap text-right text-caption tabular-nums text-ink-secondary md:block">
         {entry.totalCostUsd != null ? formatUsd(entry.totalCostUsd) : ''}
       </span>
-      <span className="w-28 shrink-0 text-right text-xs text-ink-subtle" title={dated ? formatDate(entry.date) : undefined}>
+      <span className="w-32 shrink-0 truncate whitespace-nowrap text-right text-caption tabular-nums text-ink-secondary" title={dated ? formatDate(entry.date) : undefined}>
         {dated ? formatRelativeDate(entry.date) : 'Date unavailable'}
       </span>
     </>
@@ -473,8 +474,8 @@ function JobCancelled({ job, leading, onRetry }: { job: Job; leading: React.Reac
   return (
     <Page width="focus">
       <div className="mb-3">{leading}</div>
-      <h1 className="text-xl font-medium leading-tight text-ink">Job cancelled</h1>
-      <p className="mt-1 truncate text-[13px] text-content/50" title={job.request.videoUrl}>{sourceLabel(job.request.videoUrl)}</p>
+      <h1 className="text-title text-ink">Job cancelled</h1>
+      <p className="mt-1 truncate text-body text-ink-secondary" title={job.request.videoUrl}>{sourceLabel(job.request.videoUrl)}</p>
       <div className="mt-4">
         <Button variant="primary" icon={<RotateCcw className="h-3.5 w-3.5" />} onClick={onRetry}>Run again</Button>
       </div>

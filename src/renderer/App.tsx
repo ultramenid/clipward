@@ -88,7 +88,7 @@ export default function App(): React.JSX.Element {
         <div data-tauri-drag-region="deep" className="window-bg flex h-full items-center justify-center">
           {loadError ? (
             <div className="card modal-panel space-y-3 rounded-xl px-5 py-4 text-center">
-              <p role="alert" className="text-[13px] text-danger">Could not load settings. Please try again.</p>
+              <p role="alert" className="text-body text-danger">Could not load settings. Please try again.</p>
               <Button onClick={() => setRetry((value) => value + 1)}>Retry</Button>
             </div>
           ) : <ClipwardLogo className="h-7 animate-pulse opacity-80" />}

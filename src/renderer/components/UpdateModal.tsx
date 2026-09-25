@@ -116,7 +116,7 @@ export function UpdateModal(): React.JSX.Element | null {
           </IconTile>
           <div>
             <p className="eyebrow">Software update</p>
-            <h3 className="mt-0.5 text-xl font-medium leading-tight text-ink">{title}</h3>
+            <h3 className="mt-0.5 text-title text-ink">{title}</h3>
           </div>
         </div>
         {state.phase !== 'downloading' && (
@@ -126,13 +126,13 @@ export function UpdateModal(): React.JSX.Element | null {
             iconOnly
             aria-label="Close"
             onClick={() => setDismissed(true)}
-            className="h-7 w-7 text-content/45"
+            className="h-7 w-7 text-ink-secondary"
             icon={<X className="h-3.5 w-3.5" strokeWidth={1.75} />}
           />
         )}
       </div>
 
-      <div className="px-4 py-4 text-[13px] leading-relaxed text-content/60">
+      <div className="px-4 py-4 text-body text-ink-secondary">
         {state.phase === 'available' && (
           <div className="space-y-3">
             <p>
@@ -144,7 +144,7 @@ export function UpdateModal(): React.JSX.Element | null {
                   <Sparkles className="h-3 w-3 text-accent-fg" />
                   What’s new
                 </p>
-                <p className="whitespace-pre-wrap text-xs leading-relaxed text-ink-muted" data-selectable>
+                <p className="whitespace-pre-wrap text-caption text-ink-secondary" data-selectable>
                   {state.releaseNotes}
                 </p>
               </div>
@@ -155,11 +155,11 @@ export function UpdateModal(): React.JSX.Element | null {
         {state.phase === 'downloading' && (
           <div className="space-y-3 pb-1">
             <div className="flex items-baseline justify-between">
-              <span className="font-mono text-xl font-medium tabular tracking-tight text-ink">
+              <span className="text-title tabular-nums text-ink">
                 {Math.round(state.percent)}
-                <span className="text-sm text-content/40">%</span>
+                <span className="text-body font-medium text-ink-tertiary">%</span>
               </span>
-              <span className="font-mono text-2xs tabular text-content/45">
+              <span className="text-meta tabular-nums text-ink-secondary">
                 {formatBytes(state.transferred)} / {formatBytes(state.total)}
                 {state.bytesPerSecond > 0 && ` · ${formatBytes(state.bytesPerSecond)}/s`}
               </span>
