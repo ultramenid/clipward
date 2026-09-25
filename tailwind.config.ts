@@ -20,7 +20,7 @@ const type = (name: string, fontWeight: string, letterSpacing = '0em'): [string,
   { lineHeight: `var(--text-${name}-lh)`, fontWeight, letterSpacing }
 ]
 
-const TYPE_SCALE = {
+const TYPE_SCALE: NonNullable<NonNullable<Config['theme']>['fontSize']> = {
   display: type('display', '600', '-0.02em'), // 28/32 · big live numbers (progress)
   title: type('title', '600', '-0.012em'), // 20/26 · page titles, stat values
   heading: type('heading', '600', '-0.006em'), // 15/20 · dialog and hero-card titles

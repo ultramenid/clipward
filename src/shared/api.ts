@@ -45,9 +45,8 @@ export interface HistoryEntry {
 }
 
 /**
- * Result of Settings → System check. The clipping engine is built into the app,
- * so `python` is always true, `pythonDeps` reports the smart framing model and
- * `engine`/`enginePath` the bundled fonts and models; `bridgeRunner` is always true.
+ * Result of Settings → System check: the external media tools, plus the engine's
+ * bundled fonts and models (`engine`/`enginePath`) and smart framing model.
  */
 export interface ToolStatus {
   /** The bundled face detection model used for smart framing. */
