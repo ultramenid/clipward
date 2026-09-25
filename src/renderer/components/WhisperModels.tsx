@@ -38,19 +38,19 @@ export function WhisperModels({ compact = false }: { compact?: boolean }): React
           const downloading = status?.receivedBytes != null
           const percent = downloading && status?.totalBytes ? (status.receivedBytes! / status.totalBytes) * 100 : 0
           return (
-            <div key={model.id} className={cn('glass-tile rounded-xl px-3 py-2.5', selected && 'glass-selected')}>
+            <div key={model.id} className={cn('tile rounded-lg px-3 py-2.5', selected && 'tile-selected')}>
               <div className="flex items-center gap-3">
                 <button type="button" role="radio" aria-checked={selected} tabIndex={selected ? 0 : -1}
                   onKeyDown={onRadioKeyDown} onClick={() => select(model.id)} className="flex min-w-0 flex-1 items-center gap-2.5 text-left">
-                  <span className={cn('flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-[1.5px]',
-                    selected ? 'border-accent-hover bg-accent' : 'border-ink-subtle')}>
+                  <span className={cn('flex h-4 w-4 shrink-0 items-center justify-center rounded-full border',
+                    selected ? 'border-accent bg-accent' : 'border-content/30')}>
                     {selected && <Check className="h-2.5 w-2.5 text-accent-ink" strokeWidth={4} />}
                   </span>
                   <span className="min-w-0">
-                    <span className="block text-sm font-medium text-ink">
-                      {model.label} <span className="font-mono text-2xs font-normal text-ink-subtle">{formatSize(model.sizeMb)}</span>
+                    <span className="block text-[13px] font-medium text-ink">
+                      {model.label} <span className="font-mono text-2xs font-normal text-content/40">{formatSize(model.sizeMb)}</span>
                     </span>
-                    <span className="block truncate text-2xs text-ink-subtle">{model.note}</span>
+                    <span className="block truncate text-xs text-content/45">{model.note}</span>
                   </span>
                 </button>
                 {downloading ? (
@@ -72,7 +72,7 @@ export function WhisperModels({ compact = false }: { compact?: boolean }): React
               {downloading && (
                 <div className="mt-2 flex items-center gap-2">
                   <ProgressBar value={percent} />
-                  <span className="w-24 shrink-0 text-right font-mono text-2xs tabular text-ink-subtle">
+                  <span className="w-24 shrink-0 text-right font-mono text-2xs tabular text-content/45">
                     {formatSize((status!.receivedBytes ?? 0) / 1e6)} / {formatSize(model.sizeMb)}
                   </span>
                 </div>

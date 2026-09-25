@@ -341,23 +341,23 @@ export function CaptionPresetPicker({ value, onChange, disabled }: CaptionPreset
             disabled={disabled}
             onClick={() => onChange(preset.id)}
             className={cn(
-              'glass-tile glass-tile-hover group relative rounded-xl p-1 text-left hover:-translate-y-0.5',
-              selected && 'glass-selected',
+              'tile tile-hover group relative rounded-lg p-1 text-left',
+              selected && 'tile-selected',
               disabled && 'opacity-50'
             )}
           >
             <span
-              className="relative flex h-[60px] items-end justify-center overflow-hidden rounded-lg px-1.5 pb-2.5 shadow-[inset_0_0_0_1px_rgb(255_255_255/0.06)]"
+              className="relative flex h-[60px] items-end justify-center overflow-hidden rounded-md px-1.5 pb-2.5"
               style={{ background: SCENE }}
             >
               <CaptionSample preset={preset} />
               {selected && (
-                <span className="absolute right-1.5 top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-accent text-accent-ink shadow-[0_0_0_1px_rgb(var(--accent)/0.6)] animate-pop-in">
+                <span className="absolute right-1.5 top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-accent text-accent-ink animate-fade">
                   <Check className="h-2.5 w-2.5" strokeWidth={3.5} />
                 </span>
               )}
             </span>
-            <span className={cn('block truncate px-1.5 pb-0.5 pt-1.5 text-xs font-semibold', selected ? 'text-ink' : 'text-ink/90')}>
+            <span className={cn('block truncate px-1 pb-0.5 pt-1.5 text-xs font-medium', selected ? 'text-content' : 'text-content/70')}>
               {preset.name}
             </span>
           </button>

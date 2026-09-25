@@ -64,7 +64,7 @@ export function ProviderSetup({ compact = false }: { compact?: boolean }): React
             icon={<RefreshCw className="h-3.5 w-3.5" />}>Detect again</Button>
         </div>
         {visibleClis.length === 0 ? (
-          <p className="text-xs text-ink-subtle">
+          <p className="text-xs leading-relaxed text-content/45">
             No supported CLI found. Install and log in to one of: {AI_CLIS.map((cli) => cli.label).join(', ')}. Or use an API key below.
           </p>
         ) : (
@@ -76,12 +76,12 @@ export function ProviderSetup({ compact = false }: { compact?: boolean }): React
               return (
                 <button key={cli.id} type="button" role="radio" aria-checked={selected} tabIndex={selected ? 0 : -1}
                   onKeyDown={onRadioKeyDown} disabled={!cli.path} onClick={() => choose(id)}
-                  className={cn('glass-tile glass-tile-hover flex items-start gap-2.5 rounded-xl px-3 py-2.5 text-left disabled:cursor-not-allowed disabled:opacity-45',
-                    selected && 'glass-selected')}>
-                  <TerminalSquare className={cn('mt-0.5 h-4 w-4 shrink-0', selected ? 'text-accent-hover' : 'text-ink-subtle')} />
+                  className={cn('tile tile-hover flex items-start gap-2.5 rounded-lg px-3 py-2.5 text-left disabled:opacity-45',
+                    selected && 'tile-selected')}>
+                  <TerminalSquare className={cn('mt-0.5 h-4 w-4 shrink-0', selected ? 'text-accent-fg' : 'text-content/40')} strokeWidth={1.75} />
                   <span className="min-w-0">
-                    <span className="block text-sm font-medium text-ink">{cli.label}</span>
-                    <span className="block truncate text-2xs text-ink-subtle">{cli.path ? meta?.hint : 'Not installed'}</span>
+                    <span className="block text-[13px] font-medium text-ink">{cli.label}</span>
+                    <span className="block truncate text-2xs text-content/40">{cli.path ? meta?.hint : 'Not installed'}</span>
                   </span>
                 </button>
               )
@@ -98,9 +98,9 @@ export function ProviderSetup({ compact = false }: { compact?: boolean }): React
             return (
               <button key={provider.id} type="button" role="radio" aria-checked={selected} tabIndex={selected ? 0 : -1}
                 onKeyDown={onRadioKeyDown} onClick={() => choose(provider.id)}
-                className={cn('glass-tile glass-tile-hover flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-left', selected && 'glass-selected')}>
-                <KeyRound className={cn('h-4 w-4 shrink-0', selected ? 'text-accent-hover' : 'text-ink-subtle')} />
-                <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">{provider.label}</span>
+                className={cn('tile tile-hover flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-left', selected && 'tile-selected')}>
+                <KeyRound className={cn('h-4 w-4 shrink-0', selected ? 'text-accent-fg' : 'text-content/40')} strokeWidth={1.75} />
+                <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink">{provider.label}</span>
                 {configured[provider.key] && <Badge tone="success">Key</Badge>}
               </button>
             )

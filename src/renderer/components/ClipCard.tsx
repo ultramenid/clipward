@@ -88,15 +88,13 @@ export function ClipCard({
   return (
     <article
       className={cn(
-        'glass group relative flex flex-col rounded-2xl p-1.5 transition-[transform,box-shadow] duration-300 ease-out',
-        selected
-          ? 'shadow-accent-ring'
-          : 'hover:-translate-y-0.5 hover:shadow-[inset_0_1px_0_rgb(255_255_255/0.1),0_0_0_1px_rgb(255_255_255/0.08),0_24px_48px_-20px_rgb(0_0_0/0.75)]'
+        'card group relative flex flex-col rounded-xl p-1 transition-[border-color,background-color] duration-feedback ease-out',
+        selected ? 'border-accent/80 bg-accent/[0.06]' : 'hover:border-content/15 hover:bg-content/[0.05]'
       )}
     >
       <div
         className={cn(
-          'relative overflow-hidden rounded-xl bg-black/40 shadow-[inset_0_0_0_1px_rgb(255_255_255/0.06)]',
+          'relative overflow-hidden rounded-lg bg-black/40',
           clipVertical ? 'aspect-[9/16]' : 'aspect-video'
         )}
         onMouseEnter={() => setHovering(true)}
@@ -107,7 +105,7 @@ export function ClipCard({
             src={localFileUrl(thumb)}
             alt=""
             draggable={false}
-            className="absolute inset-0 h-full w-full object-cover transition-transform duration-500 ease-out group-hover:scale-[1.03]"
+            className="absolute inset-0 h-full w-full object-cover"
             onLoad={(e) => {
               const ratio = e.currentTarget.naturalWidth / e.currentTarget.naturalHeight
               if (Number.isFinite(ratio) && ratio > 0) {
@@ -118,8 +116,8 @@ export function ClipCard({
             onError={() => setThumb(null)}
           />
         ) : thumb === null ? (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-ink-subtle">
-            <ImageOff className="h-6 w-6" />
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-content/40">
+            <ImageOff className="h-5 w-5" strokeWidth={1.75} />
             <span className="text-xs">Preview unavailable</span>
           </div>
         ) : (
@@ -147,15 +145,15 @@ export function ClipCard({
           className="absolute inset-0 flex items-center justify-center focus-visible:[outline-offset:-3px]"
         >
           {!selecting && (
-            <span className="glass-chip flex h-11 w-11 scale-90 items-center justify-center rounded-full text-white opacity-0 transition-[opacity,transform] duration-300 ease-spring group-focus-within:opacity-100 group-hover:scale-100 group-hover:opacity-100">
-              <Play className="ml-0.5 h-5 w-5" fill="currentColor" />
+            <span className="media-chip flex h-10 w-10 items-center justify-center rounded-full opacity-0 transition-opacity duration-150 ease-out group-focus-within:opacity-100 group-hover:opacity-100">
+              <Play className="ml-0.5 h-4 w-4" fill="currentColor" />
             </span>
           )}
         </button>
 
         <div
           className={cn(
-            'absolute left-2 top-2 z-10 transition-opacity duration-200',
+            'absolute left-2 top-2 z-10 transition-opacity duration-150',
             selecting || selected ? 'opacity-100' : 'opacity-0 group-focus-within:opacity-100 group-hover:opacity-100'
           )}
         >
@@ -163,33 +161,33 @@ export function ClipCard({
         </div>
         <div className="pointer-events-none absolute right-2 top-2 z-10 flex items-center gap-1">
           {topPick && (
-            <span className="inline-flex h-5 items-center rounded-full bg-accent px-2 text-2xs font-semibold text-white shadow-[inset_0_1px_0_rgb(255_255_255/0.35)]">
+            <span className="inline-flex h-[18px] items-center rounded bg-accent px-1.5 text-2xs font-semibold text-white">
               Top pick
             </span>
           )}
           <span
-            className="glass-chip pointer-events-auto inline-flex h-5 items-center gap-1 rounded-full px-1.5 font-mono text-2xs font-medium tabular text-white"
+            className="media-chip pointer-events-auto inline-flex h-[18px] items-center gap-1 rounded px-1.5 font-mono text-2xs font-medium tabular"
             title="Virality score"
           >
             <TrendingUp className="h-3 w-3 text-brand-gold" />
             {score}
           </span>
         </div>
-        <span className="glass-chip pointer-events-none absolute bottom-2 left-2 z-10 rounded-full px-1.5 py-px font-mono text-2xs tabular text-white/95">
+        <span className="media-chip pointer-events-none absolute bottom-2 left-2 z-10 rounded px-1 py-px font-mono text-2xs tabular">
           {formatTimecode(clip.duration_ms)}
         </span>
         {!selecting && (
-          <div className="absolute bottom-2 right-2 z-10 flex items-center gap-1 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
+          <div className="absolute bottom-2 right-2 z-10 flex items-center gap-1 opacity-0 transition-opacity duration-150 focus-within:opacity-100 group-hover:opacity-100">
             <MediaAction label={isMac ? 'Show in Finder' : 'Show in folder'} icon={<FolderOpen />} onClick={() => { void showInFolder() }} />
           </div>
         )}
       </div>
 
       <div className="px-1.5 pb-1 pt-2">
-        <h3 className="line-clamp-2 text-sm font-medium leading-[18px] text-ink" title={title}>
+        <h3 className="line-clamp-2 text-[13px] font-medium leading-[18px] text-ink" title={title}>
           {title}
         </h3>
-        <p className="mt-1 truncate text-2xs text-ink-subtle">
+        <p className="mt-0.5 truncate text-2xs text-content/45">
           <span className="font-mono tabular" title="Position in the source video">
             {formatTimecode(clip.start_time_ms)} – {formatTimecode(clip.end_time_ms)}
           </span>
@@ -212,7 +210,7 @@ export function ClipCard({
   )
 }
 
-/** Small frosted button over the clip's media; shown on hover or focus. */
+/** Small dark button over the clip's media; shown on hover or focus. */
 function MediaAction({ label, title, icon, onClick }: { label: string; title?: string; icon: React.ReactNode; onClick: () => void }): React.JSX.Element {
   return (
     <button
@@ -220,7 +218,7 @@ function MediaAction({ label, title, icon, onClick }: { label: string; title?: s
       aria-label={label}
       title={title ?? label}
       onClick={onClick}
-      className="glass-chip flex h-7 w-7 items-center justify-center rounded-full text-white/90 transition-colors duration-150 hover:bg-white/25 hover:text-white [&_svg]:h-3.5 [&_svg]:w-3.5"
+      className="media-chip flex h-6 w-6 items-center justify-center rounded-md transition-colors duration-feedback hover:bg-black/70 hover:text-white [&_svg]:h-3.5 [&_svg]:w-3.5"
     >
       {icon}
     </button>

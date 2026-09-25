@@ -57,7 +57,6 @@ export function ClipPage({ onNavigate }: { onNavigate: (page: PageId) => void })
   return (
     <Page width="narrow">
       <PageHeader
-        eyebrow="Studio"
         title="Create clips"
         description="Paste a YouTube, Twitch or other video link, or upload a file. Add the campaign brief, and Clipward cuts captioned clips that follow it."
       />

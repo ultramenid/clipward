@@ -143,28 +143,30 @@ export function JobForm({ onSubmit, onViewJob, blockedReason, submitting, classN
     <div className={cn('space-y-3', className)}>
       <Stepper current={step} reachable={hasSource ? WIZARD_STEPS.length - 1 : 0} onSelect={goTo} />
 
-      <Panel className="p-4 xl:p-5">
-        <div className="mb-3">
-          <h2 className="text-sm font-semibold text-ink">{meta.title}</h2>
-          <p className="mt-0.5 text-xs text-ink-muted">{meta.description}</p>
+      <Panel padded={false}>
+        <div className="border-b border-stroke px-4 py-3">
+          <h2 className="text-[13px] font-semibold text-ink">{meta.title}</h2>
+          <p className="mt-0.5 text-xs leading-relaxed text-content/45">{meta.description}</p>
         </div>
-        {sourceError && <p role="alert" className="text-sm text-danger">{sourceError}</p>}
+        <div className="p-4">
+        {sourceError && <p role="alert" className="mb-3 text-xs text-danger">{sourceError}</p>}
         {step === 'video' && <VideoStep draft={draft} update={update} trimError={trim.error} disabled={submitting} />}
         {step === 'brief' && <BriefStep draft={draft} update={update} />}
         {step === 'format' && <FormatStep draft={draft} update={update} />}
         {step === 'clips' && <ClipsStep draft={draft} update={update} />}
         {step === 'captions' && <CaptionsStep draft={draft} update={update} />}
         {step === 'review' && <ReviewStep draft={draft} trim={trim} onEdit={goTo} />}
+        </div>
       </Panel>
 
       {/* Actions stay pinned to the bottom edge on a solid strip. */}
-      <div className="sticky bottom-0 z-10 -mb-3 flex items-center gap-3 bg-canvas pb-3 pt-2">
+      <div className="app-bg sticky bottom-0 z-10 -mb-3 flex items-center gap-3 border-t border-stroke pb-3 pt-3">
         {back ? (
           <Button variant="ghost" icon={<ArrowLeft className="h-3.5 w-3.5" />} onClick={() => goTo(back.id)}>
             Back
           </Button>
         ) : <span />}
-        <p className="min-w-0 flex-1 truncate text-center text-2xs text-ink-subtle">
+        <p className="min-w-0 flex-1 truncate text-center text-2xs text-content/40">
           {blockedReason ?? (!briefValid ? `Shorten the brief to ${MAX_REQUIREMENTS_CHARS} characters.` : step === 'video' && !hasSource ? 'Add a video to continue.' : `${MOD_KEY}↵ generates from any step`)}
         </p>
         {next && step !== 'review' ? (
@@ -179,7 +181,7 @@ export function JobForm({ onSubmit, onViewJob, blockedReason, submitting, classN
             </Button>
           </div>
         ) : (
-          <Button variant="primary" size="lg" icon={<Sparkles className="h-4 w-4" />} onClick={submit} disabled={!canSubmit} loading={submitting}>
+          <Button variant="primary" size="lg" icon={<Sparkles className="h-3.5 w-3.5" />} onClick={submit} disabled={!canSubmit} loading={submitting}>
             Generate clips
           </Button>
         )}
@@ -192,35 +194,35 @@ function Stepper({ current, reachable, onSelect }: { current: WizardStep; reacha
   const currentIndex = WIZARD_STEPS.findIndex((s) => s.id === current)
   return (
     <nav aria-label="Create steps">
-      <ol className="flex items-center gap-1.5">
+      <ol className="flex items-center gap-1">
         {WIZARD_STEPS.map((s, i) => {
           const active = i === currentIndex
           const done = i < currentIndex
           const enabled = i <= reachable
           return (
-            <li key={s.id} className="flex min-w-0 flex-1 items-center gap-1.5 last:flex-none">
+            <li key={s.id} className="flex min-w-0 flex-1 items-center gap-1 last:flex-none">
               <button
                 type="button"
                 onClick={() => onSelect(s.id)}
                 disabled={!enabled}
                 aria-current={active ? 'step' : undefined}
                 className={cn(
-                  'group flex min-w-0 items-center gap-2 rounded-full py-1 pl-1 pr-2.5 text-xs transition-colors duration-200',
-                  active ? 'bg-white/[0.08] font-medium text-ink' : enabled ? 'text-ink-muted hover:bg-white/[0.05] hover:text-ink' : 'text-ink-faint'
+                  'group flex h-7 min-w-0 items-center gap-1.5 rounded-md pl-1.5 pr-2 text-xs transition-colors duration-feedback',
+                  active ? 'bg-selection text-content' : enabled ? 'text-content/50 hover:bg-content/5 hover:text-content' : 'text-content/25'
                 )}
               >
                 <span
                   className={cn(
-                    'flex h-6 w-6 shrink-0 items-center justify-center rounded-full font-mono text-2xs tabular',
-                    active ? 'bg-accent text-accent-ink' : done ? 'bg-ink text-canvas' : 'bg-white/[0.06] shadow-[inset_0_0_0_1px_rgb(255_255_255/0.1)]'
+                    'flex h-4 w-4 shrink-0 items-center justify-center rounded-full font-mono text-[10px] tabular',
+                    active ? 'bg-accent text-accent-ink' : done ? 'bg-content/70 text-canvas' : 'border border-content/20'
                   )}
                 >
-                  {done ? <Check className="h-3 w-3" strokeWidth={3} /> : i + 1}
+                  {done ? <Check className="h-2.5 w-2.5" strokeWidth={3} /> : i + 1}
                 </span>
                 <span className={cn('truncate', !active && 'max-md:hidden')}>{s.label}</span>
               </button>
               {i < WIZARD_STEPS.length - 1 && (
-                <span aria-hidden className={cn('h-px min-w-3 flex-1', done ? 'bg-ink/40' : 'bg-white/[0.08]')} />
+                <span aria-hidden className={cn('h-px min-w-3 flex-1', done ? 'bg-content/30' : 'bg-stroke')} />
               )}
             </li>
           )
@@ -261,7 +263,7 @@ function VideoStep({ draft, update, trimError, disabled }: { draft: ClipDraft; u
               aria-describedby="trim-help"
             />
           </div>
-          <p id="trim-help" role={trimError ? 'alert' : undefined} className={cn('mt-1.5 text-2xs', trimError ? 'text-danger' : 'text-ink-subtle')}>
+          <p id="trim-help" role={trimError ? 'alert' : undefined} className={cn('mt-1.5 text-xs', trimError ? 'text-danger' : 'text-content/45')}>
             {trimError ?? 'Use seconds (90) or mm:ss (1:30).'}
           </p>
         </div>
@@ -289,8 +291,8 @@ export function BriefStep({ draft, update }: { draft: ClipDraft; update: Update 
         aria-label="Campaign requirements"
         aria-describedby="brief-help"
       />
-      <div id="brief-help" className="flex items-start justify-between gap-3 text-2xs">
-        <p className="text-ink-subtle">
+      <div id="brief-help" className="flex items-start justify-between gap-3 text-xs">
+        <p className="leading-relaxed text-content/45">
           Copy the rules from the campaign page (Whop, Clipping.net, etc.). Clips that break a rule are left out, so a strict brief can return fewer clips. Set the clip length in the Clips step.
         </p>
         <span className={cn('shrink-0 font-mono tabular', length > MAX_REQUIREMENTS_CHARS ? 'text-danger' : 'text-ink-faint')}>
@@ -318,22 +320,22 @@ export function FormatStep({ draft, update }: { draft: ClipDraft; update: Update
                 tabIndex={selected ? 0 : -1}
                 onKeyDown={onRadioKeyDown}
                 onClick={() => update({ aspectRatio: f.id })}
-                className={cn('glass-tile glass-tile-hover flex items-center gap-3 rounded-xl px-3 py-2.5 text-left', selected && 'glass-selected')}
+                className={cn('tile tile-hover flex items-center gap-3 rounded-lg px-3 py-2.5 text-left', selected && 'tile-selected')}
               >
                 <span className="flex h-6 w-7 shrink-0 items-center justify-center">
                   <span
                     className={cn(
-                      'rounded-[4px] border-[1.5px] transition-colors duration-200',
-                      selected ? 'border-accent-hover bg-accent/25' : 'border-ink-subtle bg-white/[0.04]'
+                      'rounded-[3px] border-[1.5px] transition-colors duration-feedback',
+                      selected ? 'border-accent bg-accent/25' : 'border-content/35 bg-content/5'
                     )}
                     style={{ width: f.w, height: f.h }}
                   />
                 </span>
                 <span className="min-w-0">
-                  <span className="block text-sm font-medium text-ink">
-                    {f.label} <span className="font-mono text-2xs font-normal text-ink-subtle">{f.id}</span>
+                  <span className="block text-[13px] font-medium text-ink">
+                    {f.label} <span className="font-mono text-2xs font-normal text-content/40">{f.id}</span>
                   </span>
-                  <span className="block truncate text-2xs text-ink-subtle">{f.hint}</span>
+                  <span className="block truncate text-xs text-content/45">{f.hint}</span>
                 </span>
               </button>
             )
@@ -356,14 +358,14 @@ export function FormatStep({ draft, update }: { draft: ClipDraft; update: Update
                   onKeyDown={onRadioKeyDown}
                   onClick={() => update({ layoutStyle: style.id })}
                   className={cn(
-                    'glass-tile glass-tile-hover flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-left',
-                    selected ? 'glass-selected text-ink' : 'text-ink-muted hover:text-ink'
+                    'tile tile-hover flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-left',
+                    selected ? 'tile-selected text-content' : 'text-content/60 hover:text-content'
                   )}
                 >
                   <FramingGlyph style={style.id} selected={selected} />
                   <span className="min-w-0">
-                    <span className="block text-xs font-medium">{style.label}</span>
-                    <span className={cn('block truncate text-2xs', selected ? 'text-ink-muted' : 'text-ink-subtle')}>{style.hint}</span>
+                    <span className="block text-[13px] font-medium">{style.label}</span>
+                    <span className={cn('block truncate text-xs', selected ? 'text-content/60' : 'text-content/40')}>{style.hint}</span>
                   </span>
                 </button>
               )
@@ -399,14 +401,14 @@ export function FormatStep({ draft, update }: { draft: ClipDraft; update: Update
                 aria-label={`${speed}×${speed === 1 ? ' (Normal)' : ''}`}
                 tabIndex={selected ? 0 : -1} onKeyDown={onRadioKeyDown}
                 onClick={() => update({ videoSpeed: speed })}
-                className={cn('glass-tile glass-tile-hover rounded-xl px-2 py-2 text-center', selected ? 'glass-selected text-ink' : 'text-ink-muted hover:text-ink')}>
-                <span className="block font-mono text-sm tabular">{speed}×</span>
-                <span className="block text-2xs text-ink-subtle">{speed === 1 ? 'Normal' : `${Math.round(60 / speed)}s per minute`}</span>
+                className={cn('tile tile-hover rounded-lg px-2 py-2 text-center', selected ? 'tile-selected text-content' : 'text-content/60 hover:text-content')}>
+                <span className="block font-mono text-[13px] tabular">{speed}×</span>
+                <span className="block text-2xs text-content/40">{speed === 1 ? 'Normal' : `${Math.round(60 / speed)}s per minute`}</span>
               </button>
             )
           })}
         </div>
-        <p id="video-speed-help" className="mt-2 text-2xs text-ink-subtle">Speeds up every exported clip, keeping voice pitch natural and captions in sync. Faster clips are shorter.</p>
+        <p id="video-speed-help" className="mt-2 text-xs leading-relaxed text-content/45">Speeds up every exported clip, keeping voice pitch natural and captions in sync. Faster clips are shorter.</p>
       </Group>
     </div>
   )
@@ -429,17 +431,17 @@ export function ClipsStep({ draft, update }: { draft: ClipDraft; update: Update 
                 aria-pressed={selected}
                 onClick={() => toggleDuration(d.id)}
                 className={cn(
-                  'glass-tile glass-tile-hover rounded-xl px-1 py-1.5 text-center',
-                  selected ? 'glass-selected text-ink' : 'text-ink-muted hover:text-ink'
+                  'tile tile-hover rounded-lg px-1 py-1.5 text-center',
+                  selected ? 'tile-selected text-content' : 'text-content/60 hover:text-content'
                 )}
               >
                 <span className="block font-mono text-xs tabular">{d.range}</span>
-                <span className={cn('block truncate text-2xs', selected ? 'text-ink-muted' : 'text-ink-subtle')}>{d.label}</span>
+                <span className={cn('block truncate text-2xs', selected ? 'text-content/60' : 'text-content/40')}>{d.label}</span>
               </button>
             )
           })}
         </div>
-        {(draft.videoSpeed ?? 1) > 1 && <p className="mt-2 text-2xs text-ink-subtle">Lengths refer to the original footage. At {draft.videoSpeed}×, 60 seconds becomes about {Math.round(60 / draft.videoSpeed)} seconds before dead-air cuts.</p>}
+        {(draft.videoSpeed ?? 1) > 1 && <p className="mt-2 text-xs leading-relaxed text-content/45">Lengths refer to the original footage. At {draft.videoSpeed}×, 60 seconds becomes about {Math.round(60 / draft.videoSpeed)} seconds before dead-air cuts.</p>}
       </Group>
 
       <Group label="Number of clips">
@@ -458,7 +460,7 @@ export function ClipsStep({ draft, update }: { draft: ClipDraft; update: Update 
               icon={<Minus className="h-3.5 w-3.5" />}
             />
             <TextInput
-              className="flex-1 rounded-full [&_input]:text-center"
+              className="flex-1 [&_input]:text-center"
               inputMode="numeric"
               value={String(draft.maxClips)}
               onChange={(e) => {
@@ -535,18 +537,18 @@ function ReviewStep({ draft, trim, onEdit }: {
   ]
   return (
     <div className="space-y-3">
-      <dl className="glass-well divide-y divide-white/[0.05] overflow-hidden rounded-xl">
+      <dl className="field divide-y divide-stroke overflow-hidden rounded-lg">
         {rows.map((row) => (
-          <div key={row.label} className="flex items-center gap-3 px-3 py-2">
-            <dt className="w-20 shrink-0 text-xs text-ink-subtle">{row.label}</dt>
-            <dd className="min-w-0 flex-1 truncate text-sm text-ink" title={row.value}>{row.value}</dd>
+          <div key={row.label} className="flex items-center gap-3 py-1.5 pl-3 pr-1.5">
+            <dt className="w-20 shrink-0 text-xs text-content/45">{row.label}</dt>
+            <dd className="min-w-0 flex-1 truncate text-[13px] text-ink" title={row.value}>{row.value}</dd>
             <Button size="sm" variant="ghost" onClick={() => onEdit(row.step)} aria-label={`Edit ${row.label.toLowerCase()}`}>
               Edit
             </Button>
           </div>
         ))}
       </dl>
-      <p className="flex items-start gap-2 text-2xs text-ink-subtle">
+      <p className="flex items-start gap-2 text-xs leading-relaxed text-content/45">
         <Clock3 className="mt-px h-3.5 w-3.5 shrink-0" />
         {runningCount >= MAX_PARALLEL_JOBS
           ? `${runningCount} jobs are running. This one waits in the queue and starts automatically.`
@@ -564,17 +566,17 @@ function StartedPanel({ className, onViewJob }: { className?: string; onViewJob?
   if (!started) return null
   return (
     <Panel className={cn('flex flex-col items-center px-5 py-8 text-center animate-fade-in', className)}>
-      <IconTile tone="success" size="lg">
+      <IconTile tone="success" size="md">
         <CheckCircle2 />
       </IconTile>
-      <h2 className="mt-3 text-base font-semibold text-ink">{started.queued ? 'Queued' : 'Clipping started'}</h2>
-      <p className="mt-1 max-w-md truncate text-sm text-ink-muted" title={started.source}>{sourceLabel(started.source)}</p>
-      <p className="mt-1 max-w-md text-xs text-ink-subtle">
+      <h2 className="mt-3 text-[15px] font-medium text-ink">{started.queued ? 'Queued' : 'Clipping started'}</h2>
+      <p className="mt-1 max-w-md truncate text-[13px] text-ink-muted" title={started.source}>{sourceLabel(started.source)}</p>
+      <p className="mt-1 max-w-md text-xs leading-relaxed text-content/45">
         {started.queued
           ? `Up to ${MAX_PARALLEL_JOBS} jobs run at once. This one starts as soon as a slot frees up.`
           : 'It keeps running while you queue more videos or use the rest of Clipward.'}
       </p>
-      <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+      <div className="mt-4 flex flex-wrap items-center justify-center gap-1.5">
         <Button variant="primary" icon={<Plus className="h-3.5 w-3.5" />} onClick={startAnother}>
           Clip another video
         </Button>
@@ -596,13 +598,13 @@ function formatSeconds(total: number): string {
 
 /** Tiny 9:16 diagram of a framing style: split panels, full bleed, or letterbox. */
 function FramingGlyph({ style, selected }: { style: 'auto' | 'fill' | 'fit'; selected: boolean }): React.JSX.Element {
-  const fill = selected ? 'bg-accent-hover/80' : 'bg-ink-subtle/60'
+  const fill = selected ? 'bg-accent/80' : 'bg-content/35'
   return (
     <span
       aria-hidden
       className={cn(
-        'flex h-[24px] w-[14px] shrink-0 flex-col gap-px overflow-hidden rounded-[4px] border-[1.5px] p-px transition-colors duration-200',
-        selected ? 'border-accent-hover' : 'border-ink-subtle'
+        'flex h-[24px] w-[14px] shrink-0 flex-col gap-px overflow-hidden rounded-[3px] border-[1.5px] p-px transition-colors duration-feedback',
+        selected ? 'border-accent' : 'border-content/35'
       )}
     >
       {style === 'auto' && (
@@ -622,7 +624,7 @@ function Group({ label, aside, children }: { label: string; aside?: ReactNode; c
     <div>
       <div className="mb-2 flex items-center justify-between">
         <span className="eyebrow">{label}</span>
-        {aside && <span className="text-2xs text-ink-subtle">{aside}</span>}
+        {aside && <span className="text-xs text-content/40">{aside}</span>}
       </div>
       {children}
     </div>

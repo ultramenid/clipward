@@ -73,10 +73,10 @@ export default function App(): React.JSX.Element {
           {page === 'settings' && <SettingsPage />}
         </Layout>
       ) : (
-        <div className="app-backdrop drag flex h-screen items-center justify-center">
+        <div data-tauri-drag-region="deep" className="app-bg flex h-screen items-center justify-center">
           {loadError ? (
-            <div className="glass no-drag space-y-3 rounded-3xl px-5 py-5 text-center animate-pop-in">
-              <p role="alert" className="text-sm text-danger">Could not load settings. Please try again.</p>
+            <div className="card modal-panel space-y-3 rounded-xl px-5 py-4 text-center">
+              <p role="alert" className="text-[13px] text-danger">Could not load settings. Please try again.</p>
               <Button onClick={() => setRetry((value) => value + 1)}>Retry</Button>
             </div>
           ) : <ClipwardLogo className="h-7 animate-pulse opacity-80" />}

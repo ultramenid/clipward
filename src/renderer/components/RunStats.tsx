@@ -81,7 +81,7 @@ export function RunStats({ output, costs, videoSpeed }: RunStatsProps): React.JS
   )
 
   return (
-    <div role="group" aria-label="Run stats" className="glass grid grid-cols-2 overflow-hidden rounded-3xl min-[960px]:grid-cols-4 [&>*:nth-child(-n+2)]:border-b [&>*:nth-child(odd)]:border-r min-[960px]:[&>*:nth-child(-n+2)]:border-b-0 min-[960px]:[&>*:not(:last-child)]:border-r [&>*]:border-white/[0.06]">
+    <div role="group" aria-label="Run stats" className="card grid grid-cols-2 overflow-hidden rounded-xl min-[960px]:grid-cols-4 [&>*:nth-child(-n+2)]:border-b [&>*:nth-child(odd)]:border-r min-[960px]:[&>*:nth-child(-n+2)]:border-b-0 min-[960px]:[&>*:not(:last-child)]:border-r [&>*]:border-stroke">
       <StatCell
         index={0}
         icon={<Clapperboard />}
@@ -127,11 +127,11 @@ function StatCell({ index, icon, label, value, final, sub }: {
   sub?: ReactNode
 }): React.JSX.Element {
   return (
-    <div className="flex min-w-0 items-start gap-3 px-4 py-3.5 animate-pop-in" style={{ animationDelay: `${index * STAGGER_MS}ms` }}>
-      <IconTile>{icon}</IconTile>
+    <div className="flex min-w-0 items-start gap-3 px-4 py-3.5 animate-fade-in" style={{ animationDelay: `${index * STAGGER_MS}ms` }}>
+      <IconTile size="sm">{icon}</IconTile>
       <dl className="min-w-0 flex-1">
         <dt className="eyebrow flex items-center gap-1.5">{label}</dt>
-        <dd className="mt-1 truncate font-mono text-2xl font-medium leading-7 tabular tracking-[-0.03em] text-ink">
+        <dd className="mt-1 truncate font-mono text-xl font-medium leading-6 tabular tracking-[-0.02em] text-ink">
           {final ? (
             <>
               <span aria-hidden>{value}</span>
@@ -139,7 +139,7 @@ function StatCell({ index, icon, label, value, final, sub }: {
             </>
           ) : value}
         </dd>
-        {sub && <dd className="mt-1 truncate text-xs text-ink-subtle">{sub}</dd>}
+        {sub && <dd className="mt-1 truncate text-xs text-content/45">{sub}</dd>}
       </dl>
     </div>
   )

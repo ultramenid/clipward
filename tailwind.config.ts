@@ -1,10 +1,11 @@
 import type { Config } from 'tailwindcss'
 
-// Tokens live in globals.css as RGB channels so every colour supports
-// Tailwind's `/alpha` modifier (e.g. `bg-accent/15`). The glass materials
-// themselves (.glass, .glass-thick, .glass-tile, …) are component classes in
-// globals.css; see DESIGN.md.
+// Tokens live in globals.css as RGB channels, redefined for light and dark
+// schemes, so every colour supports Tailwind's `/alpha` modifier
+// (e.g. `bg-content/5`, `border-content/10`). Surfaces (.card, .tile, .field,
+// .popover-surface, …) are component classes in globals.css; see DESIGN.md.
 const channel = (name: string): string => `rgb(var(--${name}) / <alpha-value>)`
+const tint = (strength: string): string => `rgb(var(--content) / var(--${strength}))`
 
 const config: Config = {
   darkMode: 'class',
@@ -12,110 +13,113 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        canvas: channel('canvas'),
-        surface: channel('surface'),
-        raised: channel('raised'),
-        overlay: channel('overlay'),
+        canvas: channel('bg'),
+        sidebar: channel('sidebar'),
+        elevated: channel('elevated'),
+        content: channel('content'),
         ink: {
-          DEFAULT: channel('ink'),
+          DEFAULT: channel('content'),
           muted: channel('ink-muted'),
           subtle: channel('ink-subtle'),
           faint: channel('ink-faint')
         },
-        line: {
-          DEFAULT: 'rgb(255 255 255 / 0.09)',
-          strong: 'rgb(255 255 255 / 0.16)'
-        },
-        fill: {
-          DEFAULT: 'rgb(255 255 255 / 0.05)',
-          hover: 'rgb(255 255 255 / 0.08)',
-          selected: 'rgb(255 255 255 / 0.11)'
+        // Structural hairlines: border-stroke, divide-stroke, bg-stroke.
+        stroke: tint('stroke-strength'),
+        // Interactive fills. Prefer these over raw content opacity for
+        // selected and raised UI: light mode uses gentler strengths.
+        selection: {
+          subtle: tint('selection-subtle'),
+          DEFAULT: tint('selection'),
+          strong: tint('selection-strong'),
+          hover: tint('selection-hover')
         },
         accent: {
           DEFAULT: channel('accent'),
-          hover: channel('accent-hover'),
-          ink: channel('accent-ink'),
-          cyan: channel('accent-cyan')
+          fg: channel('accent-fg'),
+          ink: channel('accent-ink')
         },
         success: channel('success'),
         danger: channel('danger'),
         warning: channel('warning'),
         brand: {
-          blue: '#38ccff',
           gold: '#ffd500'
         }
       },
       fontFamily: {
-        sans: ['Geist', '-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'sans-serif'],
-        mono: ['"Geist Mono"', '"SF Mono"', 'ui-monospace', 'Menlo', 'monospace']
+        sans: [
+          'system-ui',
+          '-apple-system',
+          'BlinkMacSystemFont',
+          '"Segoe UI"',
+          'Roboto',
+          'Ubuntu',
+          'Cantarell',
+          '"Helvetica Neue"',
+          'Geist',
+          'sans-serif'
+        ],
+        mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', '"Geist Mono"', '"Liberation Mono"', 'monospace']
       },
       fontSize: {
-        '2xs': ['11px', '14px'],
+        '3xs': ['10px', '14px'],
+        '2xs': ['11px', '15px'],
         xs: ['12px', '16px'],
         sm: ['13px', '18px'],
         base: ['14px', '20px'],
         lg: ['16px', '22px'],
-        xl: ['20px', '26px'],
+        xl: ['20px', '25px'],
         '2xl': ['24px', '30px'],
-        '3xl': ['30px', '36px'],
-        '4xl': ['40px', '44px']
+        '3xl': ['30px', '36px']
       },
-      // Compact, soft corners. Nested shapes step down one size so corners
-      // stay concentric (card 2xl → media xl).
+      // Small, quiet corners. Controls and rows are `rounded-md`, menus rows
+      // `rounded-lg`, cards and popovers `rounded-xl`, dialogs `rounded-2xl`.
       borderRadius: {
-        sm: '6px',
-        DEFAULT: '8px',
-        md: '8px',
-        lg: '10px',
+        sm: '4px',
+        DEFAULT: '4px',
+        md: '6px',
+        lg: '8px',
         xl: '12px',
-        '2xl': '14px',
-        '3xl': '18px'
+        '2xl': '16px'
+      },
+      spacing: {
+        '7.5': '1.875rem',
+        '4.5': '1.125rem'
       },
       boxShadow: {
-        panel: 'inset 0 1px 0 0 rgb(255 255 255 / 0.06), 0 1px 2px rgb(0 0 0 / 0.25), 0 18px 48px -24px rgb(0 0 0 / 0.6)',
-        pop: 'inset 0 1px 0 rgb(255 255 255 / 0.1), 0 40px 100px -24px rgb(0 0 0 / 0.8), 0 12px 32px -12px rgb(0 0 0 / 0.55)',
-        accent: '0 0 0 1px rgb(var(--accent) / 0.5)',
-        'accent-ring':
-          'inset 0 1px 0 rgb(255 255 255 / 0.12), 0 0 0 1px rgb(var(--accent) / 0.9), 0 0 0 4px rgb(var(--accent) / 0.18)'
+        pop: '0 20px 25px -5px rgb(0 0 0 / 0.25), 0 8px 10px -6px rgb(0 0 0 / 0.2)',
+        'accent-ring': '0 0 0 1px rgb(var(--accent) / 0.9)'
+      },
+      transitionDuration: {
+        feedback: '120ms'
       },
       transitionTimingFunction: {
-        out: 'cubic-bezier(0.16, 1, 0.3, 1)',
-        spring: 'cubic-bezier(0.34, 1.4, 0.64, 1)'
+        out: 'cubic-bezier(0.22, 1, 0.36, 1)',
+        enter: 'cubic-bezier(0.16, 1, 0.3, 1)'
       },
       keyframes: {
         'fade-in': {
-          from: { opacity: '0', transform: 'translateY(6px)' },
+          from: { opacity: '0', transform: 'translateY(4px)' },
           to: { opacity: '1', transform: 'translateY(0)' }
         },
         fade: {
           from: { opacity: '0' },
           to: { opacity: '1' }
         },
-        'pop-in': {
-          from: { opacity: '0', transform: 'translateY(8px) scale(0.97)' },
-          to: { opacity: '1', transform: 'translateY(0) scale(1)' }
-        },
-        'menu-in': {
-          from: { opacity: '0', transform: 'scale(0.97)' },
-          to: { opacity: '1', transform: 'scale(1)' }
-        },
         'bar-grow': {
           from: { transform: 'scaleX(0)' },
           to: { transform: 'scaleX(1)' }
         },
         'pulse-ring': {
-          '0%': { boxShadow: '0 0 0 0 rgb(var(--accent) / 0.5)' },
-          '100%': { boxShadow: '0 0 0 10px rgb(var(--accent) / 0)' }
+          '0%': { boxShadow: '0 0 0 0 rgb(var(--accent) / 0.45)' },
+          '100%': { boxShadow: '0 0 0 8px rgb(var(--accent) / 0)' }
         }
       },
       animation: {
         // `backwards`, not `both`: a transform left on after entry would make the
         // element the containing block for fixed descendants.
-        'fade-in': 'fade-in 320ms cubic-bezier(0.16, 1, 0.3, 1) backwards',
-        fade: 'fade 240ms ease-out backwards',
-        'pop-in': 'pop-in 360ms cubic-bezier(0.16, 1, 0.3, 1) backwards',
-        'menu-in': 'menu-in 140ms cubic-bezier(0.16, 1, 0.3, 1) backwards',
-        'bar-grow': 'bar-grow 800ms cubic-bezier(0.16, 1, 0.3, 1) backwards',
+        'fade-in': 'fade-in 200ms cubic-bezier(0.16, 1, 0.3, 1) backwards',
+        fade: 'fade 160ms ease-out backwards',
+        'bar-grow': 'bar-grow 600ms cubic-bezier(0.16, 1, 0.3, 1) backwards',
         'pulse-ring': 'pulse-ring 1.8s cubic-bezier(0.16, 1, 0.3, 1) infinite'
       }
     }

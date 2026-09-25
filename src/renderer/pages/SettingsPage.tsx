@@ -72,14 +72,14 @@ export function SettingsPage(): React.JSX.Element {
   return (
     <Page width="default" className="max-w-[1080px]">
       <PageHeader
-        eyebrow="Preferences"
         title="Settings"
         description="Changes save automatically."
         actions={<SaveIndicator saving={saving} savedAt={lastSaved || null} error={error} />}
       />
 
-      <div className="mt-5 grid items-start gap-4 lg:grid-cols-[184px_minmax(0,1fr)]">
-        <nav aria-label="Settings sections" className="hidden space-y-0.5 lg:sticky lg:top-12 lg:block">
+      <div className="mt-5 grid items-start gap-6 lg:grid-cols-[176px_minmax(0,1fr)]">
+        <nav aria-label="Settings sections" className="hidden flex-col gap-px lg:sticky lg:top-6 lg:flex">
+          <p aria-hidden className="px-2 pb-1 text-xs font-semibold text-content/35">Sections</p>
           {sections.map((section) => (
             <button
               key={section.id}
@@ -87,12 +87,12 @@ export function SettingsPage(): React.JSX.Element {
               onClick={() => jump(section.id)}
               aria-current={active === section.id ? 'true' : undefined}
               className={cn(
-                'flex h-8 w-full items-center gap-2.5 rounded-full px-3 text-left text-sm transition-colors duration-150 [&_svg]:h-3.5 [&_svg]:w-3.5',
-                active === section.id ? 'bg-white/[0.09] text-ink' : 'text-ink-muted hover:bg-white/[0.05] hover:text-ink'
+                'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium leading-tight transition-colors duration-feedback [&_svg]:h-4 [&_svg]:w-4 [&_svg]:shrink-0 [&_svg]:opacity-70',
+                active === section.id ? 'bg-selection text-content' : 'text-content/50 hover:bg-content/5 hover:text-content'
               )}
             >
               {section.icon}
-              <span className="flex-1">{section.label}</span>
+              <span className="min-w-0 flex-1 truncate">{section.label}</span>
               {section.tone !== 'idle' && <StatusDot tone={section.tone} />}
             </button>
           ))}
@@ -102,25 +102,25 @@ export function SettingsPage(): React.JSX.Element {
           <Panel>
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-3">
-                <IconTile tone={blocking ? 'warning' : 'success'} size="lg">{blocking ? <Sparkles /> : <Check strokeWidth={3} />}</IconTile>
+                <IconTile tone={blocking ? 'warning' : 'success'} size="md">{blocking ? <Sparkles /> : <Check strokeWidth={3} />}</IconTile>
                 <div>
-                  <h2 className="text-sm font-semibold text-ink">{blocking ? `${blocking} thing${blocking === 1 ? '' : 's'} to set up before clipping` : 'Ready to clip'}</h2>
-                  <p className="mt-0.5 text-xs text-ink-muted">{APP_NAME} runs on this computer. Whisper transcribes offline; your CLI plan or API key picks the clips.</p>
+                  <h2 className="text-[13px] font-semibold text-ink">{blocking ? `${blocking} thing${blocking === 1 ? '' : 's'} to set up before clipping` : 'Ready to clip'}</h2>
+                  <p className="mt-0.5 text-xs leading-relaxed text-content/45">{APP_NAME} runs on this computer. Whisper transcribes offline; your CLI plan or API key picks the clips.</p>
                 </div>
               </div>
             </div>
-            <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">
+            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
               {checks.map((check) => (
                 <button
                   key={check.label}
                   type="button"
                   onClick={() => jump(check.section)}
-                  className="glass-tile glass-tile-hover flex items-start gap-2.5 rounded-xl px-3 py-2 text-left"
+                  className="tile tile-hover flex items-start gap-2.5 rounded-lg px-3 py-2 text-left"
                 >
                   <StatusDot className="mt-1.5" tone={check.ok == null || check.optional && !check.ok ? 'idle' : check.ok ? 'success' : check.tone ?? 'warning'} />
                   <span className="min-w-0">
-                    <span className="block text-sm font-medium text-ink">{check.label}</span>
-                    <span className={cn('block truncate text-2xs', check.ok === false && !check.optional ? (check.tone === 'danger' ? 'text-danger' : 'text-warning') : 'text-ink-subtle')}>{check.detail}</span>
+                    <span className="block text-[13px] font-medium text-ink">{check.label}</span>
+                    <span className={cn('block truncate text-2xs', check.ok === false && !check.optional ? (check.tone === 'danger' ? 'text-danger' : 'text-warning') : 'text-content/45')}>{check.detail}</span>
                   </span>
                 </button>
               ))}
@@ -129,7 +129,7 @@ export function SettingsPage(): React.JSX.Element {
 
           <Section id="ai">
             <PanelHeader
-              icon={<IconTile tone="accent"><Sparkles /></IconTile>}
+              icon={<IconTile tone="accent" size="sm"><Sparkles /></IconTile>}
               title="AI provider"
               description="Reads the transcript and picks the clips that fit your brief. Use a CLI you're already logged in to, or your own API key."
             />
@@ -138,7 +138,7 @@ export function SettingsPage(): React.JSX.Element {
 
           <Section id="transcription">
             <PanelHeader
-              icon={<IconTile><AudioLines /></IconTile>}
+              icon={<IconTile size="sm"><AudioLines /></IconTile>}
               title="Transcription"
               description="Whisper runs on this computer with whisper.cpp; audio never leaves it. Larger models are more accurate and slower."
             />
@@ -147,7 +147,7 @@ export function SettingsPage(): React.JSX.Element {
 
           <Section id="vocabulary">
             <PanelHeader
-              icon={<IconTile><BookA /></IconTile>}
+              icon={<IconTile size="sm"><BookA /></IconTile>}
               title="Custom vocabulary"
               description="Names, products and jargon Whisper should spell exactly, one per line. Put the campaign's brand and creator names here."
               action={vocabularyTerms > 0 && <Badge className="font-mono tabular">{vocabularyTerms} term{vocabularyTerms === 1 ? '' : 's'}</Badge>}
@@ -157,7 +157,7 @@ export function SettingsPage(): React.JSX.Element {
 
           <Section id="output">
             <PanelHeader
-              icon={<IconTile><FolderOpen /></IconTile>}
+              icon={<IconTile size="sm"><FolderOpen /></IconTile>}
               title="Output"
               description="Every run gets its own folder of clips, transcript and plan."
             />
@@ -166,7 +166,7 @@ export function SettingsPage(): React.JSX.Element {
 
           <Section id="system">
             <PanelHeader
-              icon={<IconTile tone={toolsChecked && toolsMissing ? 'danger' : 'neutral'}><Cpu /></IconTile>}
+              icon={<IconTile size="sm" tone={toolsChecked && toolsMissing ? 'danger' : 'neutral'}><Cpu /></IconTile>}
               title="System check"
               description="Tools Clipward needs to download, transcribe and cut video."
               action={
@@ -183,7 +183,7 @@ export function SettingsPage(): React.JSX.Element {
             <ToolList rows={tools} checking={checkingTools} />
             {toolError && <Callout tone="danger" className="mt-3">{toolError}</Callout>}
             {!isPackaged && (
-              <div className="mt-4 grid gap-4 border-t border-white/[0.06] pt-4">
+              <div className="mt-4 grid gap-4 border-t border-stroke pt-4">
                 <DevPathField
                   label="Python path"
                   value={pythonPath}
@@ -196,17 +196,18 @@ export function SettingsPage(): React.JSX.Element {
 
           <Section id="about" className="overflow-hidden">
             <div className="flex flex-wrap items-center gap-4">
-              <ClipwardLogo variant="icon" className="-m-1 h-12" />
+              <ClipwardLogo variant="icon" className="-m-1 h-10" />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2.5">
-                  <h2 className="text-base font-semibold tracking-[-0.01em] text-ink">{APP_NAME}</h2>
+                  <h2 className="text-[15px] font-medium text-ink">{APP_NAME}</h2>
                   <Badge className="font-mono tabular">v{APP_VERSION}</Badge>
                 </div>
-                <p className="mt-1 text-xs leading-relaxed text-ink-muted">
+                <p className="mt-1 text-xs leading-relaxed text-content/50">
                   Released under the {LICENSE_NAME} license.{' '}
                   <button
+                    type="button"
                     onClick={() => getApi().shell.openPath(CLIPWARD_URL)}
-                    className="text-ink underline decoration-white/25 underline-offset-2 transition-colors hover:decoration-ink"
+                    className="text-accent-fg underline decoration-accent/30 underline-offset-2 transition-colors hover:decoration-accent-fg"
                   >
                     clipward.ai
                   </button>
@@ -243,14 +244,14 @@ export function SettingsPage(): React.JSX.Element {
 
 function Section({ id, className, children }: { id: SectionId; className?: string; children: ReactNode }): React.JSX.Element {
   return (
-    <section id={`settings-${id}`} className="scroll-mt-14">
+    <section id={`settings-${id}`} className="scroll-mt-6">
       <Panel className={className}>{children}</Panel>
     </section>
   )
 }
 
 /** How far below the top of the scroll area a section counts as reached. */
-const ACTIVE_OFFSET = 72
+const ACTIVE_OFFSET = 48
 
 /** The section nearest the top of the scroll area, for the side nav, and a jump that selects it. */
 function useActiveSection(ids: SectionId[]): [SectionId, (id: SectionId) => void] {
@@ -358,7 +359,7 @@ function OutputFolder({ value, onCommit }: { value: string; onCommit: (dir: stri
           value={value}
           readOnly
           title="Use Change to select a folder"
-          leading={<FolderOpen className="h-3.5 w-3.5" />}
+          leading={<FolderOpen strokeWidth={1.75} />}
           aria-label="Output folder"
         />
         <Button onClick={() => void choose()}>Change…</Button>
@@ -384,7 +385,7 @@ function VocabularyField({ value, onCommit }: { value: string; onCommit: (value:
         onChange={(e) => setDraft(e.target.value)}
         onBlur={() => draft !== value && onCommit(draft)}
       />
-      <p className="mt-2 px-1 text-xs text-ink-subtle">Up to five words per term. Applies to new transcriptions; generated metadata uses it right away.</p>
+      <p className="mt-2 text-xs leading-relaxed text-content/45">Up to five words per term. Applies to new transcriptions; generated metadata uses it right away.</p>
     </div>
   )
 }
@@ -449,9 +450,9 @@ function ToolList({ rows, checking }: { rows: ToolRow[]; checking: boolean }): R
   return (
     <div className="mt-4">
       {checked && (
-        <div className="mb-3 flex items-center gap-2 px-1 text-xs">
+        <div className="mb-2 flex items-center gap-2 text-xs">
           <StatusDot tone={missing > 0 ? 'danger' : 'success'} />
-          <span className={cn('flex-1', missing > 0 ? 'text-danger' : 'text-ink-muted')}>
+          <span className={cn('flex-1', missing > 0 ? 'text-danger' : 'text-content/60')}>
             {missing > 0 ? `${missing} required tool${missing === 1 ? '' : 's'} missing` : `Everything Clipward needs is installed (${rows.filter((row) => row.ok).length} tools)`}
           </span>
           {missing === 0 && (
@@ -467,22 +468,22 @@ function ToolList({ rows, checking }: { rows: ToolRow[]; checking: boolean }): R
           )}
         </div>
       )}
-      {(!checked || missing > 0 || expanded) && <div className="glass-well divide-y divide-white/[0.05] overflow-hidden rounded-2xl animate-fade-in">
+      {(!checked || missing > 0 || expanded) && <div className="field divide-y divide-stroke overflow-hidden rounded-lg animate-fade-in">
         {rows.map((row) => {
           const tone = row.ok == null ? 'idle' : row.ok ? 'success' : row.optional ? 'warning' : 'danger'
           return (
             <div key={row.name} className="flex items-center gap-3 px-3 py-2">
               <StatusDot tone={tone} />
               <div className="min-w-0 flex-1">
-                <p className="text-sm text-ink">{row.name}</p>
+                <p className="text-[13px] text-ink">{row.name}</p>
                 {row.detail && (
-                  <p className="mt-0.5 break-words font-mono text-2xs text-ink-subtle" data-selectable>
+                  <p className="mt-0.5 break-words font-mono text-2xs text-content/40" data-selectable>
                     {row.detail}
                   </p>
                 )}
               </div>
               {row.ok == null ? (
-                <span className="shrink-0 text-xs text-ink-faint">{checking ? 'Checking…' : 'Not checked'}</span>
+                <span className="shrink-0 text-xs text-content/35">{checking ? 'Checking…' : 'Not checked'}</span>
               ) : (
                 <Badge tone={row.ok ? 'neutral' : row.optional ? 'warning' : 'danger'} className="shrink-0">
                   {row.ok ? 'Found' : row.optional ? 'Unavailable' : 'Missing'}

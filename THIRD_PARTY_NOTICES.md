@@ -10,6 +10,7 @@ Clipward's [MIT license](LICENSE) covers Clipward-owned source. It does not chan
 | Python 3.12.14 | [Python](https://www.python.org/downloads/), Python Software Foundation license; packaged via [python-build-standalone](https://github.com/astral-sh/python-build-standalone) | `engine-venv/PYTHON-LICENSE` and distribution notices in `engine-venv/` |
 | yt-dlp | [yt-dlp Python package](https://github.com/yt-dlp/yt-dlp), Unlicense for its own code, with separate terms for dependencies | Package metadata and license files in `engine-venv/`; the `engine-bin/yt-dlp` file is a shell launcher |
 | Geist fonts | [Geist](https://github.com/vercel/geist-font), SIL Open Font License 1.1 | `Geist-OFL.txt` in the packaged app resources |
+| MonoCode UI styles | [MonoCode](https://github.com/hardbeat920/monocode), MIT license, Copyright (c) 2026 Nick. Clipward's renderer design tokens, surface and motion CSS (`src/renderer/globals.css`, `tailwind.config.ts`), the z-index scale (`src/renderer/lib/layers.ts`) and control class recipes in `src/renderer/components/` (sidebar rows, title bar, settings rows, toggles, segmented controls, menus, dialogs) are adapted from MonoCode's `src/styles/index.css`, `src/shared/ui/`, `src/shared/lib/layers.ts` and `src/app/shell/`. No MonoCode name, logo or provider marks are used. | The MIT notice at the end of this file |
 | Electron, React and other Node packages | Versions and package names in `package-lock.json`; each package retains its own license | Package metadata in the bundled app and the generated Node dependency inventory |
 
 The renderer build also generates `RENDERER-THIRD-PARTY-LICENSES.txt` in the packaged resources, containing the installed license texts for the packages included in its JavaScript bundle. This is separate from the production Node inventory because renderer packages are installed as development dependencies. The build fails when a bundled renderer package has no license text.
@@ -17,3 +18,31 @@ The renderer build also generates `RENDERER-THIRD-PARTY-LICENSES.txt` in the pac
 The OpusClip wordmark in `src/renderer/components/brand/OpusClipLogo.tsx` comes from [opus.pro](https://www.opus.pro/) and identifies the service in comparison details. It remains an OpusClip brand asset; Clipward's MIT license does not grant rights to that mark or imply affiliation.
 
 The release packages the clipping engine committed in this repository. `scripts/prepare-resources.sh` and release CI stage the same pinned Python archive and hash-verified FFmpeg source. The final package still needs an asset and dependency license review, a signed/notarized install check, and a review of the generated inventories before publication.
+
+## MonoCode
+
+Portions of the renderer's styles and UI component recipes are adapted from MonoCode (https://github.com/hardbeat920/monocode) under the following license:
+
+```
+MIT License
+
+Copyright (c) 2026 Nick
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

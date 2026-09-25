@@ -11,14 +11,14 @@ export interface SelectOption {
   disabled?: boolean
 }
 
-/** Floating menu surface shared by dropdowns: thick glass over whatever it covers. */
-export const MENU_SURFACE = 'glass-thick rounded-xl p-1 text-sm text-ink'
+/** Floating menu surface shared by dropdowns: a blurred popover over whatever it covers. */
+export const MENU_SURFACE = 'popover-surface rounded-xl p-1 text-xs text-ink'
 
 /** One row of a dropdown menu. `active` is the keyboard or pointer highlight. */
 export function menuOptionClass(active: boolean, disabled = false): string {
   return cn(
-    'flex w-full cursor-default select-none items-center gap-2 rounded-lg px-2.5 py-1.5 text-left transition-colors duration-100',
-    disabled ? 'text-ink-muted opacity-50' : active ? 'bg-white/[0.08] text-ink' : 'text-ink-muted'
+    'flex w-full cursor-default select-none items-center gap-2 rounded-lg px-2 py-1.5 text-left',
+    disabled ? 'text-content/40' : active ? 'bg-selection text-content' : 'text-content/75'
   )
 }
 
@@ -67,7 +67,7 @@ function isPrintable(event: KeyboardEvent): boolean {
 }
 
 /**
- * Dropdown in the app's glass style, replacing the native <select> menu.
+ * Dropdown in the app's style, replacing the native <select> menu.
  * The trigger is a combobox button (focus stays on it while the menu is
  * open, except in the filter field of a `searchable` menu). The menu is a
  * top-layer popover, so dialogs and panels with hidden overflow never clip
@@ -315,28 +315,28 @@ export function Select({
         onKeyDown={onTriggerKeyDown}
         data-open={open || undefined}
         className={cn(
-          'relative flex w-full min-w-0 items-center rounded-lg pl-2.5 pr-8 text-left',
-          size === 'sm' ? 'h-7 text-xs' : 'h-8 text-sm',
+          'relative flex w-full min-w-0 items-center rounded-md pl-2 pr-7 text-left text-xs',
+          size === 'sm' ? 'h-6' : 'h-7',
           WELL,
-          'data-[open]:border-accent/70 data-[open]:bg-black/30',
-          disabled && 'cursor-not-allowed opacity-60',
+          'data-[open]:border-content/25',
+          disabled && 'opacity-50',
           className
         )}
       >
         <span className={cn('min-w-0 truncate', selected ? 'text-ink' : 'text-ink-faint')}>{selected?.label ?? placeholder}</span>
-        <ChevronDown aria-hidden className={cn('pointer-events-none absolute right-2.5 h-3.5 w-3.5 text-ink-subtle transition-transform duration-150', open && 'rotate-180')} />
+        <ChevronDown aria-hidden className={cn('pointer-events-none absolute right-2 h-3.5 w-3.5 text-content/45 transition-transform duration-150', open && 'rotate-180')} strokeWidth={1.75} />
       </button>
 
       {open && (
         <div
           ref={menuRef}
           popover="manual"
-          className={cn(MENU_SURFACE, 'fixed inset-auto z-[120] m-0 flex max-w-[min(420px,calc(100vw-16px))] flex-col overflow-hidden border-0 animate-menu-in')}
+          className={cn(MENU_SURFACE, 'popover-open fixed inset-auto z-[91] m-0 flex max-w-[min(420px,calc(100vw-16px))] flex-col overflow-hidden')}
           style={{ top: -9999, left: -9999 }}
         >
           {searchable && (
-            <div className="mb-1 flex shrink-0 items-center gap-2 border-b border-white/[0.07] px-2.5 pb-1">
-              <Search aria-hidden className="h-3.5 w-3.5 shrink-0 text-ink-subtle" />
+            <div className="mb-1 flex shrink-0 items-center gap-2 border-b border-stroke px-2 pb-1">
+              <Search aria-hidden className="h-3.5 w-3.5 shrink-0 text-content/45" strokeWidth={1.75} />
               <input
                 ref={searchRef}
                 type="search"
@@ -355,7 +355,7 @@ export function Select({
                 aria-activedescendant={active >= 0 ? optionId(active) : undefined}
                 spellCheck={false}
                 autoComplete="off"
-                className="h-7 w-full min-w-0 bg-transparent text-sm text-ink placeholder:text-ink-faint focus:outline-none focus-visible:outline-none [&::-webkit-search-cancel-button]:hidden"
+                className="h-7 w-full min-w-0 bg-transparent text-xs text-ink placeholder:text-content/35 focus:outline-none focus-visible:outline-none [&::-webkit-search-cancel-button]:hidden"
               />
             </div>
           )}
@@ -382,14 +382,14 @@ export function Select({
               >
                 <span className="min-w-0 flex-1 truncate">
                   {option.label}
-                  {option.detail && <span className="text-ink-subtle"> · {option.detail}</span>}
+                  {option.detail && <span className="text-content/40"> · {option.detail}</span>}
                 </span>
-                {option.value === value && <Check aria-hidden className="h-3.5 w-3.5 shrink-0 text-accent-hover" strokeWidth={2.5} />}
+                {option.value === value && <Check aria-hidden className="h-3.5 w-3.5 shrink-0 text-content/70" strokeWidth={2} />}
               </li>
             ))}
           </ul>
           {visible.length === 0 && (
-            <p className="px-2.5 py-2 text-xs text-ink-subtle">{query ? 'No matches' : emptyText}</p>
+            <p className="px-2 py-1.5 text-xs text-content/45">{query ? 'No matches' : emptyText}</p>
           )}
         </div>
       )}
