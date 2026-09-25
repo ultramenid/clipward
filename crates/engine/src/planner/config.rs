@@ -101,7 +101,7 @@ pub const MAX_CLIPS_ABSOLUTE: i64 = 100;
 /// Planner settings (the relevant part of config.Settings).
 #[derive(Debug, Clone)]
 pub struct PlannerSettings {
-    /// "openrouter" | "anthropic" | "openai" | "cli:<id>" (recorded in costs).
+    /// "openrouter" | "anthropic" | "openai" | "local" | "cli:<id>" (recorded in costs).
     pub ai_provider: String,
     /// OpenRouter slug; direct providers use `ai.model` or their default.
     pub planner_model: String,
@@ -162,6 +162,10 @@ impl PlannerSettings {
         } else if ai.provider != "openrouter" {
             // OpenRouter model slugs mean nothing to a direct API.
             settings.planner_fallback_models = String::new();
+        }
+        if ai.provider == "local" {
+            // Only models the user marked as accepting images get frames.
+            settings.planner_supports_images = ai.local_images;
         }
         if ai.provider == "openrouter" && !ai.model.is_empty() {
             // The model picked in Settings (the Python engine recorded it as the

@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { CheckCircle2, KeyRound, RefreshCw, TerminalSquare, XCircle, Zap } from 'lucide-react'
-import { AI_CLIS, API_PROVIDERS } from '../../shared/ai-providers'
+import { CheckCircle2, Cpu, KeyRound, RefreshCw, TerminalSquare, XCircle, Zap } from 'lucide-react'
+import { AI_CLIS, API_PROVIDERS, LOCAL_PROVIDER } from '../../shared/ai-providers'
 import type { ProviderTestResult } from '../../shared/ai-providers'
 import { useSettingsStore } from '../store/use-settings-store'
 import { useApiKeyDrafts } from '../hooks/use-api-key-drafts'
@@ -8,14 +8,15 @@ import { getApi } from '../lib/ipc'
 import { cn, errorMessage } from '../lib/utils'
 import { onRadioKeyDown } from './ui/Segmented'
 import { ApiKeyInput } from './ApiKeyInput'
+import { LocalAiSetup } from './LocalAiSetup'
 import { Field, TextInput } from './ui/Field'
 import { Button } from './ui/Button'
 import { Badge } from './ui/Badge'
 
 /**
  * Pick who plans the clips: a coding CLI the user is already logged in to
- * (billed to that plan) or their own API key. Transcription never uses this;
- * it runs offline with Whisper.
+ * (billed to that plan), their own API key, or a model on their own server
+ * (Local AI). Transcription never uses this; it runs offline with Whisper.
  */
 export function ProviderSetup({ compact = false }: { compact?: boolean }): React.JSX.Element {
   const settings = useSettingsStore()
@@ -38,6 +39,8 @@ export function ProviderSetup({ compact = false }: { compact?: boolean }): React
     setTest(null)
     try {
       await keys.persist()
+      // Queued behind any field saved on blur (model, server URL), so the test uses it.
+      await save({})
       setTest(await getApi().ai.test())
     } catch (err) {
       setTest({ ok: false, message: errorMessage(err, 'The test could not run') })
@@ -51,6 +54,7 @@ export function ProviderSetup({ compact = false }: { compact?: boolean }): React
   }
 
   const api = API_PROVIDERS.find((provider) => provider.id === aiProvider)
+  const local = aiProvider === LOCAL_PROVIDER.id
   const installed = (clis ?? []).filter((cli) => cli.path)
   const visibleClis = compact ? installed : clis ?? []
   const configured = { openrouterApiKey: settings.openrouterConfigured, anthropicApiKey: settings.anthropicConfigured, openaiApiKey: settings.openaiConfigured }
@@ -65,7 +69,7 @@ export function ProviderSetup({ compact = false }: { compact?: boolean }): React
         </div>
         {visibleClis.length === 0 ? (
           <p className="text-caption text-ink-secondary">
-            No supported CLI found. Install and log in to one of: {AI_CLIS.map((cli) => cli.label).join(', ')}. Or use an API key below.
+            No supported CLI found. Install and log in to one of: {AI_CLIS.map((cli) => cli.label).join(', ')}. Or use an API key or a local model below.
           </p>
         ) : (
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3" role="radiogroup" aria-label="AI CLI">
@@ -123,7 +127,23 @@ export function ProviderSetup({ compact = false }: { compact?: boolean }): React
         )}
       </div>
 
-      {!compact && (
+      <div>
+        <span className="eyebrow mb-2 block">Or run a model on your own computer</span>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3" role="radiogroup" aria-label="Local AI">
+          <button type="button" role="radio" aria-checked={local} tabIndex={0}
+            onKeyDown={onRadioKeyDown} onClick={() => { if (!local) choose(LOCAL_PROVIDER.id) }}
+            className={cn('tile tile-hover flex items-start gap-2.5 rounded-lg px-3 py-2.5 text-left sm:col-span-2', local && 'tile-selected')}>
+            <Cpu className={cn('mt-0.5 h-4 w-4 shrink-0', local ? 'text-accent-fg' : 'text-ink-tertiary')} strokeWidth={1.75} />
+            <span className="min-w-0">
+              <span className="block text-label text-ink">Local AI (Ollama, LM Studio…)</span>
+              <span className="block truncate text-meta text-ink-secondary">Fully offline, free, on your hardware</span>
+            </span>
+          </button>
+        </div>
+        {local && <LocalAiSetup keys={keys} onChange={() => setTest(null)} />}
+      </div>
+
+      {!compact && !local && (
         <Field label="Model (optional)" htmlFor="ai-model"
           hint={api ? `Empty uses ${api.defaultModel}.` : 'Empty uses the CLI’s default model.'}>
           <TextInput id="ai-model" mono value={modelDraft ?? aiModel}

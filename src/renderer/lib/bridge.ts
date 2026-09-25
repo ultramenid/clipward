@@ -26,7 +26,8 @@ function subscribe<T>(event: string, callback: (payload: T) => void): () => void
 export const bridge: ClipwardAPI = {
   ai: {
     detect: () => invoke('ai_detect'),
-    test: () => invoke('ai_test')
+    test: () => invoke('ai_test'),
+    localModels: () => invoke('ai_local_models')
   },
   whisper: {
     list: () => invoke('whisper_list'),

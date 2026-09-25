@@ -26,6 +26,7 @@
 - **Built for clippers.** Paste the campaign brief (brand to mention, topics, tone, banned content) and every clip must follow it. Clips that break a rule are left out, not padded in.
 - **Offline transcription.** Whisper (whisper.cpp) runs on your computer. Download a model once; your audio never leaves the machine.
 - **Use the AI you already pay for.** Clipward detects Claude Code, Codex, Antigravity, Grok, Cursor, OpenCode and Gemini CLI and plans clips with your logged-in plan. You can also use your own OpenRouter, Anthropic or OpenAI key.
+- **Or run it fully offline.** Point Clipward at your own model server (Ollama, LM Studio, llama.cpp server, vLLM or any OpenAI-compatible server) and clip planning never leaves your computer or network. Nothing is billed.
 - **No Clipward account or backend.** Your videos and keys never pass through a Clipward server.
 - **Captions that look native.** Nine styles (Viral, Hormozi, Bold, Clean, Minimal, Fire, Glow, Neon, Karaoke), each with a live preview before you render.
 - **MIT licensed.** Fork it, change it, ship it.
@@ -51,14 +52,14 @@ Signed macOS builds for Apple silicon and Intel will appear on [Releases](https:
 
 On first launch, the setup card on Create asks for two things:
 
-1. **The AI that picks the clips.** Choose a detected CLI you're logged in to (for example `claude` or `codex`), or pick OpenRouter, Anthropic or OpenAI and paste a key. **Test connection** sends one tiny request to confirm it works.
+1. **The AI that picks the clips.** Choose a detected CLI you're logged in to (for example `claude` or `codex`), pick OpenRouter, Anthropic or OpenAI and paste a key, or choose **Local AI** and enter your server's URL and model (for Ollama: `ollama pull qwen2.5:14b`, keep Ollama open, and keep the default URL `http://localhost:11434/v1`). **Test connection** sends one tiny request to confirm it works.
 2. **A Whisper model.** Large v3 Turbo (compact, 574 MB) is recommended; Base and Small are faster, Medium and Large v3 Turbo are more accurate. Change it later in **Settings → Transcription**.
 
-Keys are stored in your operating system's keychain, and only the selected provider's key is passed to the clipping engine.
+Keys are stored in your operating system's keychain, and only the selected provider's key is passed to the clipping engine. A local server needs no key; if yours asks for one, it is kept in the keychain too.
 
 ### What leaves your computer
 
-For a link, the app downloads the source using your network connection. Audio never leaves your computer: Whisper transcribes it locally. The transcript text and your campaign brief go to the AI provider you chose, through its CLI or its API. With an API-key provider and Smart framing's AI vision check on, a few video frames also go to that provider. CLI providers are text only. The one-time Whisper model download comes from Hugging Face. Provider accounts, charges, retention and data policies are governed by those services.
+For a link, the app downloads the source using your network connection. Audio never leaves your computer: Whisper transcribes it locally. The transcript text and your campaign brief go to the AI provider you chose, through its CLI or its API. With an API-key provider and Smart framing's AI vision check on, a few video frames also go to that provider. CLI providers are text only. With **Local AI**, planning requests go only to the server URL you entered (usually on this computer or your local network) and nowhere else; frames are sent to it only if you turn on **Model accepts images**. With a local video file and Local AI on this computer, transcription, planning and rendering need no internet connection after the one-time downloads. The one-time Whisper model download comes from Hugging Face. Provider accounts, charges, retention and data policies are governed by those services.
 
 Downloads and intermediate media are held in a private `work/` directory under Clipward’s per-user application data folder. Clipward removes job work on completion, failure, and cancellation, and clears stale work when it next starts after a forced shutdown. A local video you selected stays where it was. Rendered clips, the transcript, plan and `result.json` remain in a run folder under your chosen **Output folder** (by default, `~/Clipward`). Delete the run folder to remove those local outputs. Settings, downloaded Whisper models and diagnostic logs live in the per-user application data and logs folders.
 
@@ -98,7 +99,7 @@ To check that FFmpeg has the caption filter: `ffmpeg -hide_banner -filters | gre
 
 ### First run and troubleshooting
 
-1. In the setup card, pick an AI provider (a logged-in CLI or an API key) and download a Whisper model. If a CLI isn't detected, run it once in a terminal to sign in, then choose **Detect again**.
+1. In the setup card, pick an AI provider (a logged-in CLI, an API key or Local AI) and download a Whisper model. If a CLI isn't detected, run it once in a terminal to sign in, then choose **Detect again**.
 2. Run **Settings → System check**. Captions need an FFmpeg build with libass (`brew install ffmpeg-full` on macOS, or stage one in `engine-bin/`).
 3. Paste a video link or choose a file, paste the campaign brief, pick clip lengths, framing and caption style, then generate. Smart framing follows faces and arranges screen shares with facecams shot by shot. Completed runs appear in Library and in your output folder.
 4. If a link fails, check it in a signed-out browser, or download the video yourself and select the local file. If a run fails, start with the in-app error and System check. Logs intentionally leave out raw provider responses and private source details.

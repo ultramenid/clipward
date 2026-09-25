@@ -75,7 +75,8 @@ pub struct ClipPlan {
     pub visual_frame_count: u32,
 }
 
-/// Where AI planning requests go. `provider` is 'openrouter' | 'anthropic' | 'openai' | 'cli:<id>'.
+/// Where AI planning requests go. `provider` is 'openrouter' | 'anthropic' | 'openai' |
+/// 'local' (the user's own OpenAI-compatible server) | 'cli:<id>'.
 #[derive(Debug, Clone, Default)]
 pub struct AiSettings {
     pub provider: String,
@@ -85,6 +86,13 @@ pub struct AiSettings {
     pub openai_api_key: Option<String>,
     /// Absolute path to the CLI binary when provider is `cli:<id>`.
     pub cli_path: Option<PathBuf>,
+    /// OpenAI-compatible base URL (e.g. `http://localhost:11434/v1`) when provider
+    /// is `local`; None uses [`crate::llm::DEFAULT_LOCAL_BASE_URL`].
+    pub base_url: Option<String>,
+    /// Whether the local model accepts images (frames for planning and layout vision).
+    pub local_images: bool,
+    /// Optional bearer key for a local server that requires one.
+    pub local_api_key: Option<String>,
 }
 
 /// Paths and settings the app shell hands the engine for every job.

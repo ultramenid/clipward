@@ -9,6 +9,7 @@ const bundled = buildSync({
   stdin: {
     contents: `export { FormatStep, ClipsStep, BriefStep, JobForm, buildJobRequest, parseTrimRange, WIZARD_STEPS } from './src/renderer/components/JobForm';
       export { SetupCard } from './src/renderer/components/SetupCard';
+      export { LocalAiSetup } from './src/renderer/components/LocalAiSetup';
       export { useSettingsStore, isProviderReady } from './src/renderer/store/use-settings-store';
       export { useDraftStore } from './src/renderer/store/use-draft-store';
       export { SourcePicker, isValidSourceLink } from './src/renderer/components/SourcePicker';
@@ -49,6 +50,27 @@ test('setup asks for an AI provider and the offline Whisper model until both are
   assert.equal(isProviderReady({ ...keys, clis, aiProvider: 'anthropic' }), true)
   assert.equal(isProviderReady({ ...keys, clis, aiProvider: 'openrouter' }), false)
   assert.equal(isProviderReady({ ...keys, clis, aiProvider: 'unknown' }), false)
+  // Local AI needs a server URL and a model, but no key.
+  const local = { ...keys, clis, aiProvider: 'local', localBaseUrl: 'http://localhost:11434/v1' }
+  assert.equal(isProviderReady({ ...local, localModel: 'qwen2.5:14b' }), true)
+  assert.equal(isProviderReady({ ...local, localModel: ' ' }), false)
+  assert.equal(isProviderReady({ ...local, localBaseUrl: '', localModel: 'qwen2.5:14b' }), false)
+})
+
+test('setup offers Local AI, whose form asks for the server, model, images and an optional key', () => {
+  const { SetupCard, LocalAiSetup } = form.exports
+  const offered = renderToStaticMarkup(React.createElement(SetupCard, { onOpenSettings() {} }))
+  assert.match(offered, /Local AI \(Ollama, LM Studio…\)/)
+  assert.doesNotMatch(offered, /Server URL/)
+  const keys = { drafts: { localApiKey: '' }, setDraft() {}, persist: async () => {}, remove: async () => {}, savedAt: null, error: null }
+  const html = renderToStaticMarkup(React.createElement(LocalAiSetup, { keys }))
+  assert.match(html, /Server URL/)
+  assert.match(html, /value="http:\/\/localhost:11434\/v1"/)
+  assert.match(html, /ollama pull qwen2\.5:14b/)
+  assert.match(html, /Detect models/)
+  assert.match(html, /Model accepts images/)
+  assert.match(html, /role="switch" aria-checked="false"/)
+  assert.match(html, /API key \(optional\)/)
 })
 
 test('source picker accepts full HTTP(S) links and rejects malformed or credentialed links', () => {

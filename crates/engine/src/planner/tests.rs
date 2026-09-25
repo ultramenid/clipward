@@ -1384,3 +1384,54 @@ fn chapter_and_skip_helpers_handle_garbage() {
         [(0, "Intro".to_string()), (50_000, "Mid point".to_string())]
     );
 }
+
+#[tokio::test]
+async fn local_planning_uses_the_same_prompts_and_costs_nothing() {
+    let ai = AiSettings {
+        provider: "local".into(),
+        model: "qwen2.5:14b".into(),
+        ..Default::default()
+    };
+    let s = PlannerSettings::for_job(&ai, None);
+    assert!(!s.planner_supports_images && s.planner_fallback_models().is_empty());
+    let with_images = AiSettings {
+        local_images: true,
+        ..ai.clone()
+    };
+    assert!(PlannerSettings::for_job(&with_images, None).planner_supports_images);
+
+    let text = content(vec![clip(10.0, 40.0, five(8.0))]);
+    // The server refuses the schema once; the plan still parses from a fenced reply.
+    let server = serve(vec![
+        Reply::json(400, &json!({"error": "json_schema is not supported"})),
+        Reply::json(
+            200,
+            &completion(&format!("```json\n{text}\n```"), "qwen2.5:14b", None),
+        ),
+    ])
+    .await;
+    let settings = PlannerSettings {
+        base_url: Some(server.url.clone()),
+        retry_base_delay: Duration::ZERO,
+        ..s
+    };
+    let tr = planner_transcript(300);
+    let plan = plan(&settings, &ai, &input(&tr), &CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(plan.segments.len(), 1);
+    let costs = plan.costs.unwrap();
+    assert_eq!(costs.provider, "local");
+    assert_eq!(costs.model, "qwen2.5:14b");
+    assert_eq!(costs.estimated_cost_usd, 0.0);
+    assert!(!costs.cost_incomplete);
+    let seen = server.seen.lock().unwrap().clone();
+    let first = seen[0].json();
+    assert_eq!(first["model"], "qwen2.5:14b");
+    // Same system prompt as a hosted provider; the fallback only appends the schema.
+    let fallback = seen[1].json()["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(fallback.starts_with(first["messages"][0]["content"].as_str().unwrap()));
+}

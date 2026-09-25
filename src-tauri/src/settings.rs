@@ -6,6 +6,10 @@
 //! as Electron's safeStorage kept them. When no keychain is available, saving a key
 //! fails rather than falling back to plain text. Keys never reach the renderer:
 //! it only sees `<provider>Configured` flags.
+//!
+//! The `local` provider is the user's own OpenAI-compatible server (Ollama, LM
+//! Studio, llama.cpp, vLLM): its URL, model and image switch are plain settings,
+//! its optional key is a keychain secret like the others.
 pub use crate::appearance::Appearance;
 use crate::logger;
 use crate::shared::{is_whisper_model_id, DEFAULT_WHISPER_MODEL};
@@ -19,19 +23,31 @@ use std::sync::{LazyLock, Mutex};
 const SETTINGS_VERSION: u32 = 1;
 const KEYCHAIN_SERVICE: &str = "com.clipward.desktop";
 
-pub const SECRET_KEYS: [&str; 3] = ["openrouterApiKey", "anthropicApiKey", "openaiApiKey"];
+pub const SECRET_KEYS: [&str; 4] = [
+    "openrouterApiKey",
+    "anthropicApiKey",
+    "openaiApiKey",
+    "localApiKey",
+];
 
-static AI_PROVIDER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(openrouter|anthropic|openai|cli:[a-z-]{1,32})$").unwrap());
+static AI_PROVIDER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(openrouter|anthropic|openai|local|cli:[a-z-]{1,32})$").unwrap()
+});
 static AI_MODEL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^([A-Za-z0-9][A-Za-z0-9._:/@-]{0,119})?$").unwrap());
+/// Local model names: Ollama tags (`qwen2.5:14b`, `hf.co/org/repo:Q4_K_M`), LM Studio
+/// ids, or the path a llama.cpp / vLLM server was started with.
+static LOCAL_MODEL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^([A-Za-z0-9._/][A-Za-z0-9._:/@+=-]{0,199})?$").unwrap());
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppSettings {
     pub openrouter_api_key: String,
     pub anthropic_api_key: String,
     pub openai_api_key: String,
-    /// 'openrouter' | 'anthropic' | 'openai' | 'cli:<id>' (a logged-in CLI).
+    /// Optional key for a local server that requires one (most don't).
+    pub local_api_key: String,
+    /// 'openrouter' | 'anthropic' | 'openai' | 'local' | 'cli:<id>' (a logged-in CLI).
     pub ai_provider: String,
     /// Optional model override; empty uses the provider's default.
     pub ai_model: String,
@@ -44,6 +60,12 @@ pub struct AppSettings {
     pub window_glass: bool,
     /// Theme, tint, translucency, scale and layout (see appearance.rs).
     pub appearance: Appearance,
+    /// OpenAI-compatible base URL of the local server (validated, no trailing slash).
+    pub local_base_url: String,
+    /// The model the local server should run; required when `ai_provider` is `local`.
+    pub local_model: String,
+    /// Whether the local model accepts images.
+    pub local_images: bool,
 }
 
 impl AppSettings {
@@ -51,7 +73,8 @@ impl AppSettings {
         match key {
             "openrouterApiKey" => &self.openrouter_api_key,
             "anthropicApiKey" => &self.anthropic_api_key,
-            _ => &self.openai_api_key,
+            "openaiApiKey" => &self.openai_api_key,
+            _ => &self.local_api_key,
         }
     }
 
@@ -59,11 +82,13 @@ impl AppSettings {
         match key {
             "openrouterApiKey" => &mut self.openrouter_api_key,
             "anthropicApiKey" => &mut self.anthropic_api_key,
-            _ => &mut self.openai_api_key,
+            "openaiApiKey" => &mut self.openai_api_key,
+            _ => &mut self.local_api_key,
         }
     }
 
-    /// The key of the selected API provider; None for a CLI provider.
+    /// The key of the selected API provider; None for a CLI provider and for a
+    /// local server, whose key is optional.
     pub fn provider_key(&self) -> Option<&str> {
         match self.ai_provider.as_str() {
             "openrouter" => Some(&self.openrouter_api_key),
@@ -73,25 +98,34 @@ impl AppSettings {
         }
     }
 
-    /// Whether the selected API provider has no key (a CLI is checked separately).
+    /// Whether the selected API provider has no key (a CLI and a local server are
+    /// checked separately).
     pub fn provider_key_missing(&self) -> bool {
         self.provider_key().is_some_and(str::is_empty)
     }
 
     /// Only the selected provider's key reaches the engine. A CLI provider gets
     /// none: an ANTHROPIC_API_KEY would make Claude Code bill that key instead of
-    /// the user's logged-in plan.
+    /// the user's logged-in plan. The local server's URL and key go only with `local`.
     pub fn engine_ai(&self, cli_path: Option<PathBuf>) -> clip_engine::AiSettings {
         let key = |provider: &str, value: &str| {
             (self.ai_provider == provider && !value.is_empty()).then(|| value.to_string())
         };
+        let local = self.ai_provider == "local";
         clip_engine::AiSettings {
             provider: self.ai_provider.clone(),
-            model: self.ai_model.clone(),
+            model: if local {
+                self.local_model.clone()
+            } else {
+                self.ai_model.clone()
+            },
             openrouter_api_key: key("openrouter", &self.openrouter_api_key),
             anthropic_api_key: key("anthropic", &self.anthropic_api_key),
             openai_api_key: key("openai", &self.openai_api_key),
             cli_path,
+            base_url: local.then(|| self.local_base_url.clone()),
+            local_images: local && self.local_images,
+            local_api_key: key("local", &self.local_api_key),
         }
     }
 }
@@ -108,6 +142,11 @@ pub struct PublicSettings {
     pub openrouter_configured: bool,
     pub anthropic_configured: bool,
     pub openai_configured: bool,
+    /// A key for the local server is saved (optional).
+    pub local_configured: bool,
+    pub local_base_url: String,
+    pub local_model: String,
+    pub local_images: bool,
     pub window_glass: bool,
     /// Whether this platform can draw window glass; the renderer stays opaque otherwise.
     pub window_glass_supported: bool,
@@ -128,6 +167,13 @@ pub struct EditableSettings {
     pub ai_provider: String,
     pub ai_model: String,
     pub whisper_model: String,
+    /// Local AI fields; absent keeps the saved value.
+    #[serde(default)]
+    pub local_base_url: Option<String>,
+    #[serde(default)]
+    pub local_model: Option<String>,
+    #[serde(default)]
+    pub local_images: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -150,10 +196,21 @@ struct PersistedSettings {
     /// Missing in older files; out-of-range or unknown values fall back per field.
     #[serde(default, deserialize_with = "crate::appearance::deserialize_lenient")]
     appearance: Appearance,
+    /// Missing in files written before Local AI existed.
+    #[serde(default = "default_local_base_url")]
+    local_base_url: String,
+    #[serde(default)]
+    local_model: String,
+    #[serde(default)]
+    local_images: bool,
 }
 
 fn default_window_glass() -> bool {
     true
+}
+
+fn default_local_base_url() -> String {
+    clip_engine::llm::DEFAULT_LOCAL_BASE_URL.into()
 }
 
 pub fn public_settings(settings: &AppSettings) -> PublicSettings {
@@ -166,6 +223,10 @@ pub fn public_settings(settings: &AppSettings) -> PublicSettings {
         openrouter_configured: !settings.openrouter_api_key.is_empty(),
         anthropic_configured: !settings.anthropic_api_key.is_empty(),
         openai_configured: !settings.openai_api_key.is_empty(),
+        local_configured: !settings.local_api_key.is_empty(),
+        local_base_url: settings.local_base_url.clone(),
+        local_model: settings.local_model.clone(),
+        local_images: settings.local_images,
         window_glass: settings.window_glass,
         window_glass_supported: crate::window_glass::SUPPORTED,
         appearance: settings.appearance.clone(),
@@ -216,6 +277,7 @@ impl SettingsStore {
                 openrouter_api_key: String::new(),
                 anthropic_api_key: String::new(),
                 openai_api_key: String::new(),
+                local_api_key: String::new(),
                 ai_provider: "openrouter".into(),
                 ai_model: String::new(),
                 whisper_model: DEFAULT_WHISPER_MODEL.into(),
@@ -223,6 +285,9 @@ impl SettingsStore {
                 custom_vocabulary: String::new(),
                 window_glass: default_window_glass(),
                 appearance: Appearance::default(),
+                local_base_url: default_local_base_url(),
+                local_model: String::new(),
+                local_images: false,
             },
             cache: Mutex::new(None),
         }
@@ -233,11 +298,14 @@ impl SettingsStore {
             ("openrouterApiKey", &settings.openrouter_api_key),
             ("anthropicApiKey", &settings.anthropic_api_key),
             ("openaiApiKey", &settings.openai_api_key),
+            ("localApiKey", &settings.local_api_key),
             ("aiProvider", &settings.ai_provider),
             ("aiModel", &settings.ai_model),
             ("whisperModel", &settings.whisper_model),
             ("outputDirectory", &settings.output_directory),
             ("customVocabulary", &settings.custom_vocabulary),
+            ("localBaseUrl", &settings.local_base_url),
+            ("localModel", &settings.local_model),
         ];
         for (name, value) in fields {
             if value.encode_utf16().count() > 8192 || value.contains('\0') {
@@ -256,6 +324,7 @@ impl SettingsStore {
             openrouter_api_key: settings.openrouter_api_key.trim().into(),
             anthropic_api_key: settings.anthropic_api_key.trim().into(),
             openai_api_key: settings.openai_api_key.trim().into(),
+            local_api_key: settings.local_api_key.trim().into(),
             ai_provider: or_default(&settings.ai_provider, &self.defaults.ai_provider),
             ai_model: settings.ai_model.trim().into(),
             // A model dropped from the list falls back to the default instead of breaking settings.
@@ -271,6 +340,13 @@ impl SettingsStore {
             custom_vocabulary: vocabulary_terms(&settings.custom_vocabulary).join("\n"),
             window_glass: settings.window_glass,
             appearance: settings.appearance.normalized(),
+            local_base_url: if settings.local_base_url.trim().is_empty() {
+                self.defaults.local_base_url.clone()
+            } else {
+                clip_engine::llm::normalize_local_base_url(&settings.local_base_url)?
+            },
+            local_model: settings.local_model.trim().into(),
+            local_images: settings.local_images,
         };
         if !Path::new(&normalized.output_directory).is_absolute() {
             return Err("Settings folders must be absolute paths".into());
@@ -280,6 +356,9 @@ impl SettingsStore {
         }
         if !AI_MODEL.is_match(&normalized.ai_model) {
             return Err("Invalid AI model name".into());
+        }
+        if !LOCAL_MODEL.is_match(&normalized.local_model) {
+            return Err("Invalid local model name".into());
         }
         Ok(normalized)
     }
@@ -322,6 +401,9 @@ impl SettingsStore {
             custom_vocabulary: persisted.custom_vocabulary,
             window_glass: persisted.window_glass,
             appearance: persisted.appearance,
+            local_base_url: persisted.local_base_url,
+            local_model: persisted.local_model,
+            local_images: persisted.local_images,
             ..self.defaults.clone()
         };
         for key in SECRET_KEYS {
@@ -391,6 +473,9 @@ impl SettingsStore {
             custom_vocabulary: settings.custom_vocabulary.clone(),
             window_glass: settings.window_glass,
             appearance: settings.appearance.clone(),
+            local_base_url: settings.local_base_url.clone(),
+            local_model: settings.local_model.clone(),
+            local_images: settings.local_images,
             stored_keys: SECRET_KEYS
                 .iter()
                 .filter(|key| !settings.secret(key).is_empty())
@@ -424,6 +509,13 @@ impl SettingsStore {
             ai_provider: update.ai_provider,
             ai_model: update.ai_model,
             whisper_model: update.whisper_model,
+            local_base_url: update
+                .local_base_url
+                .unwrap_or_else(|| current.local_base_url.clone()),
+            local_model: update
+                .local_model
+                .unwrap_or_else(|| current.local_model.clone()),
+            local_images: update.local_images.unwrap_or(current.local_images),
             ..current
         })?;
         Ok(public_settings(&saved))
@@ -590,6 +682,105 @@ mod tests {
         assert!(reread.appearance.collapsed_rail);
         assert_eq!(reread.appearance.ui_scale, 1.3);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn local_ai_settings_default_for_old_files_and_round_trip() {
+        let old: PersistedSettings = serde_json::from_str(
+            r#"{"version":1,"aiProvider":"openrouter","aiModel":"","whisperModel":"base","outputDirectory":"/x"}"#,
+        )
+        .unwrap();
+        assert_eq!(old.local_base_url, "http://localhost:11434/v1");
+        assert!(old.local_model.is_empty() && !old.local_images);
+
+        let dir = std::env::temp_dir().join(format!("clipward-local-{}", uuid::Uuid::new_v4()));
+        let home = std::env::temp_dir();
+        let store = SettingsStore::new(&dir, None, &home);
+        let current = store.load().unwrap();
+        let edit =
+            |base: Option<&str>, model: Option<&str>, images: Option<bool>| EditableSettings {
+                output_directory: current.output_directory.clone(),
+                custom_vocabulary: String::new(),
+                ai_provider: "local".into(),
+                ai_model: String::new(),
+                whisper_model: current.whisper_model.clone(),
+                local_base_url: base.map(str::to_string),
+                local_model: model.map(str::to_string),
+                local_images: images,
+            };
+        let saved = store
+            .save_public(edit(
+                Some("http://192.168.1.20:1234/v1/"),
+                Some("qwen2.5:14b"),
+                Some(true),
+            ))
+            .unwrap();
+        assert_eq!(saved.ai_provider, "local");
+        assert_eq!(saved.local_base_url, "http://192.168.1.20:1234/v1");
+        assert_eq!(saved.local_model, "qwen2.5:14b");
+        assert!(saved.local_images && !saved.local_configured);
+        // A save without the local fields keeps them.
+        let kept = store.save_public(edit(None, None, None)).unwrap();
+        assert_eq!(kept.local_model, "qwen2.5:14b");
+        assert!(kept.local_images);
+        // An emptied URL falls back to the default; bad URLs and names are refused.
+        assert_eq!(
+            store
+                .save_public(edit(Some(" "), None, None))
+                .unwrap()
+                .local_base_url,
+            "http://localhost:11434/v1"
+        );
+        for bad in [
+            "http://u:p@localhost:11434/v1",
+            "http://localhost/v1?x=1",
+            "ftp://host/v1",
+        ] {
+            assert!(
+                store.save_public(edit(Some(bad), None, None)).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(store
+            .save_public(edit(None, Some("bad model"), None))
+            .is_err());
+        assert!(store
+            .save_public(edit(None, Some("/models/Qwen2.5-14B"), None))
+            .is_ok());
+        let reread = SettingsStore::new(&dir, None, &home).load().unwrap();
+        assert_eq!(reread.local_model, "/models/Qwen2.5-14B");
+        assert_eq!(reread.local_base_url, "http://localhost:11434/v1");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_the_selected_provider_gets_its_key_and_the_local_server() {
+        let store = SettingsStore::new(Path::new("/tmp/x"), None, Path::new("/home/u"));
+        let settings = AppSettings {
+            openai_api_key: "sk-oa".into(),
+            local_api_key: "lm-key".into(),
+            ai_model: "gpt-x".into(),
+            local_model: "qwen2.5:14b".into(),
+            local_images: true,
+            ai_provider: "local".into(),
+            ..store.defaults.clone()
+        };
+        let ai = settings.engine_ai(None);
+        assert_eq!(ai.model, "qwen2.5:14b");
+        assert_eq!(ai.base_url.as_deref(), Some("http://localhost:11434/v1"));
+        assert_eq!(ai.local_api_key.as_deref(), Some("lm-key"));
+        assert!(ai.local_images && ai.openai_api_key.is_none());
+        assert!(!settings.provider_key_missing());
+
+        let openai = AppSettings {
+            ai_provider: "openai".into(),
+            ..settings
+        };
+        let ai = openai.engine_ai(None);
+        assert_eq!(ai.model, "gpt-x");
+        assert_eq!(ai.openai_api_key.as_deref(), Some("sk-oa"));
+        assert!(ai.local_api_key.is_none() && ai.base_url.is_none() && !ai.local_images);
+        assert!(SECRET_KEYS.contains(&"localApiKey"));
     }
 
     #[cfg(unix)]

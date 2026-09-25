@@ -3,7 +3,7 @@
  * src/renderer/lib/bridge.ts over Tauri `invoke`/`listen`.
  */
 import type { ClipJobRequest, JobSnapshot } from './jobs'
-import type { ApiKeyName, DetectedCli, ProviderTestResult } from './ai-providers'
+import type { ApiKeyName, DetectedCli, LocalModelsResult, ProviderTestResult } from './ai-providers'
 import type { WhisperModelStatus } from './whisper-models'
 import type { Appearance } from './appearance'
 
@@ -13,7 +13,7 @@ export interface ClipSettings {
   openrouterConfigured: boolean
   anthropicConfigured: boolean
   openaiConfigured: boolean
-  /** 'openrouter' | 'anthropic' | 'openai' | 'cli:<id>' */
+  /** 'openrouter' | 'anthropic' | 'openai' | 'local' | 'cli:<id>' */
   aiProvider: string
   aiModel: string
   whisperModel: string
@@ -29,6 +29,14 @@ export interface ClipSettings {
   windowBlurSupported: boolean
   /** The shell applies appearance.uiScale as the webview zoom; otherwise the renderer scales itself. */
   nativeUiScale: boolean
+  /** Local AI: a key for the server is saved (most local servers need none). */
+  localConfigured: boolean
+  /** Local AI: the server's OpenAI-compatible base URL, e.g. http://localhost:11434/v1. */
+  localBaseUrl: string
+  /** Local AI: the model the server runs; required when aiProvider is 'local'. */
+  localModel: string
+  /** Local AI: whether the model accepts images (video frames). */
+  localImages: boolean
 }
 
 export interface HistoryEntry {
@@ -66,6 +74,8 @@ export interface ClipwardAPI {
     detect: () => Promise<DetectedCli[]>
     /** One tiny request through the selected provider. */
     test: () => Promise<ProviderTestResult>
+    /** Models the saved local AI server offers. */
+    localModels: () => Promise<LocalModelsResult>
   }
   whisper: {
     list: () => Promise<WhisperModelStatus[]>

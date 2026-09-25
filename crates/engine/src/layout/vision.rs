@@ -95,7 +95,7 @@ impl VisionCache {
 /// Whether the configured provider can answer layout questions about images.
 pub fn vision_available(ai: &AiSettings) -> bool {
     let has_key = ai.openrouter_api_key.as_deref().is_some_and(|k| !k.trim().is_empty());
-    llm::supports_images(&ai.provider) && (has_key || ai.provider != "openrouter")
+    llm::ai_supports_images(ai) && (has_key || ai.provider != "openrouter")
 }
 
 pub fn pick_keyframe(keyframes: &[Keyframe], t_ms: i64) -> Option<&Keyframe> {
@@ -214,6 +214,11 @@ mod tests {
         assert!(vision_available(&ai));
         ai.provider = "cli:claude".into();
         assert!(!vision_available(&ai));
+        // A local model sees images only when the user says it accepts them.
+        ai.provider = "local".into();
+        assert!(!vision_available(&ai));
+        ai.local_images = true;
+        assert!(vision_available(&ai));
     }
 
     #[test]

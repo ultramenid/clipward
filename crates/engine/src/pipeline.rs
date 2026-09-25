@@ -431,6 +431,36 @@ const FAILURES: &[(&[&str], &str, &str)] = &[
         "Retry, or trim the video to a shorter range.",
     ),
     (
+        &["local ai server is not reachable"],
+        "The local AI server is not reachable.",
+        "Start Ollama or LM Studio (or your server) and check the server URL in Settings → AI provider.",
+    ),
+    (
+        &["local model not found"],
+        "The local AI server does not have the selected model.",
+        "Pull or load the model first (for example `ollama pull qwen2.5:14b`), then pick it in Settings → AI provider.",
+    ),
+    (
+        &["local model context is too small"],
+        "The local model's context window is too small for this video's transcript.",
+        "Use a model with a larger context (or raise the server's context length), or set a shorter start and end time.",
+    ),
+    (
+        &["local model is too large"],
+        "The local model does not fit in this computer's memory.",
+        "Choose a smaller model or quantization, or close other apps, then retry.",
+    ),
+    (
+        &["local ai server timed out"],
+        "The local AI model took too long to plan clips.",
+        "Use a smaller or faster model, or set a shorter start and end time.",
+    ),
+    (
+        &["local ai endpoint was not found"],
+        "The local AI server has no chat endpoint at that URL.",
+        "Use the server's OpenAI-compatible base URL, which usually ends in /v1 (Ollama: http://localhost:11434/v1).",
+    ),
+    (
         &["unsupported twitch source"],
         "Choose a public, completed Twitch VOD.",
         "Copy the video link from a saved Twitch video. Live channels, collections and Twitch clips are not supported.",

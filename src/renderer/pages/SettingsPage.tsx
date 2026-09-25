@@ -87,7 +87,7 @@ export function SettingsPage(): React.JSX.Element {
   const [active, jump] = useActiveSection(sections.map((section) => section.id))
 
   const checks: { label: string; ok: boolean | null; detail: string; section: SectionId; optional?: boolean; tone?: 'danger' }[] = [
-    { label: 'AI provider', ok: providerReady, detail: providerReady ? providerLabel(aiProvider) : 'Pick a CLI or add a key', section: 'ai' },
+    { label: 'AI provider', ok: providerReady, detail: providerReady ? providerLabel(aiProvider) : 'Pick a CLI, add a key or set up Local AI', section: 'ai' },
     { label: 'Whisper', ok: whisperReady, detail: whisperReady ? WHISPER_MODELS.find((m) => m.id === whisperModel)?.label ?? whisperModel : 'Download a model', section: 'transcription' },
     { label: 'Tools', ok: toolsChecked ? toolsMissing === 0 : null, detail: !toolsChecked ? (checkingTools ? 'Checking…' : 'Not checked') : toolsMissing ? `${toolsMissing} missing` : 'All installed', section: 'system', tone: 'danger' },
   ]

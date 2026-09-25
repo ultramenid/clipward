@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { errorMessage } from '../lib/utils'
 import { getApi } from '../lib/ipc'
 import type { ClipSettings, ToolStatus } from '../../shared/api'
-import type { ApiKeyName, DetectedCli } from '../../shared/ai-providers'
+import { LOCAL_PROVIDER, type ApiKeyName, type DetectedCli } from '../../shared/ai-providers'
 import type { WhisperModelStatus } from '../../shared/whisper-models'
 import { APPEARANCE_DEFAULTS, normalizeAppearance, sameAppearance, type Appearance } from '../../shared/appearance'
 
@@ -54,6 +54,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   appearance: { ...APPEARANCE_DEFAULTS },
   windowBlurSupported: false,
   nativeUiScale: false,
+  localConfigured: false,
+  localBaseUrl: LOCAL_PROVIDER.defaultBaseUrl,
+  localModel: '',
+  localImages: false,
   loaded: false,
   saving: false,
   toolStatus: null,
@@ -170,13 +174,18 @@ function pickSettings(s: ClipSettings): ClipSettings {
     // A shell that predates appearance settings reports none: use the defaults.
     appearance: normalizeAppearance(s.appearance),
     windowBlurSupported: s.windowBlurSupported ?? false,
-    nativeUiScale: s.nativeUiScale ?? false
+    nativeUiScale: s.nativeUiScale ?? false,
+    localConfigured: s.localConfigured ?? false,
+    localBaseUrl: s.localBaseUrl ?? LOCAL_PROVIDER.defaultBaseUrl,
+    localModel: s.localModel ?? '',
+    localImages: s.localImages ?? false
   }
 }
 
 export type SetupState = {
   ready: boolean
-  /** The selected AI provider can run: its CLI is installed or its key is saved. */
+  /** The selected AI provider can run: its CLI is installed, its key is saved, or
+   *  (Local AI) a server URL and model are set. */
   providerReady: boolean
   /** The selected Whisper model is on disk. */
   whisperReady: boolean
@@ -184,8 +193,11 @@ export type SetupState = {
 }
 
 /** Whether the selected provider is usable, from settings alone (no network). */
-export function isProviderReady(s: Pick<SettingsState, 'aiProvider' | 'clis' | 'openrouterConfigured' | 'anthropicConfigured' | 'openaiConfigured'>): boolean {
+export function isProviderReady(s: Pick<SettingsState, 'aiProvider' | 'clis' | 'openrouterConfigured' | 'anthropicConfigured' | 'openaiConfigured'>
+  & Partial<Pick<SettingsState, 'localBaseUrl' | 'localModel'>>): boolean {
   if (s.aiProvider.startsWith('cli:')) return Boolean(s.clis?.find((cli) => `cli:${cli.id}` === s.aiProvider)?.path)
+  // The server itself is only checked by Test connection or the job.
+  if (s.aiProvider === LOCAL_PROVIDER.id) return Boolean(s.localBaseUrl?.trim() && s.localModel?.trim())
   return { openrouter: s.openrouterConfigured, anthropic: s.anthropicConfigured, openai: s.openaiConfigured }[s.aiProvider] ?? false
 }
 

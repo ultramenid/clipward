@@ -215,6 +215,7 @@ pub fn run() {
             commands::settings_select_output_dir,
             commands::ai_detect,
             commands::ai_test,
+            commands::ai_local_models,
             commands::whisper_list,
             commands::whisper_download,
             commands::whisper_cancel,

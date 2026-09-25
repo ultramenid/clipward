@@ -1,4 +1,5 @@
-//! Provider gateway: OpenRouter / Anthropic / OpenAI HTTP and logged-in AI CLIs.
+//! Provider gateway: OpenRouter / Anthropic / OpenAI HTTP, the user's own local
+//! OpenAI-compatible server (Ollama, LM Studio, llama.cpp, vLLM) and logged-in AI CLIs.
 //!
 //! Port of `services/llm_gateway.py` + `services/openrouter.py`. Callers build one
 //! request and read one reply, so the planner and layout vision don't know which
@@ -6,14 +7,18 @@
 //!
 //! Error messages carry the marker phrases `pipeline::describe_failure` maps
 //! ("cli is not logged in", "cli was not found", "cli could not be started",
-//! "cli timed out", "out of credits", "(401)", "invalid api key", ...). They never
+//! "cli timed out", "local ai server is not reachable", "local model not found",
+//! "local model context is too small", "out of credits", "(401)", "invalid api key",
+//! ...). They never
 //! contain API keys, response bodies or CLI output.
 use crate::error::{EngineError, Result};
 use crate::types::AiSettings;
 use base64::Engine as _;
 use serde_json::{json, Map, Value};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
@@ -94,9 +99,21 @@ pub struct LlmResponse {
     pub cost_incomplete: bool,
 }
 
-/// CLI providers read text only.
+/// Whether `provider` takes images regardless of model. CLI providers read text
+/// only; a local server depends on its model, so it counts as text only here: use
+/// [`ai_supports_images`] when the settings are at hand.
 pub fn supports_images(provider: &str) -> bool {
-    !provider.starts_with("cli:")
+    !provider.starts_with("cli:") && provider != "local"
+}
+
+/// Whether requests through `ai` may carry images: a local model only when the
+/// user said it accepts them (Settings → "Model accepts images").
+pub fn ai_supports_images(ai: &AiSettings) -> bool {
+    if ai.provider == "local" {
+        ai.local_images
+    } else {
+        supports_images(&ai.provider)
+    }
 }
 
 /// Simple one-shot call used by modules that don't need routing options.
@@ -109,7 +126,7 @@ pub async fn complete(
     cancel: &CancellationToken,
 ) -> Result<LlmResponse> {
     let mut parts = vec![ContentPart::Text(req.user)];
-    if supports_images(&ai.provider) {
+    if ai_supports_images(ai) {
         for image in req.images {
             parts.push(ContentPart::Image {
                 mime: "image/jpeg".into(),
@@ -313,6 +330,7 @@ pub async fn chat(
             let payload = anthropic_payload(req, &ai.model);
             with_cancel(cancel, anthropic_messages(base, key, &payload, cancel)).await
         }
+        "local" => local_chat(ai, req, cancel).await,
         p if p.starts_with("cli:") => cli_chat(&p[4..], ai, req, cancel).await,
         other => Err(LlmError::fatal(format!("Unknown AI provider: {other}"))),
     }
@@ -577,20 +595,31 @@ pub(crate) async fn post_chat_completion(
             LlmError::fatal(message)
         });
     }
-    let body: Value = serde_json::from_slice(&content)
+    let body = chat_body(&content, label)?;
+    // OpenRouter can return 200 with an upstream provider error in the body.
+    if body.get("error").map(truthy).unwrap_or(false) {
+        return Err(LlmError::retry(format!("{label} provider error")));
+    }
+    Ok(chat_reply(&body, payload, label))
+}
+
+/// A chat-completions response body, which must be a JSON object.
+fn chat_body(content: &[u8], label: &str) -> LlmResult<Value> {
+    let body: Value = serde_json::from_slice(content)
         .map_err(|_| LlmError::fatal(format!("{label} returned invalid JSON")))?;
     if !body.is_object() {
         return Err(LlmError::fatal(format!(
             "{label} returned an invalid response"
         )));
     }
-    // OpenRouter can return 200 with an upstream provider error in the body.
-    if body.get("error").map(truthy).unwrap_or(false) {
-        return Err(LlmError::retry(format!("{label} provider error")));
-    }
+    Ok(body)
+}
+
+/// Text, finish reason, served model and usage of a chat-completions body.
+fn chat_reply(body: &Value, payload: &Value, label: &str) -> ChatReply {
     let usage = body.get("usage").filter(|u| u.is_object());
     let get = |k: &str| usage.and_then(|u| u.get(k));
-    let (text, finish_reason) = message_text(&body);
+    let (text, finish_reason) = message_text(body);
     let requested = payload.get("model").and_then(|m| m.as_str()).unwrap_or("");
     let model = body
         .get("model")
@@ -620,7 +649,574 @@ pub(crate) async fn post_chat_completion(
             .map(|c| format!("${c}"))
             .unwrap_or_else(|| "n/a".into())
     );
-    Ok(reply)
+    reply
+}
+
+// ---------------------------------------------------------------------------
+// Local AI: the user's own OpenAI-compatible server (Ollama, LM Studio,
+// llama.cpp server, vLLM, ...). Planning traffic goes only to that server.
+// ---------------------------------------------------------------------------
+
+/// Ollama's OpenAI-compatible endpoint.
+pub const DEFAULT_LOCAL_BASE_URL: &str = "http://localhost:11434/v1";
+pub const MAX_LOCAL_BASE_URL_CHARS: usize = 512;
+/// A server on this machine or the LAN answers the TCP handshake at once.
+pub const LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Local models are slow: loading one and reading a long transcript can take many minutes.
+pub const LOCAL_REQUEST_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+/// Listing the models a server offers.
+pub const LOCAL_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Output caps above this are left to the server: a fixed 32k cap makes servers that
+/// check prompt + max_tokens against the context (vLLM, llama.cpp) refuse every
+/// prompt on a 32k-context model, while they all stop at the context anyway.
+pub const LOCAL_MAX_OUTPUT_TOKENS: u32 = 8192;
+const MAX_LOCAL_MODELS: usize = 500;
+/// Error bodies are only inspected for marker words, never echoed.
+const MAX_LOCAL_ERROR_SCAN_BYTES: usize = 64 * 1024;
+
+const LOCAL_LABEL: &str = "Local AI server";
+const LOCAL_UNREACHABLE: &str = "Local AI server is not reachable";
+const LOCAL_MODEL_NOT_FOUND: &str = "Local model not found on the server";
+const LOCAL_CONTEXT_TOO_SMALL: &str =
+    "Local model context is too small for this prompt (the server reported a context overflow)";
+const LOCAL_OUT_OF_MEMORY: &str = "Local model does not fit in memory (local model is too large)";
+
+/// The base URL as saved, or why it is refused: http(s), a host, no credentials,
+/// query or fragment, bounded length. Loopback, LAN and `.local` hosts are allowed:
+/// this is the user's own server. A trailing slash is dropped.
+pub fn normalize_local_base_url(value: &str) -> std::result::Result<String, &'static str> {
+    let trimmed = value.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Err("Enter the local AI server URL");
+    }
+    if trimmed.chars().count() > MAX_LOCAL_BASE_URL_CHARS
+        || trimmed.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err("The local AI server URL is not valid");
+    }
+    let url = url::Url::parse(trimmed).map_err(|_| "The local AI server URL is not valid")?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("The local AI server URL must start with http:// or https://");
+    }
+    if url.host_str().is_none_or(str::is_empty) {
+        return Err("The local AI server URL needs a host");
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("Put the server key in the API key field, not in the URL");
+    }
+    if url.query().is_some() || url.fragment().is_some() || trimmed.contains(['?', '#']) {
+        return Err("The local AI server URL cannot have a query or fragment");
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Hosts on this machine or the local network: requests to them skip any proxy.
+pub fn is_local_host(host: &url::Host<&str>) -> bool {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    fn v4(ip: Ipv4Addr) -> bool {
+        let [a, b, ..] = ip.octets();
+        // 100.64/10 is carrier-grade NAT, also used by Tailscale.
+        ip.is_loopback()
+            || ip.is_private()
+            || ip.is_link_local()
+            || ip.is_unspecified()
+            || (a == 100 && (64..=127).contains(&b))
+    }
+    fn v6(ip: Ipv6Addr) -> bool {
+        let first = ip.segments()[0];
+        ip.is_loopback()
+            || ip.is_unspecified()
+            || (first & 0xfe00) == 0xfc00
+            || (first & 0xffc0) == 0xfe80
+            || ip.to_ipv4_mapped().is_some_and(v4)
+    }
+    match host {
+        url::Host::Ipv4(ip) => v4(*ip),
+        url::Host::Ipv6(ip) => v6(*ip),
+        url::Host::Domain(name) => {
+            let name = name.trim_end_matches('.').to_ascii_lowercase();
+            if let Ok(ip) = name.parse::<IpAddr>() {
+                return match ip {
+                    IpAddr::V4(ip) => v4(ip),
+                    IpAddr::V6(ip) => v6(ip),
+                };
+            }
+            name == "localhost"
+                || !name.contains('.')
+                || [".localhost", ".local", ".lan", ".home.arpa", ".internal"]
+                    .iter()
+                    .any(|suffix| name.ends_with(suffix))
+        }
+    }
+}
+
+fn base_is_local(base: &str) -> bool {
+    url::Url::parse(base)
+        .ok()
+        .and_then(|url| url.host().map(|host| is_local_host(&host)))
+        .unwrap_or(false)
+}
+
+fn local_http_client(base: &str, timeout: Duration) -> LlmResult<reqwest::Client> {
+    let mut builder = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(LOCAL_CONNECT_TIMEOUT)
+        .timeout(timeout);
+    if base_is_local(base) {
+        // A system proxy cannot reach this machine or the LAN on the user's behalf.
+        builder = builder.no_proxy();
+    }
+    builder
+        .build()
+        .map_err(|_| LlmError::fatal("HTTP client could not be created"))
+}
+
+fn local_base(ai: &AiSettings, req_base: Option<&str>) -> LlmResult<String> {
+    let base = req_base
+        .or(ai.base_url.as_deref())
+        .filter(|b| !b.trim().is_empty())
+        .unwrap_or(DEFAULT_LOCAL_BASE_URL);
+    normalize_local_base_url(base).map_err(|_| {
+        LlmError::fatal(format!(
+            "{LOCAL_UNREACHABLE}: the base URL in Settings is not valid"
+        ))
+    })
+}
+
+fn local_headers(ai: &AiSettings) -> Vec<(&'static str, String)> {
+    ai.local_api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .map(|key| vec![("Authorization", format!("Bearer {key}"))])
+        .unwrap_or_default()
+}
+
+/// How the reply is held to the JSON schema. Servers differ: Ollama and vLLM take
+/// both formats, LM Studio only `json_schema`, llama.cpp refuses schemas its grammar
+/// converter can't handle. Each rejection steps down one level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LocalFormat {
+    JsonSchema,
+    JsonObject,
+    Prompt,
+}
+
+impl LocalFormat {
+    fn fallback(self) -> Option<Self> {
+        match self {
+            Self::JsonSchema => Some(Self::JsonObject),
+            Self::JsonObject => Some(Self::Prompt),
+            Self::Prompt => None,
+        }
+    }
+}
+
+/// The format each (server, model) last accepted, so retries and later requests
+/// don't probe again.
+static LOCAL_FORMATS: LazyLock<Mutex<HashMap<(String, String), LocalFormat>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The chat payload for a local server. Same messages as the hosted providers;
+/// routing and reasoning keys dropped; the JSON schema sent as `format` allows.
+pub(crate) fn local_payload(req: &ChatRequest, model: &str, format: LocalFormat) -> Value {
+    let mut payload = openrouter_payload(req);
+    let obj = payload.as_object_mut().expect("object");
+    for key in [
+        "plugins",
+        "provider",
+        "models",
+        "reasoning",
+        "response_format",
+    ] {
+        obj.remove(key);
+    }
+    obj.insert("model".into(), Value::String(model.to_string()));
+    obj.insert("stream".into(), Value::Bool(false));
+    if req.max_tokens > LOCAL_MAX_OUTPUT_TOKENS {
+        obj.remove("max_tokens");
+    }
+    if let Some(messages) = obj.get_mut("messages").and_then(Value::as_array_mut) {
+        // Text-only content as one string: every OpenAI-compatible server reads that.
+        if let Some(user) = messages.last_mut() {
+            let parts = user["content"].as_array().cloned().unwrap_or_default();
+            if parts.iter().all(|p| p["type"] == "text") {
+                let text: Vec<&str> = parts.iter().filter_map(|p| p["text"].as_str()).collect();
+                user["content"] = Value::String(text.join("\n\n"));
+            }
+        }
+        if let Some((_, schema)) = &req.schema {
+            if format != LocalFormat::JsonSchema {
+                let instruction = format!(
+                    "Reply with only one JSON object that matches this JSON schema, with no other text and no code fences:\n{schema}"
+                );
+                match messages.first_mut() {
+                    Some(first) if first["role"] == "system" => {
+                        let system = first["content"].as_str().unwrap_or("").to_string();
+                        first["content"] = Value::String(format!("{system}\n\n{instruction}"));
+                    }
+                    _ => messages.insert(0, json!({"role": "system", "content": instruction})),
+                }
+            }
+        }
+    }
+    if let Some((name, schema)) = &req.schema {
+        match format {
+            LocalFormat::JsonSchema => {
+                obj.insert("response_format".into(), json_schema_format(name, schema));
+            }
+            LocalFormat::JsonObject => {
+                obj.insert("response_format".into(), json!({"type": "json_object"}));
+            }
+            LocalFormat::Prompt => {}
+        }
+    }
+    payload
+}
+
+/// A failed local request: either the server refused the structured-output format
+/// (try the next one) or a real error.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum LocalFailure {
+    FormatRejected,
+    Error(LlmError),
+}
+
+/// Classify an error response by its status and marker words in its body. The
+/// body is never copied into the message.
+pub(crate) fn classify_local_error(status: u16, body: &[u8], structured: bool) -> LocalFailure {
+    let scan = &body[..body.len().min(MAX_LOCAL_ERROR_SCAN_BYTES)];
+    let text = String::from_utf8_lossy(scan).to_lowercase();
+    let has = |words: &[&str]| words.iter().any(|w| text.contains(w));
+    if status == 401 || status == 403 {
+        return LocalFailure::Error(LlmError::fatal(format!(
+            "{LOCAL_LABEL} API error ({status}): the server refused the key (invalid api key)"
+        )));
+    }
+    if has(&[
+        "context length",
+        "context_length",
+        "context window",
+        "context size",
+        "maximum context",
+        "exceed_context",
+        "exceeds the available context",
+        "n_ctx",
+        "too many tokens",
+        "prompt is too long",
+        "input is too long",
+    ]) {
+        return LocalFailure::Error(LlmError::fatal(LOCAL_CONTEXT_TOO_SMALL));
+    }
+    let model_missing = has(&[
+        "model_not_found",
+        "no models loaded",
+        "try pulling",
+        "no such model",
+        "unknown model",
+    ]) || (has(&["model"])
+        && (status == 404 || has(&["not found", "does not exist", "not loaded"])));
+    if model_missing {
+        return LocalFailure::Error(LlmError::fatal(LOCAL_MODEL_NOT_FOUND));
+    }
+    if has(&[
+        "more system memory",
+        "out of memory",
+        "insufficient memory",
+        "not enough memory",
+        "cudamalloc failed",
+    ]) {
+        return LocalFailure::Error(LlmError::fatal(LOCAL_OUT_OF_MEMORY));
+    }
+    if status == 404 {
+        return LocalFailure::Error(LlmError::fatal(format!(
+            "Local AI endpoint was not found ({status}); the base URL usually ends in /v1"
+        )));
+    }
+    if structured && matches!(status, 400 | 415 | 422 | 500 | 501) {
+        let about_format = has(&[
+            "response_format",
+            "json_schema",
+            "json_object",
+            "schema",
+            "grammar",
+            "structured",
+            "format",
+        ]);
+        // An unexplained bad request may be the schema too: a plainer format decides.
+        if about_format || matches!(status, 400 | 422) {
+            return LocalFailure::FormatRejected;
+        }
+    }
+    let message = format!("{LOCAL_LABEL} API error ({status})");
+    LocalFailure::Error(if RETRYABLE_STATUS_CODES.contains(&status) {
+        LlmError::retry(message)
+    } else {
+        LlmError::fatal(message)
+    })
+}
+
+fn local_transport_error(error: &reqwest::Error) -> LlmError {
+    if error.is_timeout() {
+        LlmError::fatal(format!(
+            "Local AI server timed out after {} minutes (local ai server timed out)",
+            LOCAL_REQUEST_TIMEOUT.as_secs() / 60
+        ))
+    } else if error.is_connect() {
+        LlmError::fatal(LOCAL_UNREACHABLE)
+    } else {
+        // Dropped mid-request, often a server that crashed loading the model.
+        LlmError::retry(format!("{LOCAL_UNREACHABLE} (the connection failed)"))
+    }
+}
+
+/// Status and body (at most `limit` bytes) of one request.
+async fn local_send(request: reqwest::RequestBuilder, limit: usize) -> LlmResult<(u16, Vec<u8>)> {
+    let mut response = request
+        .header(reqwest::header::ACCEPT_ENCODING, "identity")
+        .send()
+        .await
+        .map_err(|e| local_transport_error(&e))?;
+    if !identity_encoding(&response) {
+        return Err(LlmError::fatal(format!(
+            "{LOCAL_LABEL} returned an unsupported response encoding"
+        )));
+    }
+    let status = response.status().as_u16();
+    let mut content = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                if chunk.len() > limit - content.len() {
+                    return Err(LlmError::fatal(format!(
+                        "{LOCAL_LABEL} response exceeds the size limit"
+                    )));
+                }
+                content.extend_from_slice(&chunk);
+            }
+            Ok(None) => return Ok((status, content)),
+            Err(e) => return Err(local_transport_error(&e)),
+        }
+    }
+}
+
+async fn post_local(
+    client: &reqwest::Client,
+    base: &str,
+    headers: &[(&str, String)],
+    payload: &Value,
+    structured: bool,
+) -> std::result::Result<ChatReply, LocalFailure> {
+    let body = serde_json::to_vec(payload).map_err(|_| {
+        LocalFailure::Error(LlmError::fatal("Local AI request could not be encoded"))
+    })?;
+    let mut request = client
+        .post(format!("{base}/chat/completions"))
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body);
+    for (name, value) in headers {
+        request = request.header(*name, value);
+    }
+    let (status, content) = local_send(request, MAX_CHAT_RESPONSE_BYTES)
+        .await
+        .map_err(LocalFailure::Error)?;
+    if status != 200 {
+        return Err(classify_local_error(status, &content, structured));
+    }
+    let body = chat_body(&content, LOCAL_LABEL).map_err(LocalFailure::Error)?;
+    if body.get("error").map(truthy).unwrap_or(false) {
+        return Err(classify_local_error(500, &content, structured));
+    }
+    Ok(chat_reply(&body, payload, LOCAL_LABEL))
+}
+
+/// Rough prompt size (4 characters per token) for the truncation warning.
+fn estimated_prompt_tokens(req: &ChatRequest) -> u64 {
+    let text: usize = req.system.as_deref().map_or(0, |s| s.chars().count())
+        + req
+            .user
+            .iter()
+            .map(|part| match part {
+                ContentPart::Text(t) => t.chars().count(),
+                ContentPart::Image { .. } => 0,
+            })
+            .sum::<usize>();
+    (text / 4) as u64
+}
+
+/// The JSON a local model wrapped in reasoning, code fences or prose, when the
+/// reply is not JSON as it stands.
+pub(crate) fn extract_local_json(text: &str) -> String {
+    let mut rest = text.trim();
+    // Reasoning models (Qwen3, DeepSeek-R1) may think out loud first.
+    while let Some(end) = rest.find("</think>") {
+        rest = rest[end + "</think>".len()..].trim_start();
+    }
+    let rest = rest.trim();
+    if serde_json::from_str::<Value>(rest).is_ok() {
+        return rest.to_string();
+    }
+    let unfenced = rest
+        .strip_prefix("```json")
+        .or_else(|| rest.strip_prefix("```"))
+        .and_then(|r| r.trim_end().strip_suffix("```"))
+        .map(str::trim);
+    if let Some(inner) = unfenced.filter(|i| serde_json::from_str::<Value>(i).is_ok()) {
+        return inner.to_string();
+    }
+    match (rest.find('{'), rest.rfind('}')) {
+        (Some(start), Some(end)) if start < end => {
+            let candidate = &rest[start..=end];
+            if serde_json::from_str::<Value>(candidate).is_ok() {
+                return candidate.to_string();
+            }
+            rest.to_string()
+        }
+        _ => rest.to_string(),
+    }
+}
+
+async fn local_chat(
+    ai: &AiSettings,
+    req: &ChatRequest,
+    cancel: &CancellationToken,
+) -> LlmResult<ChatReply> {
+    let model = ai.model.trim();
+    if model.is_empty() {
+        return Err(LlmError::fatal(format!(
+            "{LOCAL_MODEL_NOT_FOUND}: no model is selected"
+        )));
+    }
+    let base = local_base(ai, req.base_url.as_deref())?;
+    let client = local_http_client(&base, LOCAL_REQUEST_TIMEOUT)?;
+    let headers = local_headers(ai);
+    let cache_key = (base.clone(), model.to_string());
+    let structured = req.schema.is_some();
+    let mut format = LOCAL_FORMATS
+        .lock()
+        .ok()
+        .and_then(|formats| formats.get(&cache_key).copied())
+        .unwrap_or(LocalFormat::JsonSchema);
+    loop {
+        let payload = local_payload(req, model, format);
+        let attempt = post_local(&client, &base, &headers, &payload, structured);
+        let outcome = tokio::select! {
+            r = attempt => r,
+            _ = cancel.cancelled() => return Err(LlmError::cancelled()),
+        };
+        match outcome {
+            Ok(mut reply) => {
+                if structured {
+                    if let Ok(mut formats) = LOCAL_FORMATS.lock() {
+                        formats.insert(cache_key, format);
+                    }
+                    reply.text = reply.text.map(|t| extract_local_json(&t));
+                }
+                let estimate = estimated_prompt_tokens(req);
+                if reply.prompt_tokens > 0 && estimate >= 6000 && reply.prompt_tokens * 2 < estimate
+                {
+                    // Ollama cuts prompts to its context length without an error. Its
+                    // prompt cache also shrinks this count, so it only warns.
+                    tracing::warn!(
+                        "Local model read {} prompt tokens for a ~{estimate}-token prompt; the server may have truncated it (raise its context length)",
+                        reply.prompt_tokens
+                    );
+                }
+                // The user's own hardware: nothing is billed.
+                reply.cost = Some(0.0);
+                return Ok(reply);
+            }
+            Err(LocalFailure::FormatRejected) => match format.fallback() {
+                Some(next) => {
+                    tracing::info!("Local AI server refused {format:?} output; trying {next:?}");
+                    format = next;
+                }
+                None => {
+                    return Err(LlmError::fatal(format!(
+                        "{LOCAL_LABEL} API error (400): the server refused the request"
+                    )))
+                }
+            },
+            Err(LocalFailure::Error(error)) => return Err(error),
+        }
+    }
+}
+
+/// Models a local server offers: `GET {base}/models` (OpenAI format), plus Ollama's
+/// `/api/tags` when the URL looks like Ollama. Errors carry the same markers as chat.
+pub async fn list_local_models(
+    base_url: &str,
+    api_key: Option<&str>,
+) -> std::result::Result<Vec<String>, LlmError> {
+    let base = normalize_local_base_url(base_url).map_err(LlmError::fatal)?;
+    let client = local_http_client(&base, LOCAL_PROBE_TIMEOUT)?;
+    let ai = AiSettings {
+        local_api_key: api_key.map(str::to_string),
+        ..Default::default()
+    };
+    let headers = local_headers(&ai);
+    let get = |url: String| {
+        let mut request = client.get(url);
+        for (name, value) in &headers {
+            request = request.header(*name, value);
+        }
+        local_send(request, MAX_CHAT_RESPONSE_BYTES)
+    };
+    let mut models: Vec<String> = Vec::new();
+    let mut failure = None;
+    let mut reached = false;
+    match get(format!("{base}/models")).await {
+        Ok((200, body)) => {
+            reached = true;
+            let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+            let items = body["data"].as_array().cloned().unwrap_or_default();
+            models.extend(
+                items
+                    .iter()
+                    .filter_map(|m| m["id"].as_str().map(str::to_string)),
+            );
+        }
+        Ok((status, body)) => {
+            failure = Some(match classify_local_error(status, &body, false) {
+                LocalFailure::Error(e) => e,
+                LocalFailure::FormatRejected => LlmError::fatal("Local AI server error"),
+            })
+        }
+        Err(e) => failure = Some(e),
+    }
+    if looks_like_ollama(&base) {
+        let root = base.strip_suffix("/v1").unwrap_or(&base);
+        if let Ok((200, body)) = get(format!("{root}/api/tags")).await {
+            reached = true;
+            let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+            let items = body["models"].as_array().cloned().unwrap_or_default();
+            models.extend(items.iter().filter_map(|m| {
+                m["name"]
+                    .as_str()
+                    .or(m["model"].as_str())
+                    .map(str::to_string)
+            }));
+        }
+    }
+    if !reached {
+        return Err(failure.unwrap_or_else(|| LlmError::fatal(LOCAL_UNREACHABLE)));
+    }
+    let mut seen = std::collections::HashSet::new();
+    models.retain(|m| {
+        !m.is_empty()
+            && m.chars().count() <= 200
+            && !m.chars().any(char::is_control)
+            && seen.insert(m.clone())
+    });
+    models.truncate(MAX_LOCAL_MODELS);
+    Ok(models)
+}
+
+/// Ollama's default port, or a host named for it.
+fn looks_like_ollama(base: &str) -> bool {
+    url::Url::parse(base).is_ok_and(|url| {
+        url.port() == Some(11434) || url.host_str().is_some_and(|h| h.contains("ollama"))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -2088,5 +2684,345 @@ mod tests {
         assert!(err.cancelled);
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(matches!(EngineError::from(err), EngineError::Cancelled));
+    }
+
+    // ---- local AI (OpenAI-compatible server on this machine) ----
+
+    fn local_ai(base: &str) -> AiSettings {
+        AiSettings {
+            provider: "local".into(),
+            model: "qwen2.5:14b".into(),
+            base_url: Some(base.into()),
+            ..Default::default()
+        }
+    }
+
+    fn structured_req() -> ChatRequest {
+        ChatRequest {
+            model: DEFAULT_OPENROUTER_MODEL.into(),
+            system: Some("Plan clips.".into()),
+            user: vec![ContentPart::Text("transcript".into())],
+            max_tokens: 32000,
+            schema: Some(("clip_plan".into(), json!({"type": "object"}))),
+            reasoning_effort: Some("medium".into()),
+            response_healing: true,
+            require_parameters: true,
+            fallback_models: vec!["x/y".into()],
+            ..Default::default()
+        }
+    }
+
+    fn ok_body(content: &str) -> Value {
+        json!({
+            "model": "qwen2.5:14b",
+            "choices": [{"message": {"content": content}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+        })
+    }
+
+    fn ui_message(message: &str) -> String {
+        crate::pipeline::describe_failure(&EngineError::Failed(message.into())).0
+    }
+
+    #[tokio::test]
+    async fn local_sends_a_json_schema_request_and_costs_nothing() {
+        let server = serve(vec![Reply::json(200, &ok_body("{\"clips\": []}"))]).await;
+        let mut ai = local_ai(&format!("{}/v1/", server.url));
+        ai.local_api_key = Some("lm-key".into());
+        let reply = chat(&ai, &structured_req(), &CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(reply.text.as_deref(), Some("{\"clips\": []}"));
+        assert_eq!(reply.cost, Some(0.0));
+        assert_eq!(reply.model, "qwen2.5:14b");
+        let seen = server.seen.lock().unwrap()[0].clone();
+        assert!(seen.head.starts_with("POST /v1/chat/completions "));
+        assert_eq!(
+            seen.header("authorization").as_deref(),
+            Some("Bearer lm-key")
+        );
+        let sent = seen.json();
+        assert_eq!(sent["model"], "qwen2.5:14b");
+        assert_eq!(sent["stream"], false);
+        assert_eq!(sent["response_format"]["type"], "json_schema");
+        assert_eq!(sent["response_format"]["json_schema"]["name"], "clip_plan");
+        // Text-only content goes as a plain string; the system prompt is unchanged.
+        assert_eq!(sent["messages"][1]["content"], "transcript");
+        assert_eq!(sent["messages"][0]["content"], "Plan clips.");
+        for key in ["plugins", "provider", "models", "reasoning", "max_tokens"] {
+            assert!(sent.get(key).is_none(), "{key}");
+        }
+    }
+
+    #[tokio::test]
+    async fn local_steps_down_when_the_server_rejects_schemas() {
+        let server = serve(vec![
+            Reply::json(
+                400,
+                &json!({"error": {"message": "response_format json_schema is not supported"}}),
+            ),
+            Reply::json(
+                422,
+                &json!({"error": "'response_format.type' must be 'json_schema'"}),
+            ),
+            Reply::json(
+                200,
+                &ok_body("<think>{maybe}</think>\n```json\n{\"clips\": [1]}\n```"),
+            ),
+            Reply::json(200, &ok_body("Sure! {\"clips\": [2]} Hope that helps.")),
+        ])
+        .await;
+        let ai = local_ai(&server.url);
+        let reply = chat(&ai, &structured_req(), &CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(reply.text.as_deref(), Some("{\"clips\": [1]}"));
+        // The accepted format is remembered: the next request skips the probing.
+        let again = chat(&ai, &structured_req(), &CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(again.text.as_deref(), Some("{\"clips\": [2]}"));
+        let seen = server.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 4);
+        assert_eq!(seen[0].json()["response_format"]["type"], "json_schema");
+        assert_eq!(seen[1].json()["response_format"]["type"], "json_object");
+        for request in &seen[2..] {
+            let sent = request.json();
+            assert!(sent.get("response_format").is_none());
+            let system = sent["messages"][0]["content"].as_str().unwrap();
+            assert!(system.starts_with("Plan clips.") && system.contains("JSON schema"));
+        }
+    }
+
+    #[tokio::test]
+    async fn local_reports_an_unreachable_server() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        drop(listener);
+        let err = chat(
+            &local_ai(&url),
+            &structured_req(),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(!err.retryable);
+        assert_eq!(
+            ui_message(&err.message),
+            "The local AI server is not reachable."
+        );
+        let err = list_local_models(&url, None).await.unwrap_err();
+        assert_eq!(
+            ui_message(&err.message),
+            "The local AI server is not reachable."
+        );
+    }
+
+    #[tokio::test]
+    async fn local_reports_a_missing_model_without_echoing_the_body() {
+        let server = serve(vec![Reply::json(
+            404,
+            &json!({"error": {"message": "model \"qwen2.5:14b\" not found, try pulling it first"}}),
+        )])
+        .await;
+        let err = chat(
+            &local_ai(&server.url),
+            &structured_req(),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(!err.retryable && !err.message.contains("pulling"));
+        assert_eq!(
+            ui_message(&err.message),
+            "The local AI server does not have the selected model."
+        );
+        // One request: a missing model is not a schema problem.
+        assert_eq!(server.seen.lock().unwrap().len(), 1);
+        let no_model = AiSettings {
+            model: String::new(),
+            ..local_ai(&server.url)
+        };
+        let err = chat(&no_model, &structured_req(), &CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(err.message.to_lowercase().contains("local model not found"));
+    }
+
+    #[tokio::test]
+    async fn local_reports_a_context_overflow() {
+        let server = serve(vec![
+            Reply::json(
+                400,
+                &json!({"error": {"code": 400, "message": "the request exceeds the available context size, try increasing it", "type": "exceed_context_size_error"}}),
+            ),
+            Reply::json(
+                400,
+                &json!({"object": "error", "message": "This model's maximum context length is 8192 tokens. However, you requested 40000 tokens."}),
+            ),
+        ])
+        .await;
+        for _ in 0..2 {
+            let err = chat(
+                &local_ai(&server.url),
+                &structured_req(),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+            assert!(!err.retryable);
+            assert_eq!(
+                ui_message(&err.message),
+                "The local model's context window is too small for this video's transcript."
+            );
+        }
+        assert_eq!(server.seen.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn local_classifies_other_statuses() {
+        let err = |status, body: &str| match classify_local_error(status, body.as_bytes(), true) {
+            LocalFailure::Error(e) => e,
+            LocalFailure::FormatRejected => panic!("format rejected"),
+        };
+        assert_eq!(
+            ui_message(&err(401, "").message),
+            "An API key was rejected."
+        );
+        assert_eq!(
+            ui_message(&err(404, "404 page not found").message),
+            "The local AI server has no chat endpoint at that URL."
+        );
+        assert_eq!(
+            ui_message(
+                &err(
+                    500,
+                    "model requires more system memory (30 GiB) than is available"
+                )
+                .message
+            ),
+            "The local model does not fit in this computer's memory."
+        );
+        assert!(err(503, "busy").retryable);
+        match classify_local_error(400, b"bad", false) {
+            LocalFailure::Error(e) => assert!(e.message.contains("(400)")),
+            LocalFailure::FormatRejected => panic!("unstructured requests have no format"),
+        }
+        assert_eq!(
+            classify_local_error(400, b"bad", true),
+            LocalFailure::FormatRejected
+        );
+        assert_eq!(
+            classify_local_error(500, b"failed to parse grammar", true),
+            LocalFailure::FormatRejected
+        );
+    }
+
+    #[tokio::test]
+    async fn local_complete_follows_the_images_switch_and_is_free() {
+        let request = || LlmRequest {
+            user: "look".into(),
+            images: vec![vec![1, 2, 3]],
+            json_schema: Some(json!({"type": "object"})),
+            max_tokens: 50,
+            ..Default::default()
+        };
+        let server = serve(vec![
+            Reply::json(200, &ok_body("{\"ok\": true}")),
+            Reply::json(200, &ok_body("{\"ok\": true}")),
+        ])
+        .await;
+        let mut ai = local_ai(&server.url);
+        let response = complete(&ai, request(), &CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!((response.cost_usd, response.cost_incomplete), (0.0, false));
+        ai.local_images = true;
+        complete(&ai, request(), &CancellationToken::new())
+            .await
+            .unwrap();
+        let seen = server.seen.lock().unwrap().clone();
+        assert!(seen[0].json()["messages"][0]["content"].is_string());
+        assert_eq!(
+            seen[1].json()["messages"][0]["content"][1]["type"],
+            "image_url"
+        );
+        assert_eq!(seen[1].json()["max_tokens"], 50);
+    }
+
+    #[tokio::test]
+    async fn local_models_are_listed() {
+        let server = serve(vec![Reply::json(
+            200,
+            &json!({"object": "list", "data": [{"id": "qwen2.5:14b"}, {"id": "llama3.2"}, {"id": "qwen2.5:14b"}, {"id": ""}]}),
+        )])
+        .await;
+        let models = list_local_models(&format!("{}/v1", server.url), Some("k"))
+            .await
+            .unwrap();
+        assert_eq!(models, vec!["qwen2.5:14b", "llama3.2"]);
+        let seen = server.seen.lock().unwrap()[0].clone();
+        assert!(seen.head.starts_with("GET /v1/models "));
+        assert_eq!(seen.header("authorization").as_deref(), Some("Bearer k"));
+        assert!(looks_like_ollama("http://localhost:11434/v1"));
+        assert!(!looks_like_ollama("http://localhost:1234/v1"));
+    }
+
+    #[test]
+    fn local_base_urls_are_validated() {
+        assert_eq!(
+            normalize_local_base_url(" http://localhost:11434/v1/ ").unwrap(),
+            "http://localhost:11434/v1"
+        );
+        for ok in [
+            "https://gpu-box.local:8000/v1",
+            "http://192.168.1.20:1234/v1",
+            "http://[::1]:8080/v1",
+            "https://llm.example.com/v1",
+        ] {
+            assert!(normalize_local_base_url(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "",
+            "localhost:11434",
+            "ftp://localhost/v1",
+            "file:///tmp/x",
+            "http://user:pass@localhost:11434/v1",
+            "http://localhost:11434/v1?key=1",
+            "http://localhost:11434/v1#x",
+            "http://local host/v1",
+        ] {
+            assert!(normalize_local_base_url(bad).is_err(), "{bad}");
+        }
+        let long = format!("http://localhost/{}", "a".repeat(600));
+        assert!(normalize_local_base_url(&long).is_err());
+        for local in [
+            "http://localhost:11434/v1",
+            "http://127.0.0.1:1/v1",
+            "http://[::1]:1",
+            "http://10.0.0.5/v1",
+            "http://studio.local/v1",
+            "http://gpu-box:8000/v1",
+        ] {
+            assert!(base_is_local(local), "{local}");
+        }
+        assert!(
+            !base_is_local("https://api.example.com/v1") && !base_is_local("http://8.8.8.8/v1")
+        );
+    }
+
+    #[test]
+    fn local_json_is_extracted_from_wrapped_replies() {
+        assert_eq!(extract_local_json("{\"a\": 1}"), "{\"a\": 1}");
+        assert_eq!(
+            extract_local_json("<think>{x}</think>{\"a\": 1}"),
+            "{\"a\": 1}"
+        );
+        assert_eq!(extract_local_json("```json\n{\"a\": 1}\n```"), "{\"a\": 1}");
+        assert_eq!(
+            extract_local_json("Here: {\"a\": {\"b\": 2}} done"),
+            "{\"a\": {\"b\": 2}}"
+        );
+        assert_eq!(extract_local_json("no json"), "no json");
     }
 }

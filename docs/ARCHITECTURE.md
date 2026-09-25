@@ -6,19 +6,19 @@ flowchart LR
   Shell -->|run_job task| Engine[Rust clipping engine<br/>crates/engine]
   Engine -->|yt-dlp, ffmpeg, ffprobe| Tools[Media tools]
   Engine -->|whisper.cpp, offline| Whisper[Local transcription]
-  Engine -->|transcript or sampled frames| AI[AI provider: CLI or API]
+  Engine -->|transcript or sampled frames| AI[AI provider: CLI, API or your local server]
   Engine -->|clips, transcript, plan, result.json| Library[Local output folder]
 ```
 
 The renderer runs in the Tauri webview under a strict CSP. It can't read saved provider keys and has no direct file system, dialog or shell access. It calls the Tauri commands in `src-tauri/src/commands.rs`, which are granted to the main window only. The shell checks the caller, validates job options and paths, and grants local media access through the native file picker. A dropped file opens that picker; the path the renderer supplies does not grant access on its own. Library media is served through the `local-file:` protocol, limited to the output folder and files the user picked.
 
-Provider keys live in the OS keychain (`keyring`). `settings.json` holds only non-secret settings plus a record of which keys are stored. Only the selected provider's key is passed to the engine for a job.
+Provider keys live in the OS keychain (`keyring`). `settings.json` holds only non-secret settings plus a record of which keys are stored. Only the selected provider's key is passed to the engine for a job. The Local AI server URL, model and image switch are plain settings; they, and its optional key, reach the engine only when Local AI is selected.
 
 Each job runs in-process as a tokio task that calls `clip_engine::pipeline::run_job`. Two jobs run at once and the rest are queued. The engine:
 
 1. **Downloads** a link with yt-dlp (YouTube, Twitch VODs) or a pinned HTTP client (direct links), or uses a local file in place. The source host must resolve to a public address before any request. Direct downloads re-check every redirect and pin the connection to the checked address. yt-dlp resolves its own media URLs, so the pre-launch check is its only network guard.
 2. **Transcribes** offline with whisper.cpp (`whisper-rs`). Audio never leaves the machine.
-3. **Plans** clips with the chosen provider: a logged-in CLI (text only) or OpenRouter, Anthropic or OpenAI. When there is no speech, sampled frames replace the transcript for providers that accept images.
+3. **Plans** clips with the chosen provider: a logged-in CLI (text only), OpenRouter, Anthropic or OpenAI, or the user's own OpenAI-compatible server (Local AI: Ollama, LM Studio, llama.cpp, vLLM), which gets the same prompts and receives images only when the user marked the model as accepting them. When there is no speech, sampled frames replace the transcript for providers that accept images. Local AI requests go only to the configured server, skip any proxy for loopback and LAN hosts, and fall back from JSON-schema output to JSON mode to prompt-only JSON when a server refuses the schema.
 4. **Analyzes layout** with YuNet face detection (`tract-onnx`) and shot-cut detection, optionally checked by the provider's vision model.
 5. **Renders** each clip with FFmpeg: smart framing, pacing cuts, speed, captions (libass) and overlays.
 

@@ -15,7 +15,7 @@ export function useApiKeyDrafts(): {
   error: string | null
 } {
   const replaceApiKey = useSettingsStore((s) => s.replaceApiKey)
-  const [drafts, setDrafts] = useState<Drafts>({ openrouterApiKey: '', anthropicApiKey: '', openaiApiKey: '' })
+  const [drafts, setDrafts] = useState<Drafts>({ openrouterApiKey: '', anthropicApiKey: '', openaiApiKey: '', localApiKey: '' })
   const [savedAt, setSavedAt] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const dirty = useRef(new Set<KeyName>())

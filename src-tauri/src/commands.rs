@@ -4,7 +4,7 @@
 //! Only the main window may call them: build.rs declares each command and
 //! capabilities/default.json grants them to that window alone. Every path the
 //! renderer names is checked here before it is read, opened or copied.
-use crate::ai_providers::{self, DetectedCli, ProviderTestResult};
+use crate::ai_providers::{self, DetectedCli, LocalModelsResult, ProviderTestResult};
 use crate::file_manager::{self, ExportClip, ExportResult, JobHistoryEntry};
 use crate::jobs::JobSnapshot;
 use crate::logger;
@@ -163,6 +163,17 @@ pub async fn ai_test(
     assert_main(&window)?;
     let settings = state.settings.load()?;
     Ok(ai_providers::test_provider(&state.paths.home, &settings).await)
+}
+
+/// Models the saved local AI server offers (Settings → AI provider → Local AI).
+#[tauri::command]
+pub async fn ai_local_models(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> CmdResult<LocalModelsResult> {
+    assert_main(&window)?;
+    let settings = state.settings.load()?;
+    Ok(ai_providers::detect_local_models(&settings).await)
 }
 
 #[tauri::command]
