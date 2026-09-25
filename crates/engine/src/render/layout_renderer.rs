@@ -4,10 +4,12 @@
 //! Each shot is trimmed from the source and framed with its own layout, then the
 //! shots are concatenated back into one 9:16 stream:
 //!
-//!     talking_head  full-frame crop that pans with the speaker
-//!     two_shot      each person in their own panel, stacked
-//!     screen_cam    screen (zoomed on the active area) over the webcam
-//!     screen        whole frame over a blurred copy of itself
+//! ```text
+//! talking_head  full-frame crop that pans with the speaker
+//! two_shot      each person in their own panel, stacked
+//! screen_cam    screen (zoomed on the active area) over the webcam
+//! screen        whole frame over a blurred copy of itself
+//! ```
 //!
 //! Also provides per-shot positions for captions, the title card and the
 //! channel banner so they never sit on top of a face or cut across a seam.

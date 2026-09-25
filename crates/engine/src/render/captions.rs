@@ -4,11 +4,13 @@
 //! Each caption event is drawn as a stack of layers that share the same text, so
 //! the glyphs line up exactly and every effect is a real blurred bitmap:
 //!
-//!     0 plate   - rounded translucent box behind the whole line
-//!     1 shadow  - soft (blurred) drop shadow
-//!     2 glow    - blurred bloom around the text or the active word
-//!     3 pill    - rounded box behind the active word
-//!     4 face    - the crisp text with its stroke
+//! ```text
+//! 0 plate   - rounded translucent box behind the whole line
+//! 1 shadow  - soft (blurred) drop shadow
+//! 2 glow    - blurred bloom around the text or the active word
+//! 3 pill    - rounded box behind the active word
+//! 4 face    - the crisp text with its stroke
+//! ```
 use super::fonts;
 use super::pyfmt;
 use crate::error::{EngineError, Result};
