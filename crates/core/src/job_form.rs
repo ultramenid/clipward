@@ -748,15 +748,18 @@ mod tests {
         }
     }
 
+    /// An absolute-path prefix on this OS.
+    const ROOT: &str = if cfg!(windows) { "C:" } else { "" };
+
     fn logos() -> Vec<LogoOverlay> {
         vec![
             LogoOverlay {
-                path: "/Users/me/logo.png".into(),
+                path: format!("{ROOT}/Users/me/logo.png"),
                 position: "top-right".into(),
                 size: 0.18,
             },
             LogoOverlay {
-                path: "/Users/me/sponsor.webp".into(),
+                path: format!("{ROOT}/Users/me/sponsor.webp"),
                 position: "bottom-left".into(),
                 size: 0.12,
             },

@@ -277,12 +277,15 @@ mod tests {
         assert!(validate_job_config(bad).is_err());
     }
 
+    /// An absolute-path prefix on this OS.
+    const ROOT: &str = if cfg!(windows) { "C:" } else { "" };
+
     #[test]
     fn validates_branding() {
         let mut ok = base();
         ok["bannerPlatform"] = json!("link");
         ok["bannerChannelUrl"] = json!("  youtube.com/@me  ");
-        ok["logos"] = json!([{ "path": "/tmp/logo.png", "position": "top-right", "size": 0.18 }]);
+        ok["logos"] = json!([{ "path": format!("{ROOT}/tmp/logo.png"), "position": "top-right", "size": 0.18 }]);
         let request = validate_job_config(ok).unwrap();
         assert_eq!(
             request.banner_channel_url.as_deref(),
@@ -300,20 +303,20 @@ mod tests {
             ),
             (
                 "logos",
-                json!([{ "path": "/tmp/logo.gif", "position": "top-left", "size": 0.2 }]),
+                json!([{ "path": format!("{ROOT}/tmp/logo.gif"), "position": "top-left", "size": 0.2 }]),
             ),
             (
                 "logos",
-                json!([{ "path": "/tmp/logo.png", "position": "middle", "size": 0.2 }]),
+                json!([{ "path": format!("{ROOT}/tmp/logo.png"), "position": "middle", "size": 0.2 }]),
             ),
             (
                 "logos",
-                json!([{ "path": "/tmp/logo.png", "position": "top-left", "size": 0.9 }]),
+                json!([{ "path": format!("{ROOT}/tmp/logo.png"), "position": "top-left", "size": 0.9 }]),
             ),
             (
                 "logos",
                 json!(vec![
-                    json!({ "path": "/tmp/l.png", "position": "top-left", "size": 0.2 });
+                    json!({ "path": format!("{ROOT}/tmp/l.png"), "position": "top-left", "size": 0.2 });
                     MAX_LOGOS + 1
                 ]),
             ),
