@@ -115,4 +115,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" dist/* --draft --verify-tag --title "Clipward $TAG" --generate-notes
+        # Install steps (incl. getting past the unsigned-app warnings) above the changelog.
+        run: |
+          sed "s/<version>/${TAG#v}/g" .github/release-notes.md > "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" dist/* --draft --verify-tag --title "Clipward $TAG" \
+            --notes-file "$RUNNER_TEMP/notes.md" --generate-notes
