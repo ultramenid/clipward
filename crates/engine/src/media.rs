@@ -7,13 +7,16 @@ use tokio_util::sync::CancellationToken;
 
 /// Runs a command to completion, killing it when `cancel` fires. Stdin is null.
 pub async fn run(program: &Path, args: &[String], cancel: &CancellationToken) -> Result<Output> {
-    let child = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()?;
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let child = command.spawn()?;
     tokio::select! {
         out = child.wait_with_output() => Ok(out?),
         _ = cancel.cancelled() => Err(EngineError::Cancelled),
@@ -79,6 +82,8 @@ pub fn media_command(program: &Path) -> Command {
         }
     }
     cmd.stdin(Stdio::null()).kill_on_drop(true);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     cmd
 }
 

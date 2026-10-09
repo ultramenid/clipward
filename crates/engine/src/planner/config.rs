@@ -4,7 +4,8 @@ use crate::types::AiSettings;
 use std::time::Duration;
 
 /// User-facing clip length presets: id -> (min_s, max_s, prompt description).
-/// The first seven mirror DURATION_OPTIONS in src/shared/job-contract.ts.
+/// The first seven mirror DURATION_OPTIONS in src/shared/job-contract.ts; "auto" is its
+/// Auto tile (AUTO_DURATION_ID), where the AI picks each clip's length.
 pub const DURATION_RANGES: &[(&str, i64, i64, &str)] = &[
     ("xshort", 10, 30, "10-30 seconds (quick, punchy clips)"),
     ("short", 30, 60, "30-60 seconds (short clips)"),
@@ -13,6 +14,13 @@ pub const DURATION_RANGES: &[(&str, i64, i64, &str)] = &[
     ("xlong", 300, 600, "5-10 minutes (extra long clips)"),
     ("extended", 600, 900, "10-15 minutes (extended clips)"),
     ("feature", 900, 1800, "15-30 minutes (feature-length edits)"),
+    (
+        "auto",
+        10,
+        180,
+        "any length from 10 seconds to 3 minutes: choose each clip's length to fit its moment, \
+ending right after the payoff; never pad a clip or cut its story short",
+    ),
     // Legacy keys (still accepted)
     (
         "landscape_short",

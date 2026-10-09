@@ -222,7 +222,10 @@ fn ends_sentence(word: &str) -> bool {
     word.trim_end().chars().last().is_some_and(|c| SENTENCE_END_PUNCTUATION.contains(&c))
 }
 
-/// Group timed words into sentence segments; a pause over 2 s also ends one.
+/// Longest transcript line; unpunctuated speech is split here.
+const MAX_SEGMENT_MS: i64 = 15_000;
+
+/// Group timed words into sentence segments; a pause over 2 s or 15 s of speech also ends one.
 pub fn group_words(words: Vec<TranscriptWord>) -> Vec<TranscriptSegment> {
     fn flush(segments: &mut Vec<TranscriptSegment>, current: &mut Vec<TranscriptWord>) {
         if current.is_empty() {
@@ -247,8 +250,12 @@ pub fn group_words(words: Vec<TranscriptWord>) -> Vec<TranscriptSegment> {
             }
         }
         let ends = word.word.chars().last().is_some_and(|c| SENTENCE_END_PUNCTUATION.contains(&c));
+        // Unpunctuated speech (common in casual non-English) would otherwise run for
+        // minutes in one line, and the planner can only cut on line boundaries.
+        // ponytail: hard cut mid-phrase; split at the widest pause if seams read badly.
+        let too_long = current.first().is_some_and(|first| word.end_time_ms - first.start_time_ms >= MAX_SEGMENT_MS);
         current.push(word);
-        if ends {
+        if ends || too_long {
             flush(&mut segments, &mut current);
         }
     }
@@ -503,6 +510,8 @@ fn media_command(program: &Path) -> Command {
         }
     }
     cmd.stdin(Stdio::null()).kill_on_drop(true);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     cmd
 }
 
@@ -611,7 +620,10 @@ fn run_whisper(
 
     let failed = || EngineError::msg("local transcription failed");
     whisper_rs::install_logging_hooks();
-    let ctx = WhisperContext::new_with_params(model_path, WhisperContextParameters::default()).map_err(|_| {
+    // Flash attention: about a quarter faster on the GPU (transcribe_bench), word timing as good.
+    let mut context = WhisperContextParameters::default();
+    context.flash_attn(true);
+    let ctx = WhisperContext::new_with_params(model_path, context).map_err(|_| {
         tracing::error!("whisper.cpp could not load the model");
         failed()
     })?;
@@ -788,6 +800,13 @@ mod tests {
         assert_eq!(texts, vec!["wait", "for it."]);
         assert_eq!((segments[1].start_time_ms, segments[1].end_time_ms), (2400, 2900));
         assert!(group_words(vec![]).is_empty());
+    }
+
+    #[test]
+    fn unpunctuated_speech_is_split_every_15_seconds() {
+        let words = (0..40).map(|i| w("ya", i * 1000, i * 1000 + 800)).collect();
+        let lens: Vec<_> = group_words(words).iter().map(|s| s.words.len()).collect();
+        assert_eq!(lens, vec![16, 16, 8]);
     }
 
     #[test]

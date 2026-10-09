@@ -76,7 +76,7 @@ For each clip, list 2-5 single words, exactly as spoken inside the clip, that ca
 
 ## OUTPUT FORMAT
 
-Return exactly {clip_count} clips as JSON:
+{count_instruction}
 {{
   "insights": "<content type classification + brief analysis of the video's key themes and why these clips were selected>",
   "clips": [

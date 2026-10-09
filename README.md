@@ -75,12 +75,11 @@ Live channels, Twitch clips, collections, subscriber-only videos and deleted or 
 
 ## Develop
 
-Clipward is a [Tauri 2](https://tauri.app) app: a Rust app shell and clipping engine with a React UI.
+Clipward is a Rust app: a [GPUI](https://www.gpui.rs) desktop shell over a clipping engine.
 
 **Prerequisites:**
-- Node.js 22 and a stable Rust toolchain (`rustup`).
-- A C/C++ toolchain and CMake, which whisper.cpp needs to build.
-- The [Tauri system dependencies](https://tauri.app/start/prerequisites/) for your OS. On Linux that is webkit2gtk-4.1, gtk3, librsvg and libayatana-appindicator.
+- A stable Rust toolchain (`rustup`).
+- A C/C++ toolchain and CMake, which whisper.cpp needs to build. On macOS the Xcode Command Line Tools are enough.
 - FFmpeg with the libass-backed `ass` filter for captions.
 - yt-dlp for link sources.
 
@@ -89,15 +88,14 @@ Clipward uses FFmpeg and yt-dlp from `engine-bin/` when that folder exists, and 
 ```bash
 git clone https://github.com/clipward/clipward
 cd clipward
-npm ci
-npm run dev        # tauri dev: Vite on :1420 plus the Rust app
+cargo run -p clipward_app
 ```
 
 **Settings → System check** shows the FFmpeg, FFprobe, yt-dlp, smart framing and engine checks. The engine's fonts and face detection model are in `crates/engine/assets/` and are bundled with the app.
 
 To check that FFmpeg has the caption filter: `ffmpeg -hide_banner -filters | grep -E '[[:space:]]ass[[:space:]]'`. On macOS, `brew install ffmpeg-full` includes libass; on Arch, `sudo pacman -S ffmpeg yt-dlp`.
 
-`npm run build` produces installers for the current platform in `target/release/bundle/`. Distributable macOS builds also need signing credentials; see [the release guide](docs/RELEASING.md).
+`scripts/bundle-macos.sh` builds `target/bundle/Clipward.app` (`--dmg` for a disk image). Distributable macOS builds also need signing credentials; see [the release guide](docs/RELEASING.md).
 
 ### First run and troubleshooting
 
@@ -106,26 +104,20 @@ To check that FFmpeg has the caption filter: `ffmpeg -hide_banner -filters | gre
 3. Paste a video link or choose a file, paste the campaign brief, pick clip lengths, framing and caption style, then generate. Smart framing follows faces and arranges screen shares with facecams shot by shot. Completed runs appear in Library and in your output folder.
 4. If a link fails, check it in a signed-out browser, or download the video yourself and select the local file. If a run fails, start with the in-app error and System check. Logs intentionally leave out raw provider responses and private source details.
 
-| Script | What it does |
+| Command | What it does |
 | --- | --- |
-| `npm run dev` | Run the app with hot reload (`tauri dev`) |
-| `npm run build` | Build installers for this platform (`tauri build`) |
-| `npm run dev:web` / `npm run build:web` | Run or build the React UI alone with Vite |
-| `npm run typecheck` | Type-check the renderer and build configs |
-| `npm run lint` | Check TypeScript and JavaScript source with ESLint |
-| `npm test` | Run the renderer, release-script and Rust tests |
-| `npm run test:renderer` | Check renderer state, forms and appearance |
-| `npm run test:rust` | `cargo test --workspace`. Engine tests that need FFmpeg skip when it isn't installed |
-| `npm run icons` | Generate the bundle icons in `src-tauri/icons/` from `resources/clipward-icon.svg` (see `scripts/icon/README.md`) |
+| `cargo run -p clipward_app` | Run the app |
+| `cargo test --workspace` | Run the tests. Engine tests that need FFmpeg skip when it isn't installed |
+| `cargo clippy --workspace --tests` | Lint |
+| `scripts/bundle-macos.sh` | Build and bundle `Clipward.app` (see [the release guide](docs/RELEASING.md)) |
 
 ### Project layout
 
 ```
-src-tauri/        Tauri app shell: window, menu, commands, settings, job queue, Whisper downloads
+crates/app/       GPUI desktop app: window, menu, pages (Create, Library, Jobs, Settings), editor
+crates/core/      App logic: settings, job queue, library, Whisper downloads, path checks
 crates/engine/    Rust clipping engine: download, transcribe, plan, layout, render, pipeline
 crates/engine/assets/  Caption fonts and the YuNet face detection model
-src/renderer/     React UI (Create, Library, Jobs, Settings)
-src/shared/       Types and product constants shared by the UI and the bridge
 scripts/          Release helpers and icon/logo generators
 ```
 

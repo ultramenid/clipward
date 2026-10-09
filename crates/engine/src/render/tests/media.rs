@@ -216,6 +216,8 @@ fn render(tools: &(PathBuf, PathBuf), path: &Path, dir: &Path, o: RenderOpts) ->
     let out = dir.join("render.mp4");
     let job = FfmpegJob {
         input_path: path,
+        more_sources: &[],
+        audio_inputs: &[],
         output_path: &out,
         start_time_ms: (o.start * 1000.0).round() as i64,
         duration_ms,
@@ -225,6 +227,7 @@ fn render(tools: &(PathBuf, PathBuf), path: &Path, dir: &Path, o: RenderOpts) ->
         fps,
         output_size: (64, 64),
         output_duration_ms: Some(o.keeps.as_ref().map(|k| k.iter().map(|(a, b)| b - a).sum()).unwrap_or(duration_ms)),
+        progress_path: None,
     };
     block_on(r.run_ffmpeg_complex(&job, &CancellationToken::new())).unwrap();
     out
@@ -656,4 +659,48 @@ fn ffmpeg_cuts_keep_audio_video_in_sync() {
     };
     assert!((dur("video") - expected).abs() <= 0.07);
     assert!((dur("audio") - dur("video")).abs() <= 0.07);
+}
+
+#[test]
+fn logos_are_stamped_in_their_corners_and_the_originals_kept() {
+    let tools = tools_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let path = source(&tools.0, tmp.path(), &Source { duration: 4.0, ..Default::default() });
+    let mut logos = Vec::new();
+    for (name, position) in [("logo.png", "top-left"), ("logo.jpg", "bottom-right")] {
+        let logo = tmp.path().join(name);
+        let mut args = s(&["-v", "error", "-y", "-f", "lavfi", "-i", "color=white:s=200x100", "-frames:v", "1"]);
+        args.push(logo.to_string_lossy().into_owned());
+        run(&tools.0, &args);
+        logos.push(crate::types::LogoOverlay { path: logo.to_string_lossy().into_owned(), position: position.into(), size: 0.2 });
+    }
+    let mut r = media_renderer(&tools.0, &tools.1, None);
+    r.analyzer = Some(talking_head_analyzer());
+    let request = RenderRequest {
+        video_path: path,
+        output_path: tmp.path().join("clip.mp4"),
+        start_time_ms: 0,
+        end_time_ms: 4000,
+        source_width: 64,
+        source_height: 64,
+        pacing: "natural".into(),
+        apply_padding: false,
+        include_captions: false,
+        logos: logos.clone(),
+        ..Default::default()
+    };
+    let result = block_on(r.render_clip(&request, &CancellationToken::new())).unwrap();
+    // 1080x1920 frame: 0.2 x 1080 = 216 px wide logos, 43 px from the edges.
+    let mean = |crop: &str| {
+        let mut args = s(&["-v", "error", "-ss", "1.0", "-i"]);
+        args.push(result.output_path.to_string_lossy().into_owned());
+        args.extend(s(&["-frames:v", "1", "-vf", crop, "-pix_fmt", "gray", "-f", "rawvideo", "-"]));
+        let frame = run(&tools.0, &args);
+        frame.iter().map(|v| *v as f64).sum::<f64>() / frame.len() as f64
+    };
+    let (top_left, bottom_right) = (mean("crop=160:60:70:70"), mean("crop=160:60:850:1790"));
+    let (top_right, bottom_left) = (mean("crop=160:60:850:70"), mean("crop=160:60:70:1790"));
+    assert!(top_left > 230.0 && bottom_right > 230.0, "{top_left} {bottom_right}");
+    assert!(top_right < 200.0 && bottom_left < 200.0, "{top_right} {bottom_left}");
+    assert!(logos.iter().all(|l| Path::new(&l.path).is_file()), "the user's logo files are never deleted");
 }

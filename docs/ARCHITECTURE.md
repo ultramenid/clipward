@@ -2,15 +2,15 @@
 
 ```mermaid
 flowchart LR
-  UI[React renderer] -->|invoke / listen| Shell[Tauri app shell<br/>src-tauri]
-  Shell -->|run_job task| Engine[Rust clipping engine<br/>crates/engine]
+  UI[GPUI app<br/>crates/app] -->|Core methods / callbacks| Core[App core<br/>crates/core]
+  Core -->|run_job task| Engine[Rust clipping engine<br/>crates/engine]
   Engine -->|yt-dlp, ffmpeg, ffprobe| Tools[Media tools]
   Engine -->|whisper.cpp, offline| Whisper[Local transcription]
   Engine -->|transcript or sampled frames| AI[AI provider: CLI, API or your local server]
   Engine -->|clips, transcript, plan, result.json| Library[Local output folder]
 ```
 
-The renderer runs in the Tauri webview under a strict CSP. It can't read saved provider keys and has no direct file system, dialog or shell access. It calls the Tauri commands in `src-tauri/src/commands.rs`, which are granted to the main window only. The shell checks the caller, validates job options and paths, and grants local media access through the native file picker. A dropped file opens that picker; the path the renderer supplies does not grant access on its own. Library media is served through the `local-file:` protocol, limited to the output folder and files the user picked.
+The GPUI app (`crates/app`) draws the UI and does the native parts: file dialogs, opening files and links, window glass, video playback through AVFoundation and voiceover recording. Every operation goes through a `Core` method (`crates/core/src/api.rs`), which validates job options and checks every path before it is read, opened or copied. Saved provider keys never leave the core except to the engine.
 
 Provider keys live in the OS keychain (`keyring`). `settings.json` holds only non-secret settings plus a record of which keys are stored. Only the selected provider's key is passed to the engine for a job. The Local AI server URL, model and image switch are plain settings; they, and its optional key, reach the engine only when Local AI is selected.
 
@@ -22,7 +22,7 @@ Each job runs in-process as a tokio task that calls `clip_engine::pipeline::run_
 4. **Analyzes layout** with YuNet face detection (`tract-onnx`) and shot-cut detection, optionally checked by the provider's vision model.
 5. **Renders** each clip with FFmpeg: smart framing, pacing cuts, speed, captions (libass) and overlays.
 
-The media tools run with a minimal environment (no provider keys), timeouts, output caps and kill-on-cancel. FFmpeg and ffprobe read untrusted input only through the local-file protocol and container whitelist. The job's work folder, under the app data directory, holds the download and intermediates; the shell removes it after every job and sweeps stale work at startup. A local source stays where it is. Finished clips, `transcript.json`, `plan.json` and `result.json` stay in the run folder.
+The media tools run with a minimal environment (no provider keys), timeouts, output caps and kill-on-cancel. FFmpeg and ffprobe read untrusted input only through the local-file protocol and container whitelist. The job's work folder, under the app data directory, holds the download and intermediates; the core removes it after every job and sweeps stale work at startup. A local source stays where it is. Finished clips, `transcript.json`, `plan.json` and `result.json` stay in the run folder.
 
 Engine errors carry fixed marker phrases, which `pipeline::describe_failure` maps to a fixed message and hint for the UI. Raw provider output, URLs and paths never reach the UI or the logs. Saved run files are treated as untrusted input when the Library loads them.
 

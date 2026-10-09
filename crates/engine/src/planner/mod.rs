@@ -38,6 +38,8 @@ pub const VISUAL_PLANNING_UNSUPPORTED: &str = "Selected planner requires a video
 pub const NO_CLIPS_FOUND: &str =
     "No clip-worthy moments found (visual evidence may be insufficient, \
 or the selected time range is too short for the chosen clip length)";
+/// The error when a campaign brief was set and no moment satisfied it.
+pub const NO_CLIPS_MATCH_BRIEF: &str = "No moments match the campaign brief";
 
 /// At most this many frames go to the planner.
 const MAX_FRAMES_SENT: usize = 48;
@@ -131,11 +133,13 @@ pub async fn plan_clips_with(
         start_time_seconds: req.start_time_seconds,
         end_time_seconds: end_time,
         aspect_ratio: &req.aspect_ratio,
+        drop_outside_range: false,
     };
-    let plan = plan(settings, &cfg.ai, &input, cancel).await?;
+    let plan = plan_in_parts(settings, &cfg.ai, &input, progress, cancel).await?;
     tracing::info!("Planned {} clips", plan.segments.len());
     if plan.segments.is_empty() {
-        return Err(EngineError::msg(NO_CLIPS_FOUND));
+        let brief = !settings.clip_requirements.trim().is_empty();
+        return Err(EngineError::msg(if brief { NO_CLIPS_MATCH_BRIEF } else { NO_CLIPS_FOUND }));
     }
     Ok(ClipPlan {
         clips: plan.segments,
@@ -148,6 +152,154 @@ pub async fn plan_clips_with(
         .into(),
         insights: plan.insights,
         visual_frame_count: frames.len() as u32,
+    })
+}
+
+/// A transcript range longer than this is planned in parallel parts, so no single
+/// prompt carries a whole 3-4 h livestream (context limits, CLI timeouts, and models
+/// skimming the middle of very long prompts).
+const SPLIT_OVER_SECONDS: f64 = 75.0 * 60.0;
+/// Target length of one part. ponytail: fixed 1 h; shrink it if small-context local
+/// models still overflow.
+const PART_SECONDS: f64 = 3600.0;
+/// Each part asks for this many times its share of clips, so the merge has spares to rank.
+const PART_CLIP_SURPLUS: f64 = 1.5;
+
+/// (start, end) seconds of each planning part, or None to plan the range in one call.
+/// Parts are equal (no short tail), each extended by the longest clip into the next so a
+/// clip crossing a seam is still whole in one part.
+fn planning_parts(start: f64, end: f64, max_clip_seconds: i64) -> Option<Vec<(f64, f64)>> {
+    let span = end - start;
+    // A NaN span gives n = 0 below, so it also stays one call.
+    if span <= SPLIT_OVER_SECONDS {
+        return None;
+    }
+    let overlap = max_clip_seconds as f64;
+    let n = (span / PART_SECONDS.max(3.0 * overlap)).ceil() as usize;
+    if n < 2 {
+        return None;
+    }
+    let step = span / n as f64;
+    Some(
+        (0..n)
+            .map(|i| {
+                let s = start + step * i as f64;
+                (s, (s + step + overlap).min(end))
+            })
+            .collect(),
+    )
+}
+
+/// [`plan`], split into parallel ~1 h parts for long transcripts and merged by score.
+pub async fn plan_in_parts(
+    settings: &PlannerSettings,
+    ai: &AiSettings,
+    input: &PlanInput<'_>,
+    progress: &ProgressFn,
+    cancel: &CancellationToken,
+) -> Result<PlanResponse> {
+    use futures::StreamExt;
+
+    let start = input.start_time_seconds.unwrap_or(0.0).max(0.0);
+    let end = input.end_time_seconds.filter(|e| *e != 0.0).or_else(|| {
+        input
+            .video_duration
+            .filter(|d| *d > 0.0)
+            .or_else(|| input.transcript.last().map(|s| s.end_time_ms as f64 / 1000.0))
+    });
+    let (min_clip, max_clip) = resolve_clip_duration_bounds(
+        input.duration_ranges,
+        input.min_duration_seconds,
+        input.max_duration_seconds,
+    );
+    let parts = match end {
+        Some(end) if !input.transcript.is_empty() => planning_parts(start, end, max_clip),
+        _ => None,
+    };
+    let (Some(parts), Some(end)) = (parts, end) else {
+        return plan(settings, ai, input, cancel).await;
+    };
+
+    // The whole range's clip count, as one call would have picked it.
+    let span = end - start;
+    let (start_ms, end_ms) = ((start * 1000.0) as i64, (end * 1000.0) as i64);
+    let in_range: Vec<TranscriptSegment> = input
+        .transcript
+        .iter()
+        .filter(|s| s.start_time_ms >= start_ms && s.end_time_ms <= end_ms)
+        .cloned()
+        .collect();
+    let words = count_words(&in_range);
+    let wpm = (words > 0).then(|| words as f64 / (span / 60.0));
+    let user_max = input.max_clips.filter(|m| *m != 0).unwrap_or(config::MAX_SUGGESTED_CLIPS);
+    let total = calculate_optimal_clip_count(span, Some(user_max), input.auto_clip_count, wpm)
+        .min(1i64.max((span / min_clip as f64).floor() as i64));
+    let n = parts.len();
+    let per_part = 1i64.max((total as f64 / n as f64 * PART_CLIP_SURPLUS).ceil() as i64);
+    tracing::info!("Planning {span:.0}s in {n} parallel parts ({per_part} clips each, {total} kept)");
+
+    // A local server runs one model at a time; hosted APIs and CLIs take a few at once.
+    let concurrency = if ai.provider == "local" { 1 } else { 3 };
+    let step = |done: usize| format!("Planning clips · {done} of {n} parts done");
+    report(progress, 30.0, &step(0));
+    let mut results = futures::stream::iter(parts.into_iter().map(|(s, e)| {
+        let part = PlanInput {
+            start_time_seconds: Some(s),
+            end_time_seconds: Some(e),
+            // per_part is a ceiling; "Let AI decide" still leaves the number out of the prompt.
+            max_clips: Some(per_part),
+            drop_outside_range: true,
+            ..input.clone()
+        };
+        async move { plan(settings, ai, &part, cancel).await }
+    }))
+    .buffer_unordered(concurrency);
+
+    let (mut done, mut succeeded) = (0, 0);
+    let mut segments = Vec::new();
+    let mut insights = Vec::new();
+    let mut costs: Option<PlanningCosts> = None;
+    let mut first_error = None;
+    while let Some(result) = results.next().await {
+        done += 1;
+        // Rendering starts at 50%, so planning fills 30 -> 50.
+        report(progress, 30.0 + 20.0 * done as f64 / n as f64, &step(done));
+        match result {
+            Ok(part) => {
+                succeeded += 1;
+                segments.extend(part.segments);
+                insights.extend(part.insights);
+                if let Some(p) = part.costs {
+                    let c = costs.get_or_insert_with(|| PlanningCosts {
+                        provider: p.provider.clone(),
+                        model: p.model.clone(),
+                        ..Default::default()
+                    });
+                    c.prompt_tokens += p.prompt_tokens;
+                    c.completion_tokens += p.completion_tokens;
+                    c.estimated_cost_usd = parse::round_to(c.estimated_cost_usd + p.estimated_cost_usd, 6);
+                    c.attempts += p.attempts;
+                    c.cost_incomplete |= p.cost_incomplete;
+                }
+            }
+            Err(EngineError::Cancelled) => return Err(EngineError::Cancelled),
+            // Other parts' clips still make a usable plan.
+            Err(e) => {
+                tracing::warn!("A planning part failed, skipping it: {e}");
+                first_error.get_or_insert(e);
+            }
+        }
+    }
+    if succeeded == 0 {
+        if let Some(e) = first_error {
+            return Err(e);
+        }
+    }
+    Ok(PlanResponse {
+        // Best first; drops the copies of a moment two overlapping parts both picked.
+        segments: finalize_clips(segments, total),
+        insights: (!insights.is_empty()).then(|| insights.join("\n\n")),
+        costs,
     })
 }
 
@@ -166,6 +318,8 @@ pub struct PlanInput<'a> {
     pub start_time_seconds: Option<f64>,
     pub end_time_seconds: Option<f64>,
     pub aspect_ratio: &'a str,
+    /// Set on the parts of a split plan: clips outside the part's range are dropped.
+    pub drop_outside_range: bool,
 }
 
 /// Planner result; an empty `segments` with `insights` explains a skipped plan.
@@ -374,8 +528,9 @@ pub async fn plan(
     let mut system = if longform {
         prompts::build_longform_system_prompt(clip_count, min_duration, max_duration)
     } else if !transcript.is_empty() {
+        // "Let AI decide": no number in the prompt; clip_count stays a silent ceiling.
         prompts::build_system_prompt(
-            clip_count,
+            (!input.auto_clip_count).then_some(clip_count),
             Some(min_duration),
             Some(max_duration),
             input.duration_ranges,
@@ -432,6 +587,7 @@ pub async fn plan(
         &transcript_text,
         &frame_images,
         clip_count,
+        !input.auto_clip_count,
         &transcript,
         duration_for_prompt,
         longform,
@@ -452,6 +608,7 @@ pub async fn plan(
         video_duration,
         longform,
         visual_frame_times: &visual_frame_times,
+        drop_outside_range: input.drop_outside_range,
     };
     tracing::info!(
         "Calling planner model {} (fallbacks: {:?}) for clip planning ({} transcript segments, {} frames, {} clips)",

@@ -49,6 +49,8 @@ pub struct ParseContext<'a> {
     pub video_duration: Option<f64>,
     pub longform: bool,
     pub visual_frame_times: &'a [f64],
+    /// Drop clips entirely outside start/end_limit instead of clamping them in.
+    pub drop_outside_range: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -222,6 +224,14 @@ pub fn parse_clip_plan_response(
         let mut duration = end - start;
         if duration < 5.0 {
             tracing::warn!("Filtering clip with duration {duration}s - too short (< 5s)");
+            continue;
+        }
+        // A planning part drops clips entirely outside its range: clamping would invent
+        // a clip at the seam. (A single call keeps the Python behaviour.)
+        if ctx.drop_outside_range
+            && (start_limit.is_some_and(|l| end <= l) || end_limit.is_some_and(|l| start >= l))
+        {
+            tracing::warn!("Filtering clip outside the selected range");
             continue;
         }
         if let Some(limit) = start_limit {

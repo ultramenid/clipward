@@ -17,7 +17,7 @@ use super::clip_editor::TimeMap;
 use super::pyfmt::{self, Rational};
 use super::video_speed::{speed_audio_filter, validate_video_speed};
 use crate::error::{EngineError, Result};
-use crate::layout::types::{Box as LBox, ClipLayoutPlan, ShotLayout, SCREEN, SCREEN_CAM, TALKING_HEAD, TWO_SHOT};
+use crate::layout::types::{Box as LBox, ClipLayoutPlan, ShotLayout, SCREEN, SCREEN_CAM, STACK, TALKING_HEAD, TWO_SHOT};
 
 pub const TWO_SHOT_TOP_RATIO: f64 = 0.5;
 pub const SCREEN_CAM_TOP_RATIO: f64 = 0.6;
@@ -288,13 +288,95 @@ pub fn letterbox_geometry(src_w: i64, src_h: i64, out_w: i64, out_h: i64) -> (i6
     (scaled_h, (out_h - scaled_h).div_euclid(2))
 }
 
+/// Source crop for the screen panel of a screen+webcam shot. With a known focus
+/// area (vision) it crops to it and fills the panel; otherwise it is the whole
+/// screen region, which `panel_chain` fits over a blur: cropping wide content to the panel's
+/// near-square aspect cuts off what is being explained.
+pub fn screen_panel_crop(shot: &ShotLayout, cam_box: &LBox, src_w: i64, src_h: i64, out_w: i64, top_h: i64) -> CropRect {
+    if shot.screen_focus.is_some() {
+        return screen_crop(shot.screen_box.as_ref(), shot.screen_focus.as_ref(), src_w, src_h, out_w, top_h, Some(cam_box));
+    }
+    let full = LBox { x: 0.0, y: 0.0, w: 1.0, h: 1.0 };
+    let region = shot.screen_box.as_ref().unwrap_or(&full);
+    // Offsets may be 0; `even` is for sizes and never goes below 2.
+    let offset = |v: f64| pyfmt::int(v).div_euclid(2) * 2;
+    let (x, y) = (offset(region.x * src_w as f64), offset(region.y * src_h as f64));
+    (even(region.w * src_w as f64).min(src_w - x), even(region.h * src_h as f64).min(src_h - y), x, y)
+}
+
+/// Where a panel crop lands in its panel: the whole panel, or centered at its
+/// `panel_fit` size over a blur.
+fn panel_dest(rect: CropRect, panel_w: i64, panel_h: i64, top: i64) -> (i64, i64, i64, i64) {
+    match panel_fit(rect, panel_w, panel_h) {
+        None => (0, top, panel_w, panel_h),
+        Some((fw, fh)) => ((panel_w - fw).div_euclid(2), top + (panel_h - fh).div_euclid(2), fw, fh),
+    }
+}
+
+/// Filters from [{input}{i}] to [{output}{i}]: `rect` scaled to fill the panel, or,
+/// when it can't (aspect or upscale limit), fitted over a blurred, darkened fill.
+/// `tag` keeps the intermediate labels unique within the shot.
+fn panel_chain(i: usize, input: &str, tag: &str, rect: CropRect, panel_w: i64, panel_h: i64, output: &str) -> String {
+    let scale = "flags=lanczos";
+    match panel_fit(rect, panel_w, panel_h) {
+        None => format!("[{input}{i}]{},scale={panel_w}:{panel_h}:{scale}[{output}{i}]", crop(rect)),
+        Some((fit_w, fit_h)) => {
+            let (bg_w, bg_h) = (even(panel_w.div_euclid(4) as f64), even(panel_h.div_euclid(4) as f64));
+            format!(
+                "[{input}{i}]{},split=2[{tag}b{i}][{tag}f{i}];\
+                 [{tag}b{i}]scale={bg_w}:{bg_h}:force_original_aspect_ratio=increase,crop={bg_w}:{bg_h},\
+                 gblur=sigma=10,lutyuv=y=val-20,scale={panel_w}:{panel_h}[{tag}bg{i}];\
+                 [{tag}f{i}]scale={fit_w}:{fit_h}:{scale}[{tag}fg{i}];\
+                 [{tag}bg{i}][{tag}fg{i}]overlay={}:{}[{output}{i}]",
+                crop(rect),
+                (panel_w - fit_w).div_euclid(2),
+                (panel_h - fit_h).div_euclid(2),
+            )
+        }
+    }
+}
+
+/// A STACK shot's panels, top to bottom: (crop of the source, (y, height) on the
+/// output). Each person gets an equal full-width band, cropped within the half-way
+/// points to their neighbours so no one shows up twice.
+pub fn stack_panels(shot: &ShotLayout, src_w: i64, src_h: i64, out_w: i64, out_h: i64) -> Vec<(CropRect, (i64, i64))> {
+    let mut people = shot.people.clone();
+    people.sort_by(|a, b| a.cx().total_cmp(&b.cx()));
+    let n = people.len() as i64;
+    let band = even(out_h as f64 / n as f64);
+    let src_wf = src_w as f64;
+    (0..people.len())
+        .map(|k| {
+            let lo = if k == 0 { 0.0 } else { (people[k - 1].cx() + people[k].cx()) / 2.0 * src_wf };
+            let hi = if k + 1 == people.len() { src_wf } else { (people[k].cx() + people[k + 1].cx()) / 2.0 * src_wf };
+            let y = band * k as i64;
+            let h = if k as i64 == n - 1 { out_h - y } else { band };
+            (person_crop(&people[k], src_w, src_h, out_w, h, Some((lo, hi))), (y, h))
+        })
+        .collect()
+}
+
 /// Filters from [t{i}] (a trimmed piece) to [v{i}] (framed, out_w x out_h).
 pub fn shot_chain(i: usize, shot: &ShotLayout, src_w: i64, src_h: i64, out_w: i64, out_h: i64, landscape: bool) -> String {
+    shot_chain_on(i, shot, src_w, src_h, out_w, out_h, landscape, None)
+}
+
+/// `shot_chain` with the whole-frame (letterbox) background: None blurs the picture
+/// itself, Some("#rrggbb") is a solid colour.
+#[allow(clippy::too_many_arguments)]
+pub fn shot_chain_on(i: usize, shot: &ShotLayout, src_w: i64, src_h: i64, out_w: i64, out_h: i64, landscape: bool, backdrop: Option<&str>) -> String {
     let scale = "flags=lanczos";
+    let solid = backdrop.filter(|c| is_backdrop_color(c)).map(|c| format!("0x{}", &c[1..]));
     if landscape {
         let target = out_w as f64 / out_h as f64;
         if (src_w as f64 / src_h as f64 - target).abs() < 0.01 * out_w as f64 / out_h as f64 {
             return format!("[t{i}]scale={out_w}:{out_h}:{scale},setsar=1[v{i}]");
+        }
+        if let Some(color) = &solid {
+            return format!(
+                "[t{i}]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease:{scale},\
+                 pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2:color={color},setsar=1[v{i}]"
+            );
         }
         let (bg_w, bg_h) = (even(out_w.div_euclid(4) as f64), even(out_h.div_euclid(4) as f64));
         return format!(
@@ -308,6 +390,17 @@ pub fn shot_chain(i: usize, shot: &ShotLayout, src_w: i64, src_h: i64, out_w: i6
     if shot.layout == TALKING_HEAD {
         let (w, h, x_expr, y_expr) = fill_crop(shot, src_w, src_h, out_w, out_h);
         return format!("[t{i}]crop=w={w}:h={h}:x='{x_expr}':y='{y_expr}',scale={out_w}:{out_h}:{scale},setsar=1[v{i}]");
+    }
+
+    if shot.layout == STACK && shot.people.len() >= 2 {
+        let panels = stack_panels(shot, src_w, src_h, out_w, out_h);
+        let n = panels.len();
+        let outs: String = (0..n).map(|k| format!("[q{k}_{i}]")).collect();
+        let mut chain = format!("[t{i}]split={n}{}", (0..n).map(|k| format!("[p{k}_{i}]")).collect::<String>());
+        for (k, (rect, (_, h))) in panels.iter().enumerate() {
+            chain.push_str(&format!(";[p{k}_{i}]{},scale={out_w}:{h}:{scale}[q{k}_{i}]", crop(*rect)));
+        }
+        return format!("{chain};{outs}vstack=inputs={n},setsar=1[v{i}]");
     }
 
     let (top_h, bottom_h) = stacked_panel_heights(shot, src_h, out_h);
@@ -325,38 +418,28 @@ pub fn shot_chain(i: usize, shot: &ShotLayout, src_w: i64, src_h: i64, out_w: i6
     }
     if shot.layout == SCREEN_CAM {
         if let Some(cam_box) = &shot.cam_box {
-            let cam_rect = cam_crop(cam_box, shot.cam_face.as_ref(), src_w, src_h, out_w, bottom_h);
-            let cam_panel = match panel_fit(cam_rect, out_w, bottom_h) {
-                None => format!("[sb{i}]{},scale={out_w}:{bottom_h}:{scale}[bot{i}]", crop(cam_rect)),
-                Some((fit_w, fit_h)) => {
-                    let (bg_w, bg_h) = (even(out_w.div_euclid(4) as f64), even(bottom_h.div_euclid(4) as f64));
-                    format!(
-                        "[sb{i}]{},split=2[cb{i}][cf{i}];\
-                         [cb{i}]scale={bg_w}:{bg_h}:force_original_aspect_ratio=increase,crop={bg_w}:{bg_h},\
-                         gblur=sigma=10,lutyuv=y=val-20,scale={out_w}:{bottom_h}[cbg{i}];\
-                         [cf{i}]scale={fit_w}:{fit_h}:{scale}[cfg{i}];\
-                         [cbg{i}][cfg{i}]overlay={}:{}[bot{i}]",
-                        crop(cam_rect),
-                        (out_w - fit_w).div_euclid(2),
-                        (bottom_h - fit_h).div_euclid(2),
-                    )
-                }
+            let screen = screen_panel_crop(shot, cam_box, src_w, src_h, out_w, top_h);
+            let screen_panel = if shot.screen_focus.is_some() {
+                format!("[sa{i}]{},scale={out_w}:{top_h}:{scale}[top{i}]", crop(screen))
+            } else {
+                panel_chain(i, "sa", "st", screen, out_w, top_h, "top")
             };
-            let screen = screen_crop(
-                shot.screen_box.as_ref(), shot.screen_focus.as_ref(), src_w, src_h, out_w, top_h, Some(cam_box),
-            );
+            let cam = cam_crop(cam_box, shot.cam_face.as_ref(), src_w, src_h, out_w, bottom_h);
             return format!(
                 "[t{i}]split=2[sa{i}][sb{i}];\
-                 [sa{i}]{},scale={out_w}:{top_h}:{scale}[top{i}];\
-                 {cam_panel};\
+                 {screen_panel};\
+                 {};\
                  [top{i}][bot{i}]vstack=inputs=2,setsar=1[v{i}]",
-                crop(screen),
+                panel_chain(i, "sb", "c", cam, out_w, bottom_h, "bot"),
             );
         }
     }
 
-    // Fit: whole frame over a blurred, darkened fill of itself.
+    // Fit: whole frame over a blurred, darkened fill of itself, or a solid colour.
     let (scaled_h, overlay_y) = letterbox_geometry(src_w, src_h, out_w, out_h);
+    if let Some(color) = solid {
+        return format!("[t{i}]scale={out_w}:{scaled_h}:{scale},pad={out_w}:{out_h}:0:{overlay_y}:color={color},setsar=1[v{i}]");
+    }
     let bg_w = src_w.min(even((src_h * out_w) as f64 / out_h as f64));
     let bg_h = if bg_w == src_w { src_h.min(even((src_w * out_h) as f64 / out_w as f64)) } else { src_h };
     format!(
@@ -439,6 +522,11 @@ fn audio_fades(duration_s: f64, first: bool, last: bool) -> String {
     )
 }
 
+/// A solid letterbox colour: "#rrggbb".
+pub fn is_backdrop_color(color: &str) -> bool {
+    color.len() == 7 && color.starts_with('#') && color[1..].chars().all(|c| c.is_ascii_hexdigit())
+}
+
 /// Options for [`build_layout_graph`] (the Python keyword arguments).
 #[derive(Debug, Clone)]
 pub struct GraphOptions<'a> {
@@ -448,11 +536,13 @@ pub struct GraphOptions<'a> {
     pub fps: &'a str,
     pub loudness_filter: Option<&'a str>,
     pub video_speed: f64,
+    /// Whole-frame background: None blurs, Some("#rrggbb") is a solid colour.
+    pub backdrop: Option<&'a str>,
 }
 
 impl Default for GraphOptions<'_> {
     fn default() -> Self {
-        Self { keeps: None, with_audio: false, landscape: false, fps: "30", loudness_filter: None, video_speed: 1.0 }
+        Self { keeps: None, with_audio: false, landscape: false, fps: "30", loudness_filter: None, video_speed: 1.0, backdrop: None }
     }
 }
 
@@ -508,7 +598,7 @@ pub fn build_layout_graph(plan: &ClipLayoutPlan, out_w: i64, out_h: i64, opts: &
     }
     for (k, &(i, start_frame, count)) in video_pieces.iter().enumerate() {
         parts.push(format!("[s{k}]trim=start_frame={start_frame}:end_frame={}[t{k}]", start_frame + count));
-        let chain = shot_chain(k, &plan.shots[i], src_w, src_h, out_w, out_h, opts.landscape);
+        let chain = shot_chain_on(k, &plan.shots[i], src_w, src_h, out_w, out_h, opts.landscape, opts.backdrop);
         let tail = format!("[v{k}]");
         let cut = chain.rfind(&tail).unwrap_or(chain.len());
         parts.push(format!("{}[c{k}]", &chain[..cut]));
@@ -565,6 +655,12 @@ pub const TOP_TITLE_Y: i64 = 110;
 
 /// (ASS alignment, y) for captions during this shot.
 pub fn caption_anchor(shot: &ShotLayout, src_w: i64, src_h: i64, out_w: i64, out_h: i64) -> (i64, i64) {
+    if shot.layout == STACK && shot.people.len() >= 2 {
+        // On the seam between two panels nearest the usual caption height.
+        let usual = out_h * FILL_CAPTION_Y / 1920;
+        let seams = stack_panels(shot, src_w, src_h, out_w, out_h).into_iter().skip(1).map(|(_, (y, _))| y);
+        return (5, seams.min_by_key(|y| (y - usual).abs()).unwrap_or(usual));
+    }
     if shot.layout == TWO_SHOT || (shot.layout == SCREEN_CAM && shot.cam_box.is_some()) {
         return (5, stacked_panel_heights(shot, src_h, out_h).0);
     }
@@ -639,6 +735,9 @@ pub fn shot_views(shot: &ShotLayout, t_ms: i64, src_w: i64, src_h: i64, out_w: i
     }
     let (top_h, bottom_h) = stacked_panel_heights(shot, src_h, out_h);
     let as_view = |r: CropRect| (r.2 as f64, r.3 as f64, r.0 as f64, r.1 as f64);
+    if shot.layout == STACK && shot.people.len() >= 2 {
+        return stack_panels(shot, src_w, src_h, out_w, out_h).into_iter().map(|(r, (y, h))| (as_view(r), (0, y, out_w, h))).collect();
+    }
     if shot.layout == TWO_SHOT && shot.people.len() >= 2 {
         let (left, right) = (&shot.people[0], &shot.people[1]);
         let mid = (left.cx() + right.cx()) / 2.0 * src_w as f64;
@@ -648,15 +747,14 @@ pub fn shot_views(shot: &ShotLayout, t_ms: i64, src_w: i64, src_h: i64, out_w: i
     }
     if shot.layout == SCREEN_CAM {
         if let Some(cam_box) = &shot.cam_box {
-            let screen = screen_crop(
-                shot.screen_box.as_ref(), shot.screen_focus.as_ref(), src_w, src_h, out_w, top_h, Some(cam_box),
-            );
+            let screen = screen_panel_crop(shot, cam_box, src_w, src_h, out_w, top_h);
             let cam = cam_crop(cam_box, shot.cam_face.as_ref(), src_w, src_h, out_w, bottom_h);
-            let cam_dest = match panel_fit(cam, out_w, bottom_h) {
-                None => (0, top_h, out_w, bottom_h),
-                Some((fw, fh)) => ((out_w - fw).div_euclid(2), top_h + (bottom_h - fh).div_euclid(2), fw, fh),
-            };
-            return vec![(as_view(screen), (0, 0, out_w, top_h)), (as_view(cam), cam_dest)];
+            let screen_dest =
+                if shot.screen_focus.is_some() { (0, 0, out_w, top_h) } else { panel_dest(screen, out_w, top_h, 0) };
+            return vec![
+                (as_view(screen), screen_dest),
+                (as_view(cam), panel_dest(cam, out_w, bottom_h, top_h)),
+            ];
         }
     }
     let (scaled_h, overlay_y) = letterbox_geometry(src_w, src_h, out_w, out_h);
@@ -684,7 +782,7 @@ pub fn face_rects(shot: &ShotLayout, faces: &[LBox], t_ms: i64, src_w: i64, src_
 }
 
 fn shot_faces(shot: &ShotLayout) -> Vec<LBox> {
-    if shot.layout == TALKING_HEAD || shot.layout == TWO_SHOT {
+    if shot.layout == TALKING_HEAD || shot.layout == TWO_SHOT || shot.layout == STACK {
         return shot.people.clone();
     }
     if shot.layout == SCREEN_CAM {

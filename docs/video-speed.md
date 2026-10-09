@@ -27,7 +27,7 @@ and saved results identify faster exports. The draft retains it across navigatio
 
 ## Compatibility and verification
 
-`videoSpeed` crosses the Tauri command boundary as a number and becomes
+`videoSpeed` reaches the core's job validation as a number and becomes
 `ClipJobRequest.video_speed` in the engine. Missing values default to 1;
 malformed, non-finite, slower-than-1, and faster-than-2 values are rejected.
 Saved metrics include `requested_settings.video_speed`; older results still

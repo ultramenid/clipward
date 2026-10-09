@@ -47,8 +47,20 @@ pub fn campaign_brief_section(requirements: &str) -> String {
     )
 }
 
+/// The count line of the output format: a fixed count, or (`None`, "Let AI decide")
+/// no number at all, so the model returns what the video holds instead of filling a quota.
+fn count_instruction(clip_count: Option<i64>) -> String {
+    match clip_count {
+        Some(n) => format!("Return exactly {n} clips as JSON:"),
+        None => "Return every moment a viewer would enjoy on its own as a separate clip. When \
+unsure, include it: clips are ranked by score, so weaker ones sort to the bottom. Return them as JSON:"
+            .into(),
+    }
+}
+
+/// `clip_count` None means the user let the AI decide how many clips to cut.
 pub fn build_system_prompt(
-    clip_count: i64,
+    clip_count: Option<i64>,
     min_duration: Option<i64>,
     max_duration: Option<i64>,
     duration_ranges: Option<&[String]>,
@@ -87,7 +99,7 @@ pub fn build_system_prompt(
     fill(
         SYSTEM,
         &[
-            ("clip_count", clip_count.to_string()),
+            ("count_instruction", count_instruction(clip_count)),
             ("duration_guidance", duration_guidance),
             ("strict_bounds_text", strict_bounds_text),
             ("min_duration", min_duration.to_string()),
@@ -180,10 +192,13 @@ pub enum UserPart {
 }
 
 /// The planner's user message: transcript (or visual note), frames, final instruction.
+/// `fixed_count` false ("Let AI decide") leaves the number out of the ask.
+#[allow(clippy::too_many_arguments)]
 pub fn build_user_parts(
     transcript_text: &str,
     frames: &[FrameImage],
     clip_count: i64,
+    fixed_count: bool,
     transcript: &[TranscriptSegment],
     video_duration_seconds: f64,
     longform: bool,
@@ -230,6 +245,8 @@ pub fn build_user_parts(
         format!(
             "\nBased on the {basis} above, identify up to {clip_count} complete, self-contained longform episodes. Return fewer rather than pad with weak material. Return your response as JSON."
         )
+    } else if !transcript.is_empty() && !fixed_count {
+        format!("\nBased on the {basis} above, identify every moment a viewer would enjoy on its own as a clip. When unsure, include it. Return your response as JSON.")
     } else if !transcript.is_empty() {
         format!("\nBased on the {basis} above, identify the {clip_count} most viral-worthy segments. Return your response as JSON.")
     } else {

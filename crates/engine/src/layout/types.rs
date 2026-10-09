@@ -6,6 +6,9 @@ pub const TALKING_HEAD: &str = "talking_head";
 pub const TWO_SHOT: &str = "two_shot";
 pub const SCREEN_CAM: &str = "screen_cam";
 pub const SCREEN: &str = "screen";
+/// 2-4 people (`people`, left to right) stacked full-width panels, top to bottom.
+/// Chosen in the editor (split framing), never by the analyzer.
+pub const STACK: &str = "stack";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
 pub struct Box {

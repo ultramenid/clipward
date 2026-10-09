@@ -1,14 +1,14 @@
 # Clipward logo and app icon
 
-The emblem is a play symbol cut in two, with the front piece pushed forward: a clip, moving forward. The rear piece is white (or ink on light surfaces) and the front piece uses the app accent gradient, `#5C8FFF` to `#38CCFF`. The app icon puts the emblem on a charcoal rounded tile.
+The emblem is a clip (a wide rounded block) cut on a slant, its two halves slid apart. It is one colour: white (or ink on light surfaces). The app icon puts the emblem on a charcoal rounded tile.
 
 ## Source and exports
 
-- **Source:** `scripts/icon/build-logo.py`. All geometry (triangle, cut angle, gap, forward shift) lives in its constants. It writes vector SVGs:
+- **Source:** `scripts/icon/build-logo.py`. All geometry (the clip box, cut angle, gap, slide) lives in its constants. It writes vector SVGs:
   - `resources/clipward-icon.svg`: app icon master, 1024 × 1024
   - `resources/clipward-mark.svg`: the emblem alone, for dark surfaces
   - `resources/clipward-logo.svg` and `resources/clipward-logo-light.svg`: emblem plus the Geist SemiBold wordmark, as outlines
-- **App assets:** the Tauri bundle icons in `src-tauri/icons/` (PNG sizes, `icon.icns`, `icon.ico`) are generated from the vector master by `npm run icons` (`tauri icon`). `resources/clipward-icon-small.svg` (the 128px in-app icon) is checked in; regenerate it by exporting the master at 128px if the geometry changes.
+- **App assets:** `crates/app/icons/icon.icns` (the bundle icon) and `icon.png` (the Dock icon under `cargo run`) are rasterized from the vector master; see Rebuild. `resources/clipward-icon-small.svg` (the 128px in-app icon) is checked in; regenerate it by exporting the master at 128px if the geometry changes.
 - **Preview:** open `scripts/icon/icon.html`.
 
 ## Rebuild
@@ -16,7 +16,18 @@ The emblem is a play symbol cut in two, with the front piece pushed forward: a c
 ```bash
 pip install fonttools brotli uharfbuzz
 python3 scripts/icon/build-logo.py
-npm run icons   # tauri icon: writes src-tauri/icons/
+```
+
+Then export `resources/clipward-icon.svg` to a 1024px PNG (`icon_1024.png`, any SVG tool) and rebuild the app icons:
+
+```bash
+mkdir icon.iconset
+for s in 16 32 128 256 512; do
+  sips -z $s $s icon_1024.png --out icon.iconset/icon_${s}x${s}.png
+  sips -z $((s*2)) $((s*2)) icon_1024.png --out icon.iconset/icon_${s}x${s}@2x.png
+done
+iconutil -c icns icon.iconset -o crates/app/icons/icon.icns
+sips -z 512 512 icon_1024.png --out crates/app/icons/icon.png
 ```
 
 Change the constants in `build-logo.py`, not the generated files.

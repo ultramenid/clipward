@@ -1,0 +1,62 @@
+[package]
+name = "clipward_app"
+version = "0.2.0"
+edition = "2024"
+license = "MIT"
+description = "Clipward's desktop app, drawn with GPUI."
+
+[[bin]]
+name = "clipward-app"
+path = "src/main.rs"
+
+[dependencies]
+clipward_core = { path = "../core" }
+gpui-kit = "=0.7.1"
+rfd = "0.16"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Editor sound off macOS (video_ffmpeg.rs); optional here for `portable-video`.
+rodio = { version = "0.22", default-features = false, features = ["playback"], optional = true }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+rodio = { version = "0.22", default-features = false, features = ["playback"] }
+
+# The standard About panel (menu.rs). Same version GPUI links.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+# Editor playback (video.rs): AVFoundation decodes, GPUI's surface draws the
+# CoreVideo buffers. Versions match what GPUI already links.
+objc2-av-foundation = { version = "0.3", features = ["objc2-core-media", "objc2-core-video", "objc2-core-foundation", "block2"] }
+objc2-core-media = "0.3"
+# Voiceover takes (recorder.rs): AVAudioRecorder writes the AAC .m4a. Already
+# linked through objc2-av-foundation, which doesn't re-export it.
+objc2-avf-audio = { version = "0.3", default-features = false, features = ["std", "AVAudioRecorder", "AVAudioSettings"] }
+objc2-foundation = { version = "0.3", features = ["NSDictionary", "NSValue", "NSString", "NSURL"] }
+block2 = "0.6"
+core-video = "0.5.2"
+core-foundation = "0.10"
+# The NSWindow behind a GPUI window, for the glass blur radius (glass.rs).
+raw-window-handle = "0.6"
+
+[dev-dependencies]
+gpui-kit = { version = "=0.7.1", features = ["test-support"] }
+
+[features]
+# Development only: the Windows/Linux ffmpeg player (video_ffmpeg.rs) on macOS.
+portable-video = ["dep:rodio"]
+# Pages switch on by default once all four are ported.
+default = ["all-pages"]
+# Development only: `CLIPWARD_SNAPSHOT=<dir>` saves a PNG of every page, then quits
+# (see snapshot.rs), so the UI can be checked without screen recording rights.
+snapshot = ["gpui-kit/test-support"]
+# The setup card reuses the Settings page's provider and Whisper views.
+page-create = ["page-settings"]
+page-jobs = []
+page-library = []
+page-settings = []
+# The editor's timeline and side panel (being ported; see editor/mod.rs).
+editor-timeline = []
+editor-inspector = []
+all-pages = ["page-create", "page-jobs", "page-library", "page-settings", "editor-inspector", "editor-timeline"]

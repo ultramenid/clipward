@@ -14,6 +14,7 @@ pub mod clip_editor;
 pub mod fonts;
 pub mod layout_renderer;
 pub mod process;
+pub mod project;
 pub mod pyfmt;
 pub mod service;
 pub mod video_speed;

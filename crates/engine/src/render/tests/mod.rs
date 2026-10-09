@@ -2,5 +2,6 @@
 mod captions;
 mod golden;
 mod media;
+mod project;
 mod render;
 mod support;

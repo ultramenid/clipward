@@ -1,5 +1,3 @@
-node_modules/
-dist/
 .env
 .env.local
 .env.*
@@ -11,9 +9,8 @@ dist/
 *.log
 .DS_Store
 engine-bin/
-*.tsbuildinfo
 
 __pycache__/
 *.py[cod]
 target/
-src-tauri/gen/
+test-media/

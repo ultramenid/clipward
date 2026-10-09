@@ -13,7 +13,7 @@ use super::clip_editor::{
 };
 use super::fonts::{self, Canvas, TextFont};
 use super::layout_renderer::{
-    banner_y, build_layout_graph, caption_anchor, face_zones, measured_loudness_filter, per_shot_expr, title_y,
+    banner_y, build_layout_graph, caption_anchor, even, face_zones, measured_loudness_filter, per_shot_expr, title_y,
     CaptionPlacer, GraphOptions, AUDIO_FORMAT, AUDIO_SYNC,
 };
 use super::process::{MediaOutput, MediaRunner, SystemRunner, MEDIA_INPUT_OPTIONS, MEDIA_TIMEOUT, PROBE_TIMEOUT};
@@ -23,7 +23,7 @@ use crate::error::{EngineError, Result};
 use crate::layout::types::{ClipLayoutPlan, ShotLayout, SCREEN};
 use crate::layout::{LayoutRequest, VisionCache};
 use crate::media::MAX_TOOL_OUTPUT_BYTES;
-use crate::types::{ClipJobRequest, ClipPlanSegment, EngineConfig, TranscriptSegment};
+use crate::types::{ClipJobRequest, ClipPlanSegment, EngineConfig, LogoOverlay, TranscriptSegment};
 use futures::future::BoxFuture;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -32,6 +32,10 @@ use tokio_util::sync::CancellationToken;
 /// Landscape title card: on screen for the opening seconds only.
 pub const LANDSCAPE_TITLE_SHOW_S: (f64, f64) = (0.4, 5.5);
 pub const LANDSCAPE_TITLE_FADE_S: f64 = 0.4;
+/// Logo width limits (fraction of the frame width) and the gap to the frame edge.
+pub const MIN_LOGO_SIZE: f64 = 0.05;
+pub const MAX_LOGO_SIZE: f64 = 0.4;
+pub const LOGO_MARGIN: f64 = 0.04;
 /// Output frame rates a landscape render keeps from its source (higher is capped).
 pub const MAX_OUTPUT_FPS: i64 = 60;
 /// Leave room below Windows' process command-line limit; longer graphs go to a script file.
@@ -107,10 +111,11 @@ pub fn get_landscape_dimensions(source_width: i64, source_height: i64) -> (i64, 
     (1920, 1080)
 }
 
-/// Parallel renders on the desktop: scale with cores; each render keeps ~6 busy.
+/// Parallel renders on the desktop: scale with cores. A render keeps ~3 busy, and its
+/// serial filter chain and the next clip's layout analysis overlap the other's encode.
 pub fn max_concurrent_renders() -> usize {
     let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-    (cpus / 6).clamp(1, 4)
+    (cpus / 4).clamp(1, 4)
 }
 
 /// Request for rendering one clip (RenderRequest in the Python engine).
@@ -131,6 +136,8 @@ pub struct RenderRequest {
     pub emphasis_words: Vec<String>,
     pub banner_platform: Option<String>,
     pub banner_channel_url: Option<String>,
+    /// Images stamped in the frame's corners.
+    pub logos: Vec<LogoOverlay>,
     pub include_audio: bool,
     pub apply_padding: bool,
     /// "9:16" | "16:9"
@@ -164,6 +171,7 @@ impl Default for RenderRequest {
             emphasis_words: Vec::new(),
             banner_platform: None,
             banner_channel_url: None,
+            logos: Vec::new(),
             include_audio: true,
             apply_padding: true,
             aspect_ratio: ASPECT_VERTICAL.into(),
@@ -211,6 +219,7 @@ impl RenderRequest {
             emphasis_words: segment.emphasis_words.clone(),
             banner_platform: job.banner_platform.clone(),
             banner_channel_url: job.banner_channel_url.clone(),
+            logos: job.logos.clone(),
             include_audio: true,
             apply_padding: true,
             aspect_ratio: job.aspect_ratio.clone(),
@@ -248,6 +257,24 @@ pub struct RenderResult {
     pub subtitle_path: Option<PathBuf>,
     pub output_width: i64,
     pub output_height: i64,
+    /// Output frame rate as an FFmpeg rational ("30", or the source's for 16:9).
+    pub fps: String,
+    /// Wall-clock seconds in layout analysis, loudness measurement and the FFmpeg
+    /// render (failed rungs included), for the metrics.
+    pub analysis_seconds: f64,
+    pub loudness_seconds: f64,
+    pub encode_seconds: f64,
+    /// What the successful rung rendered, for the clip's editable project.
+    #[serde(skip)]
+    pub edit: Option<RenderedEdit>,
+}
+
+/// The framing and cuts one clip was rendered with (window time).
+#[derive(Debug, Clone, Default)]
+pub struct RenderedEdit {
+    pub window_start_ms: i64,
+    pub plan: ClipLayoutPlan,
+    pub keeps: Vec<(i64, i64)>,
 }
 
 impl RenderResult {
@@ -277,8 +304,15 @@ impl RenderResult {
             "shots": self.layout_shots,
             "pacing_removed_ms": self.removed_ms,
             "render_fallback": self.render_fallback,
+            "analysis_seconds": round_ms(self.analysis_seconds),
+            "loudness_seconds": round_ms(self.loudness_seconds),
+            "encode_seconds": round_ms(self.encode_seconds),
         })
     }
+}
+
+fn round_ms(seconds: f64) -> f64 {
+    (seconds * 1000.0).round() / 1000.0
 }
 
 /// Plans a render window's layout. `Ok(None)` or an error means "use the letterbox".
@@ -295,14 +329,16 @@ pub fn default_analyzer(cfg: &EngineConfig) -> AnalyzeFn {
     })
 }
 
-/// An image composited over the video: (png, x_expr, y_expr), optionally shown
-/// only while `enable` holds with `image_filter` (e.g. alpha fades) applied first.
-#[derive(Debug, Clone, PartialEq)]
+/// An image composited over the video at (x_expr, y_expr): `filter` (a scale, alpha
+/// fades) runs on the image first, and `enable` limits when it shows.
+/// The file is deleted after the render, so it must be a per-clip copy.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Overlay {
     pub path: PathBuf,
     pub x: String,
     pub y: String,
-    pub timed: Option<(String, String)>,
+    pub filter: Option<String>,
+    pub enable: Option<String>,
 }
 
 /// One rung of the fallback ladder, handed to the edit renderer.
@@ -330,10 +366,12 @@ pub struct Renderer {
     pub runner: Arc<dyn MediaRunner>,
     /// None: no smart framing (letterbox), and pacing treats shot content as unknown.
     pub analyzer: Option<AnalyzeFn>,
-    /// Test hook: replaces the encoder arguments.
+    /// Replaces the encoder arguments (tests; the app's lighter preview chunks).
     pub video_codec_override: Option<Vec<String>>,
     /// Encode with VideoToolbox (the desktop macOS build) instead of libx264.
     pub videotoolbox: bool,
+    /// Hardware encoder found by probing (without VideoToolbox); pre-fill with `Some(None)` to skip the probe.
+    pub hw_encoder: tokio::sync::OnceCell<Option<HwEncoder>>,
     pub audio_padding_ms: i64,
     /// Script-file directory for long filter graphs (system temp when None).
     pub temp_dir: Option<PathBuf>,
@@ -356,6 +394,7 @@ impl Renderer {
             analyzer: Some(default_analyzer(cfg)),
             video_codec_override: None,
             videotoolbox: cfg!(target_os = "macos"),
+            hw_encoder: tokio::sync::OnceCell::new(),
             audio_padding_ms: AUDIO_PADDING_MS,
             temp_dir: None,
         }
@@ -422,6 +461,7 @@ impl Renderer {
             (request.start_time_ms, duration_ms)
         };
 
+        let timer = std::time::Instant::now();
         let mut plan: Option<ClipLayoutPlan> = None;
         if !is_landscape {
             plan = self.plan_layout(request, source_w, source_h, window_start_ms, window_ms, cancel).await?;
@@ -432,6 +472,7 @@ impl Renderer {
         if pacing_plan.is_none() && (is_landscape || request.layout_style == LAYOUT_STYLE_FIT) && paces(request) {
             pacing_plan = self.content_plan(request, source_w, source_h, window_start_ms, window_ms, cancel).await?;
         }
+        let analysis_seconds = timer.elapsed().as_secs_f64();
         let face_samples = pacing_plan.as_ref().map(|p| p.face_samples.clone()).unwrap_or_default();
         let style_plan = |source: &str| ClipLayoutPlan {
             shots: vec![ShotLayout {
@@ -457,10 +498,12 @@ impl Renderer {
         let vision_cost = if analyzed { plan.vision_cost_usd } else { 0.0 };
 
         // Longform audio gets two-pass (linear) loudness normalization.
+        let timer = std::time::Instant::now();
         let mut loudness_filter = None;
         if request.longform && request.include_audio && self.has_audio(&request.video_path, cancel).await? {
             loudness_filter = self.measure_loudness(&request.video_path, window_start_ms, window_ms, cancel).await?;
         }
+        let loudness_seconds = timer.elapsed().as_secs_f64();
 
         // Fallback ladder: as planned -> letterbox with the same cuts -> letterbox
         // at natural timing (a pacing edge case can be what failed, so cuts go last).
@@ -473,8 +516,9 @@ impl Renderer {
             ladder.push((&letterbox, &natural_map, Some("letterbox_natural")));
         }
 
+        let timer = std::time::Instant::now();
         let mut rendered: Option<(&ClipLayoutPlan, &TimeMap, Option<&str>)> = None;
-        for (step, &(step_plan, step_map, fallback)) in ladder.iter().enumerate() {
+        for (step,&(step_plan, step_map, fallback)) in ladder.iter().enumerate() {
             let job = EditJob {
                 request,
                 plan: step_plan.clone(),
@@ -500,6 +544,7 @@ impl Renderer {
                 }
             }
         }
+        let encode_seconds = timer.elapsed().as_secs_f64();
         let (plan, time_map, render_fallback) = rendered.ok_or_else(|| render_error("no render attempted"))?;
         let (smart, analyzed) = if render_fallback.is_some() { (false, false) } else { (smart, analyzed) };
 
@@ -536,6 +581,11 @@ impl Renderer {
             subtitle_path,
             output_width: target_width,
             output_height: target_height,
+            fps: fps.clone(),
+            analysis_seconds,
+            loudness_seconds,
+            encode_seconds,
+            edit: Some(RenderedEdit { window_start_ms, plan: plan.clone(), keeps: time_map.keeps.clone() }),
         })
     }
 
@@ -563,6 +613,7 @@ impl Renderer {
                 fps,
                 loudness_filter: job.loudness_filter.as_deref(),
                 video_speed: request.video_speed,
+                backdrop: None,
             },
         )?;
         let out_plan = remap_plan(plan, time_map);
@@ -587,6 +638,8 @@ impl Renderer {
             .run_ffmpeg_complex(
                 &FfmpegJob {
                     input_path: &request.video_path,
+                    more_sources: &[],
+                    audio_inputs: &[],
                     output_path: &request.output_path,
                     start_time_ms: job.window_start_ms,
                     duration_ms: job.window_ms,
@@ -596,6 +649,7 @@ impl Renderer {
                     fps,
                     output_size: (job.width, job.height),
                     output_duration_ms: Some(scaled_duration_ms(time_map.output_ms, request.video_speed)?),
+                    progress_path: None,
                 },
                 cancel,
             )
@@ -703,15 +757,13 @@ impl Renderer {
                     path,
                     x: "(W-w)/2".into(),
                     y: format!("{}", pyfmt::round(40.0 * scale)),
-                    timed: Some((
-                        format!("between(t,{},{})", pyfmt::repr(show_from), pyfmt::repr(show_to)),
-                        format!(
-                            "format=rgba,fade=t=in:st={}:d={}:alpha=1,fade=t=out:st={}:d={}:alpha=1",
-                            pyfmt::repr(show_from),
-                            pyfmt::repr(fade),
-                            pyfmt::repr(show_to - fade),
-                            pyfmt::repr(fade),
-                        ),
+                    enable: Some(format!("between(t,{},{})", pyfmt::repr(show_from), pyfmt::repr(show_to))),
+                    filter: Some(format!(
+                        "format=rgba,fade=t=in:st={}:d={}:alpha=1,fade=t=out:st={}:d={}:alpha=1",
+                        pyfmt::repr(show_from),
+                        pyfmt::repr(fade),
+                        pyfmt::repr(show_to - fade),
+                        pyfmt::repr(fade),
                     )),
                 });
             } else {
@@ -720,7 +772,7 @@ impl Renderer {
                     .iter()
                     .map(|s| title_y(s, src_w, src_h, target_width, target_height, height))
                     .collect();
-                overlays.push(Overlay { path, x: "(W-w)/2".into(), y: per_shot_expr(out_plan, &values), timed: None });
+                overlays.push(Overlay { path, x: "(W-w)/2".into(), y: per_shot_expr(out_plan, &values), ..Default::default() });
             }
         }
         let banner_size = if is_landscape { pyfmt::round(28.0 * scale) } else { 34 };
@@ -730,13 +782,43 @@ impl Renderer {
                     path,
                     x: format!("W-w-{}", pyfmt::round(20.0 * scale)),
                     y: format!("H-h-{}", pyfmt::round(16.0 * scale)),
-                    timed: None,
+                    ..Default::default()
                 });
             } else {
                 let values: Vec<i64> =
                     out_plan.shots.iter().map(|s| banner_y(s, src_w, src_h, target_width, target_height)).collect();
-                overlays.push(Overlay { path, x: "(W-w)/2".into(), y: per_shot_expr(out_plan, &values), timed: None });
+                overlays.push(Overlay { path, x: "(W-w)/2".into(), y: per_shot_expr(out_plan, &values), ..Default::default() });
             }
+        }
+        overlays.extend(self.logo_overlays(request, target_width)?);
+        Ok(overlays)
+    }
+
+    /// The request's logos in their corners, scaled to `size` of the frame width. Each
+    /// is copied next to the clip first: overlay inputs are deleted after the render.
+    fn logo_overlays(&self, request: &RenderRequest, target_width: i64) -> Result<Vec<Overlay>> {
+        let margin = pyfmt::round(target_width as f64 * LOGO_MARGIN);
+        let mut overlays = Vec::new();
+        for (i, logo) in request.logos.iter().enumerate() {
+            let source = Path::new(&logo.path);
+            let ext = source.extension().and_then(|e| e.to_str()).unwrap_or("png").to_ascii_lowercase();
+            let path = sibling(
+                &request.output_path,
+                &format!("logo-{}-{}-{i}.{ext}", request.start_time_ms, request.end_time_ms),
+            );
+            if let Err(e) = std::fs::copy(source, &path) {
+                tracing::warn!("Logo {} unavailable; rendering without it: {e}", i + 1);
+                continue;
+            }
+            let width = even(target_width as f64 * logo.size.clamp(MIN_LOGO_SIZE, MAX_LOGO_SIZE));
+            let (right, bottom) = (logo.position.ends_with("right"), logo.position.starts_with("bottom"));
+            overlays.push(Overlay {
+                path,
+                x: if right { format!("W-w-{margin}") } else { margin.to_string() },
+                y: if bottom { format!("H-h-{margin}") } else { margin.to_string() },
+                filter: Some(format!("scale={width}:-1:flags=lanczos,format=rgba")),
+                enable: None,
+            });
         }
         Ok(overlays)
     }
@@ -755,7 +837,7 @@ impl Renderer {
         }
     }
 
-    fn title_overlay_image(
+    pub(crate) fn title_overlay_image(
         &self,
         request: &RenderRequest,
         target_width: i64,
@@ -777,11 +859,7 @@ impl Renderer {
             return Ok(None);
         }
         let mut words: Vec<&str> = clean.split_whitespace().collect();
-        if words.len() < 2 {
-            words = [words.clone(), words].concat().into_iter().take(2).collect();
-        } else if words.len() > 7 {
-            words.truncate(7);
-        }
+        words.truncate(7);
         let lines: Vec<String> = if words.len() <= 3 {
             vec![words.join(" ")]
         } else {
@@ -817,7 +895,7 @@ impl Renderer {
 
     /// The channel URL banner as a transparent PNG (drawn here, not with FFmpeg's
     /// drawtext, which the bundled FFmpeg builds omit). Returns (path, width, height).
-    fn banner_overlay_image(&self, request: &RenderRequest, font_size: i64) -> Result<Option<(PathBuf, i64, i64)>> {
+    pub(crate) fn banner_overlay_image(&self, request: &RenderRequest, font_size: i64) -> Result<Option<(PathBuf, i64, i64)>> {
         let (Some(platform), Some(url)) = (request.banner_platform.as_deref(), request.banner_channel_url.as_deref())
         else {
             return Ok(None);
@@ -825,7 +903,11 @@ impl Renderer {
         if platform.is_empty() || url.is_empty() {
             return Ok(None);
         }
-        let text = url.to_uppercase();
+        // Shown as typed, minus the scheme: "https://youtube.com/@me" reads as YOUTUBE.COM/@ME.
+        let url = url.trim();
+        let lower = url.to_ascii_lowercase();
+        let url = ["https://", "http://"].iter().find(|p| lower.starts_with(**p)).map_or(url, |p| &url[p.len()..]);
+        let text = url.trim_end_matches('/').to_uppercase();
         let text = text.trim();
         let path = sibling(&request.output_path, &format!("banner-{}-{}.png", request.start_time_ms, request.end_time_ms));
         let Some(font) = self.font_path.as_deref().and_then(|p| TextFont::load(p, font_size as f64)) else {
@@ -1061,27 +1143,65 @@ impl Renderer {
         video_codec_args(self.videotoolbox, out_w, out_h, fps)
     }
 
+    /// The first hardware encoder that passes a test encode, probed once per renderer.
+    pub async fn hw_encoder(&self, cancel: &CancellationToken) -> Result<Option<HwEncoder>> {
+        let found = self
+            .hw_encoder
+            .get_or_try_init(|| async {
+                for &encoder in HwEncoder::candidates() {
+                    match self.runner.run(&self.ffmpeg, &encoder.probe_args(), PROBE_TIMEOUT, MAX_TOOL_OUTPUT_BYTES, cancel).await {
+                        Err(EngineError::Cancelled) => return Err(EngineError::Cancelled),
+                        Ok(out) if out.success() => {
+                            tracing::info!("Hardware video encoder: {encoder:?}");
+                            return Ok(Some(encoder));
+                        }
+                        _ => tracing::debug!("Hardware encoder {encoder:?} unavailable"),
+                    }
+                }
+                tracing::info!("No hardware video encoder; using libx264");
+                Ok(None)
+            })
+            .await?;
+        Ok(*found)
+    }
+
     /// Run FFmpeg over the render window [start, start + duration) with a filter graph,
     /// then verify the export's timing. A failed export never stays on disk.
+    /// A failed hardware encode is retried once with libx264.
     pub async fn run_ffmpeg_complex(&self, job: &FfmpegJob<'_>, cancel: &CancellationToken) -> Result<()> {
-        let codec = self.video_codec_args(job.output_size.0, job.output_size.1, job.fps);
-        let args = build_ffmpeg_args(job, &codec);
-        let result = async {
-            self.run_cmd(&args, cancel).await?;
-            self.validate_output_timing(
-                job.output_path,
-                job.output_duration_ms.unwrap_or(job.duration_ms),
-                job.fps,
-                job.audio_label.is_some(),
-                cancel,
-            )
-            .await
+        let (w, h) = job.output_size;
+        let hw = if self.video_codec_override.is_some() || self.videotoolbox { None } else { self.hw_encoder(cancel).await? };
+        let mut result = match hw {
+            Some(encoder) => {
+                let mut args = build_ffmpeg_args(job, &encoder.codec_args(job.fps));
+                encoder.adapt_args(&mut args);
+                self.encode_and_validate(job, &args, cancel).await
+            }
+            None => self.encode_and_validate(job, &build_ffmpeg_args(job, &self.video_codec_args(w, h, job.fps)), cancel).await,
+        };
+        if let (Some(encoder), Err(EngineError::Failed(detail))) = (hw, &result) {
+            if detail != DISK_FULL {
+                tracing::warn!("{encoder:?} encode failed; retrying with libx264: {detail}");
+                let args = build_ffmpeg_args(job, &video_codec_args(false, w, h, job.fps));
+                result = self.encode_and_validate(job, &args, cancel).await;
+            }
         }
-        .await;
         if result.is_err() {
             let _ = std::fs::remove_file(job.output_path);
         }
         result
+    }
+
+    async fn encode_and_validate(&self, job: &FfmpegJob<'_>, args: &[String], cancel: &CancellationToken) -> Result<()> {
+        self.run_cmd(args, cancel).await?;
+        self.validate_output_timing(
+            job.output_path,
+            job.output_duration_ms.unwrap_or(job.duration_ms),
+            job.fps,
+            job.audio_label.is_some(),
+            cancel,
+        )
+        .await
     }
 
     /// Run FFmpeg; long filter graphs go through a private script file.
@@ -1204,6 +1324,10 @@ impl Renderer {
 /// Options for one FFmpeg render run.
 pub struct FfmpegJob<'a> {
     pub input_path: &'a Path,
+    /// More (start_ms, duration_ms) reads of `input_path`, as inputs 1.. before `extra_inputs`.
+    pub more_sources: &'a [(i64, i64)],
+    /// (file, start_ms, duration_ms) sound reads, inputs after `more_sources`.
+    pub audio_inputs: &'a [(PathBuf, i64, i64)],
     pub output_path: &'a Path,
     pub start_time_ms: i64,
     pub duration_ms: i64,
@@ -1213,26 +1337,34 @@ pub struct FfmpegJob<'a> {
     pub fps: &'a str,
     pub output_size: (i64, i64),
     pub output_duration_ms: Option<i64>,
+    /// FFmpeg writes `-progress` key=value lines here (out_time_us=...), for a progress bar.
+    pub progress_path: Option<&'a Path>,
 }
 
 /// The exact FFmpeg argument list (without the program) for a render.
 /// The graph must output [out] and, with `audio_label`, that audio label.
 pub fn build_ffmpeg_args(job: &FfmpegJob, codec_args: &[String]) -> Vec<String> {
     let s = |v: &str| v.to_string();
-    let mut cmd: Vec<String> = vec![
-        s("-nostdin"),
-        s("-nostats"),
-        s("-y"),
-        s("-accurate_seek"),
-        s("-ss"),
-        format!("{:.6}", job.start_time_ms as f64 / 1000.0),
-        // Input option: bound the source read to the window.
-        s("-t"),
-        format!("{:.6}", job.duration_ms as f64 / 1000.0),
-    ];
-    cmd.extend(MEDIA_INPUT_OPTIONS.iter().map(|v| s(v)));
-    cmd.push(s("-i"));
-    cmd.push(job.input_path.to_string_lossy().into_owned());
+    let mut cmd: Vec<String> = vec![s("-nostdin"), s("-nostats"), s("-y")];
+    for (start_ms, duration_ms) in std::iter::once((job.start_time_ms, job.duration_ms)).chain(job.more_sources.iter().copied()) {
+        cmd.extend([
+            s("-accurate_seek"),
+            s("-ss"),
+            format!("{:.6}", start_ms as f64 / 1000.0),
+            // Input option: bound the source read to the window.
+            s("-t"),
+            format!("{:.6}", duration_ms as f64 / 1000.0),
+        ]);
+        cmd.extend(MEDIA_INPUT_OPTIONS.iter().map(|v| s(v)));
+        cmd.push(s("-i"));
+        cmd.push(job.input_path.to_string_lossy().into_owned());
+    }
+    for (path, start_ms, duration_ms) in job.audio_inputs {
+        cmd.extend([s("-ss"), format!("{:.6}", *start_ms as f64 / 1000.0), s("-t"), format!("{:.6}", *duration_ms as f64 / 1000.0)]);
+        cmd.extend(MEDIA_INPUT_OPTIONS.iter().map(|v| s(v)));
+        cmd.push(s("-i"));
+        cmd.push(path.to_string_lossy().into_owned());
+    }
     for extra in job.extra_inputs {
         cmd.extend([s("-loop"), s("1"), s("-protocol_whitelist"), s("file,pipe,fd"), s("-i")]);
         cmd.push(extra.to_string_lossy().into_owned());
@@ -1246,6 +1378,9 @@ pub fn build_ffmpeg_args(job: &FfmpegJob, codec_args: &[String]) -> Vec<String> 
     }
     if !job.extra_inputs.is_empty() {
         cmd.push(s("-shortest"));
+    }
+    if let Some(progress) = job.progress_path {
+        cmd.extend([s("-progress"), progress.to_string_lossy().into_owned()]);
     }
     cmd.push(job.output_path.to_string_lossy().into_owned());
     cmd
@@ -1261,10 +1396,97 @@ fn landscape_bitrate_mbps(out_h: i64) -> i64 {
     }
 }
 
+/// Keyframe interval arguments: every 2 s.
+fn gop_args(fps: &str) -> Vec<String> {
+    let rate = Rational::parse(fps).map(|r| r.to_f64()).unwrap_or(30.0);
+    vec!["-g".to_string(), format!("{}", 1.max(pyfmt::round(rate * 2.0)))]
+}
+
+/// Hardware H.264 encoders probed where VideoToolbox isn't used (Windows, Linux).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HwEncoder {
+    Nvenc,
+    Qsv,
+    Amf,
+    Vaapi,
+}
+
+/// Render node the VAAPI encoder opens (the first GPU).
+pub const VAAPI_DEVICE: &str = "/dev/dri/renderD128";
+
+impl HwEncoder {
+    /// Probe order for this OS.
+    pub fn candidates() -> &'static [HwEncoder] {
+        use HwEncoder::*;
+        if cfg!(windows) {
+            &[Nvenc, Qsv, Amf]
+        } else if cfg!(target_os = "linux") {
+            &[Nvenc, Vaapi, Qsv]
+        } else {
+            &[]
+        }
+    }
+
+    /// Constant-quality settings aimed at libx264 CRF 20.
+    // ponytail: vendor quality presets, not yet compared with libx264 on real GPUs; retune after side-by-side checks.
+    pub fn codec_args(self, fps: &str) -> Vec<String> {
+        let args: &[&str] = match self {
+            HwEncoder::Nvenc => {
+                &["-c:v", "h264_nvenc", "-preset", "p5", "-tune", "hq", "-rc", "vbr", "-cq", "21", "-b:v", "0", "-profile:v", "high"]
+            }
+            HwEncoder::Qsv => &["-c:v", "h264_qsv", "-preset", "slow", "-global_quality", "21", "-profile:v", "high"],
+            HwEncoder::Amf => {
+                &["-c:v", "h264_amf", "-quality", "quality", "-rc", "cqp", "-qp_i", "20", "-qp_p", "22", "-qp_b", "24", "-profile:v", "high"]
+            }
+            HwEncoder::Vaapi => &["-c:v", "h264_vaapi", "-rc_mode", "CQP", "-qp", "21", "-profile:v", "high"],
+        };
+        let mut args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        args.extend(gop_args(fps));
+        args
+    }
+
+    /// Fit an FFmpeg argument list (graph output [out], `-pix_fmt yuv420p`) to this encoder.
+    pub fn adapt_args(self, args: &mut Vec<String>) {
+        let pix_fmt = args.iter().position(|a| a == "-pix_fmt");
+        match (self, pix_fmt) {
+            (HwEncoder::Qsv, Some(i)) => args[i + 1] = "nv12".into(),
+            (HwEncoder::Vaapi, _) => {
+                // VAAPI encodes GPU surfaces: upload the finished frames.
+                if let Some(i) = pix_fmt {
+                    args.drain(i..i + 2);
+                }
+                if let Some(i) = args.iter().position(|a| a == "-filter_complex") {
+                    let graph = &args[i + 1];
+                    if let Some(cut) = graph.rfind("[out]") {
+                        args[i + 1] = format!("{},format=nv12,hwupload[out]", &graph[..cut]);
+                    }
+                }
+                args.splice(0..0, ["-vaapi_device".to_string(), VAAPI_DEVICE.to_string()]);
+            }
+            _ => {}
+        }
+    }
+
+    /// A three-frame test encode: succeeds only if the encoder, driver and GPU all work.
+    pub fn probe_args(self) -> Vec<String> {
+        let mut args: Vec<String> = [
+            "-hide_banner", "-nostdin", "-v", "error", "-f", "lavfi", "-i", "color=c=black:s=1280x720:r=30",
+            "-filter_complex", "[0:v]null[out]", "-map", "[out]",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        args.extend(self.codec_args("30"));
+        args.extend(["-pix_fmt", "yuv420p", "-frames:v", "3", "-f", "null", "-"].iter().map(|s| s.to_string()));
+        self.adapt_args(&mut args);
+        args
+    }
+}
+
 /// Encoder arguments; `videotoolbox` is the desktop macOS build.
 pub fn video_codec_args(videotoolbox: bool, out_w: i64, out_h: i64, fps: &str) -> Vec<String> {
     let rate = Rational::parse(fps).map(|r| r.to_f64()).unwrap_or(30.0);
-    let gop = vec!["-g".to_string(), format!("{}", 1.max(pyfmt::round(rate * 2.0)))];
+    let gop = gop_args(fps);
     let s = |v: &str| v.to_string();
     let mut args = if videotoolbox {
         if out_w > out_h {
@@ -1312,6 +1534,11 @@ pub fn measure_loudness_args(video_path: &Path, start_ms: i64, duration_ms: i64)
 /// Append image overlays to a graph ending in [captioned]; output is [out].
 /// Returns the full filter_complex and the extra input paths in input order.
 pub fn compose_overlays(graph: &str, overlays: &[Overlay], video_filter: &str) -> (String, Vec<PathBuf>) {
+    compose_overlays_from(graph, overlays, video_filter, 1)
+}
+
+/// `compose_overlays` with the overlay images as inputs `first_input`.. (after the video inputs).
+pub fn compose_overlays_from(graph: &str, overlays: &[Overlay], video_filter: &str, first_input: usize) -> (String, Vec<PathBuf>) {
     if overlays.is_empty() {
         return (format!("{graph};[captioned]{video_filter}[out]"), Vec::new());
     }
@@ -1319,13 +1546,14 @@ pub fn compose_overlays(graph: &str, overlays: &[Overlay], video_filter: &str) -
     let mut current = "captioned".to_string();
     for (index, overlay) in overlays.iter().enumerate() {
         let index = index + 1;
+        let input = index - 1 + first_input;
         let label = if index == overlays.len() { "composited".to_string() } else { format!("ov{index}") };
-        let (mut image, mut enable) = (format!("[{index}:v]"), String::new());
-        if let Some((enable_expr, image_filter)) = &overlay.timed {
-            parts.push(format!("[{index}:v]{image_filter}[img{index}]"));
+        let mut image = format!("[{input}:v]");
+        if let Some(image_filter) = &overlay.filter {
+            parts.push(format!("[{input}:v]{image_filter}[img{index}]"));
             image = format!("[img{index}]");
-            enable = format!(":enable='{enable_expr}'");
         }
+        let enable = overlay.enable.as_ref().map(|e| format!(":enable='{e}'")).unwrap_or_default();
         parts.push(format!(
             "[{current}]{image}overlay=x='{}':y='{}':shortest=1{enable}[{label}]",
             overlay.x, overlay.y
@@ -1351,7 +1579,7 @@ pub fn escape_filter_path_for(path: &str, windows: bool) -> String {
     format!("'{escaped}'")
 }
 
-fn sibling(output_path: &Path, name: &str) -> PathBuf {
+pub(crate) fn sibling(output_path: &Path, name: &str) -> PathBuf {
     output_path.parent().map(|p| p.join(name)).unwrap_or_else(|| PathBuf::from(name))
 }
 

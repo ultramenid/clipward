@@ -5,7 +5,7 @@ use crate::types::{ClipPlan, ClipPlanSegment, ManualClip, PlanningCosts};
 
 /// Marker for `pipeline::describe_failure` when no typed range overlaps the video.
 pub const OUTSIDE_VIDEO: &str = "manual clip is outside the video";
-/// Shortest and longest manual clip, in seconds (mirrors src/shared/job-contract.ts).
+/// Shortest and longest manual clip, in seconds (`clipward_core::shared` re-exports these).
 pub const MIN_CLIP_SECONDS: f64 = 3.0;
 pub const MAX_CLIP_SECONDS: f64 = 900.0;
 pub const MAX_CLIPS: usize = 50;

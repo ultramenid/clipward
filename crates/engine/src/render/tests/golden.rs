@@ -129,9 +129,35 @@ fn remapping_matches_python() {
     }
 }
 
+/// Python cropped the screen panel of a screen+webcam shot to the panel's aspect even
+/// without a focus area; the Rust port now fits the whole screen instead (wide
+/// tutorial content stays readable). Cases with such a shot anywhere are skipped;
+/// every other case must still match byte for byte.
+fn has_fitted_screen_panel(v: &Value) -> bool {
+    match v {
+        Value::Object(map) => {
+            (map.get("layout").and_then(Value::as_str) == Some("screen_cam")
+                && map.get("cam_box").is_some_and(|c| !c.is_null())
+                && map.get("screen_focus").is_none_or(Value::is_null))
+                || map.values().any(has_fitted_screen_panel)
+        }
+        Value::Array(items) => items.iter().any(has_fitted_screen_panel),
+        _ => false,
+    }
+}
+
+/// The cases a test replays, minus those `has_fitted_screen_panel` excludes.
+/// Most must remain, so the golden coverage stays meaningful.
+fn comparable(name: &str) -> Vec<&'static Value> {
+    let all = cases(name);
+    let kept: Vec<&Value> = all.iter().filter(|c| !has_fitted_screen_panel(c)).collect();
+    assert!(kept.len() * 2 > all.len(), "{name}: only {} of {} golden cases comparable", kept.len(), all.len());
+    kept
+}
+
 #[test]
 fn shot_chains_and_positions_match_python() {
-    for c in cases("chains") {
+    for c in comparable("chains") {
         let shot: ShotLayout = serde_json::from_value(c["shot"].clone()).unwrap();
         let (sw, sh) = (i(&c["src"][0]), i(&c["src"][1]));
         let (ow, oh) = (i(&c["out"][0]), i(&c["out"][1]));
@@ -154,7 +180,7 @@ fn shot_chains_and_positions_match_python() {
 
 #[test]
 fn filter_graphs_match_python() {
-    for c in cases("graphs") {
+    for c in comparable("graphs") {
         let p = plan(&c["plan"]);
         let keeps = opt_pairs(&c["keeps"]);
         let fps = c["fps"].as_str().unwrap();
@@ -166,6 +192,7 @@ fn filter_graphs_match_python() {
             fps,
             loudness_filter: loud,
             video_speed: c["speed"].as_f64().unwrap(),
+            backdrop: None,
         };
         let expected = c["graph"].as_str().unwrap();
         match build_layout_graph(&p, i(&c["out"][0]), i(&c["out"][1]), &opts) {
@@ -188,7 +215,7 @@ fn loudness_filters_match_python() {
 
 #[test]
 fn face_zones_and_caption_placement_match_python() {
-    for c in cases("zones") {
+    for c in comparable("zones") {
         let p = plan(&c["plan"]);
         let tm = TimeMap::new(pairs(&c["keeps"]), Some(i(&c["window_ms"])));
         let zones = face_zones(&p, &tm, 1080, 1920);
@@ -290,8 +317,8 @@ fn service_helpers_match_python() {
                 path: PathBuf::from(o[0].as_str().unwrap()),
                 x: o[1].as_str().unwrap().into(),
                 y: o[2].as_str().unwrap().into(),
-                timed: (o.as_array().unwrap().len() == 5)
-                    .then(|| (o[3].as_str().unwrap().to_string(), o[4].as_str().unwrap().to_string())),
+                enable: (o.as_array().unwrap().len() == 5).then(|| o[3].as_str().unwrap().to_string()),
+                filter: (o.as_array().unwrap().len() == 5).then(|| o[4].as_str().unwrap().to_string()),
             })
             .collect();
         let (graph, extra) =
@@ -469,6 +496,7 @@ fn run_flow(case: &Value) -> (Vec<Value>, Value, Option<String>) {
         analyzer: Some(analyzer),
         video_codec_override: None,
         videotoolbox: false,
+        hw_encoder: tokio::sync::OnceCell::new_with(Some(None)),
         audio_padding_ms: 150,
         temp_dir: None,
     };
@@ -487,6 +515,7 @@ fn run_flow(case: &Value) -> (Vec<Value>, Value, Option<String>) {
         emphasis_words: serde_json::from_value(case["emphasis"].clone()).unwrap(),
         banner_platform: banner.then(|| "youtube".into()),
         banner_channel_url: banner.then(|| "example.com/@me".into()),
+        logos: Vec::new(),
         include_audio: true,
         apply_padding: true,
         aspect_ratio: case["aspect_ratio"].as_str().unwrap().into(),
@@ -552,7 +581,7 @@ fn strip_positions(ass: &str) -> String {
 #[test]
 fn render_flows_match_python() {
     let mut placed_mismatch = 0;
-    let flows = cases("flows");
+    let flows = comparable("flows");
     for (n, case) in flows.iter().enumerate() {
         let (log, res, ass) = run_flow(case);
         let expected = expected_log(case);

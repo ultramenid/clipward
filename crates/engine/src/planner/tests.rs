@@ -183,7 +183,7 @@ fn prompts_match_python_byte_for_byte() {
         let (min, max) = (opt_i64(&case["min"]), opt_i64(&case["max"]));
         match case["kind"].as_str().unwrap() {
             "system" => assert_eq!(
-                prompts::build_system_prompt(count, min, max, ranges.as_deref()),
+                prompts::build_system_prompt(Some(count), min, max, ranges.as_deref()),
                 case["text"],
                 "{case}"
             ),
@@ -224,6 +224,7 @@ fn prompts_match_python_byte_for_byte() {
                     &text,
                     &frames,
                     count,
+                    true,
                     tr,
                     case["duration"].as_f64().unwrap(),
                     case["longform"].as_bool().unwrap(),
@@ -304,6 +305,7 @@ fn parse_cases_match_python() {
             video_duration: case["video_duration"].as_f64(),
             longform: case["longform"].as_bool().unwrap(),
             visual_frame_times: &times,
+            drop_outside_range: false,
         };
         let result =
             parse_clip_plan_response(case["content"].as_str(), Some("stop"), &ctx, &settings);
@@ -477,7 +479,7 @@ fn transcript_includes_speakers_and_audio_events() {
 #[test]
 fn text_only_messages_do_not_mention_frames() {
     let segs = planner_transcript(30);
-    let parts = prompts::build_user_parts("transcript", &[], 3, &segs, 0.0, false);
+    let parts = prompts::build_user_parts("transcript", &[], 3, true, &segs, 0.0, false);
     let text: String = parts
         .iter()
         .map(|p| match p {
@@ -755,18 +757,9 @@ fn duration_bounds() {
         (100, 200)
     );
     assert_eq!(resolve_clip_duration_bounds(None, Some(20), None), (20, 90));
-    let prompt = prompts::build_system_prompt(5, Some(15), Some(90), Some(&r(&["long"])));
+    let prompt = prompts::build_system_prompt(Some(5), Some(15), Some(90), Some(&r(&["long"])));
     assert!(prompt.contains("STRICTLY between 120 and 300 seconds"));
     assert!(prompt.contains("<= 300") && !prompt.contains("<= 90"));
-}
-
-#[test]
-fn duration_ranges_mirror_the_job_contract() {
-    let ts = include_str!("../../../../src/shared/job-contract.ts");
-    for (id, lo, hi, _) in &DURATION_RANGES[..7] {
-        assert!(ts.contains(&format!("id: '{id}'")), "{id}");
-        let _ = (lo, hi);
-    }
 }
 
 fn four_sentences() -> Vec<TranscriptSegment> {
@@ -1048,6 +1041,25 @@ async fn plan_clips_returns_a_transcript_plan() {
         .as_str()
         .unwrap()
         .ends_with("<<<BRIEF\nMention Acme.\nBRIEF>>>"));
+}
+
+#[tokio::test]
+async fn empty_plan_under_a_brief_blames_the_brief() {
+    let transcript = Transcript { segments: planner_transcript(300), ..Default::default() };
+    let server = serve(vec![Reply::json(200, &completion(&content(vec![]), "m", Some(0.5)))]).await;
+    let work = tempfile::tempdir().unwrap();
+    let cfg = engine_config(work.path(), openrouter());
+    let progress: ProgressFn = Arc::new(|_| {});
+    let mut req = job_request();
+    req.requirements = Some("Only cooking clips.".into());
+    let settings = PlannerSettings {
+        base_url: Some(server.url.clone()),
+        ..PlannerSettings::for_job(&cfg.ai, req.requirements.as_deref())
+    };
+    let err = plan_clips_with(&settings, &transcript, &req, &cfg, Path::new("x.mp4"), 300.0, &progress, &CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert_eq!(err.to_string(), NO_CLIPS_MATCH_BRIEF);
 }
 
 // ---------------------------------------------------------------- settings per provider
@@ -1434,4 +1446,91 @@ async fn local_planning_uses_the_same_prompts_and_costs_nothing() {
         .unwrap()
         .to_string();
     assert!(fallback.starts_with(first["messages"][0]["content"].as_str().unwrap()));
+}
+
+// ---------------------------------------------------------------- long transcripts in parts
+
+#[test]
+fn long_ranges_split_into_equal_overlapping_parts() {
+    assert_eq!(planning_parts(0.0, 75.0 * 60.0, 60), None);
+    let parts = planning_parts(0.0, 76.0 * 60.0, 60).unwrap();
+    assert_eq!(parts, [(0.0, 2340.0), (2280.0, 4560.0)]);
+    assert_eq!(planning_parts(0.0, 4.0 * 3600.0, 90).unwrap().len(), 4);
+    // Feature-length clips (15-30 min) get 90 min parts, so 80 min stays one call.
+    assert_eq!(planning_parts(0.0, 80.0 * 60.0, 1800), None);
+    let parts = planning_parts(600.0, 600.0 + 3.0 * 3600.0, 60).unwrap();
+    assert_eq!((parts[0].0, parts[2].1), (600.0, 11_400.0));
+}
+
+#[test]
+fn clips_entirely_outside_the_range_are_dropped_not_clamped() {
+    let tr = planner_transcript(600);
+    let c = ParseContext {
+        start_limit: Some(200.0),
+        end_limit: Some(400.0),
+        drop_outside_range: true,
+        ..ctx(&tr, Some(15), Some(60))
+    };
+    let clips = vec![
+        clip(10.0, 40.0, five(8.0)),
+        clip(450.0, 480.0, five(8.0)),
+        clip(250.0, 280.0, five(8.0)),
+    ];
+    let segs = parse(&c, &content(clips));
+    assert_eq!(segs.len(), 1);
+    assert_eq!(segs[0].start_time_ms, 250_000);
+}
+
+#[tokio::test]
+async fn long_transcript_is_planned_in_parallel_parts_and_merged() {
+    // Every part gets the same reply and keeps only the clips inside its range.
+    // 3160 s lies in the overlap of parts 1 and 2, so both return it.
+    let starts = [600.0, 3160.0, 5000.0, 9000.0, 12_000.0];
+    let reply = completion(
+        &content(starts.iter().map(|s| clip(*s, s + 30.0, five(8.0))).collect()),
+        "m",
+        Some(0.01),
+    );
+    let server = serve((0..4).map(|_| Reply::json(200, &reply)).collect()).await;
+    let tr = planner_transcript(12_600);
+    let input = PlanInput {
+        video_duration: Some(12_600.0),
+        max_clips: Some(10),
+        ..input(&tr)
+    };
+    let steps = Arc::new(Mutex::new(Vec::new()));
+    let seen = steps.clone();
+    let progress: ProgressFn = Arc::new(move |p: Progress| seen.lock().unwrap().push(p.step));
+    let plan = plan_in_parts(
+        &test_settings(&server.url),
+        &openrouter(),
+        &input,
+        &progress,
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+
+    let mut got: Vec<i64> = plan.segments.iter().map(|c| c.start_time_ms / 1000).collect();
+    got.sort();
+    assert_eq!(got, [600, 3160, 5000, 9000, 12_000]);
+    let costs = plan.costs.unwrap();
+    assert_eq!((costs.attempts, costs.estimated_cost_usd), (4, 0.04));
+    // Each call carries only its own part, and the seam goes to both neighbours.
+    let bodies: Vec<String> = server.seen.lock().unwrap().iter().map(|r| r.json().to_string()).collect();
+    assert_eq!(bodies.len(), 4);
+    let calls_with = |line: &str| bodies.iter().filter(|b| b.contains(line)).count();
+    assert_eq!(calls_with("word12500 end."), 1);
+    assert_eq!(calls_with("word3180 end."), 2);
+    assert_eq!(steps.lock().unwrap().last().unwrap(), "Planning clips · 4 of 4 parts done");
+}
+
+#[test]
+fn let_ai_decide_leaves_the_clip_count_out_of_the_prompt() {
+    let system = prompts::build_system_prompt(None, Some(15), Some(90), None);
+    assert!(!system.contains("Return exactly") && system.contains("When unsure, include it"));
+    let segs = planner_transcript(60);
+    let parts = prompts::build_user_parts("transcript", &[], 34, false, &segs, 60.0, false);
+    let UserPart::Text(last) = parts.last().unwrap() else { panic!() };
+    assert!(!last.contains("34") && last.contains("When unsure, include it"));
 }

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/engine", "src-tauri"]
+members = ["crates/engine", "crates/core", "crates/app"]
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -10,3 +10,9 @@ serde_json = "1"
 thiserror = "2"
 tracing = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+
+# Dev builds are unoptimized; tract-onnx face detection runs ~9x slower
+# that way (~1s vs ~115ms per frame). Optimize third-party crates only, so our
+# own crates still rebuild fast.
+[profile.dev.package."*"]
+opt-level = 3

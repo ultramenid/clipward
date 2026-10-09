@@ -1634,10 +1634,12 @@ fn cli_command(
         }
         "agy" => {
             // agy reads the prompt only from argv; Windows caps a command line at
-            // ~32k chars, so long transcripts need macOS/Linux there.
+            // ~32k chars, so long transcripts need macOS/Linux there. It is a coding
+            // agent: left alone it sometimes runs commands to study the transcript,
+            // which print mode refuses, and the turn ends with no answer.
             let mut cmd = vec![
                 path,
-                format!("-p={prompt}"),
+                format!("-p={AGY_ANSWER_ONLY}\n\n{prompt}"),
                 s("--output-format"),
                 s("json"),
             ];
@@ -1718,6 +1720,9 @@ fn cli_command(
 }
 
 /// The CLI's final answer text. Errors carry no CLI output.
+/// Put before agy's prompt (see `cli_command`).
+const AGY_ANSWER_ONLY: &str = "Answer from this prompt alone. Do not run commands, read or write files, or use any tools: everything you need is below. Reply only with the JSON answer.";
+
 fn parse_cli_output(
     cli_id: &str,
     stdout: &str,
@@ -1757,6 +1762,11 @@ fn parse_cli_output(
         .filter(|v| !v.is_null())
     {
         return Ok(python_json(structured));
+    }
+    // agy marks a run ERROR after any hiccup (a cut-off reply, an interrupted stream)
+    // even when it recovered and finished: only a run without the answer failed.
+    if cli_id == "agy" && obj.get("status").and_then(Value::as_str) == Some("ERROR") {
+        return Err("cli reported an error");
     }
     for key in ["result", "response", "text"] {
         if let Some(v) = obj.get(key).filter(|v| truthy(v)) {
@@ -1817,6 +1827,133 @@ fn cli_path_env(binary: &Path) -> std::ffi::OsString {
     std::env::join_paths(dirs).unwrap_or_default()
 }
 
+/// A CLI process with the media env allowlist plus what a logged-in CLI needs.
+/// `program` is what runs (it can differ from `binary`, e.g. a wrapper script).
+fn cli_process(program: &Path, binary: &Path) -> tokio::process::Command {
+    let mut command = crate::media::media_command(program);
+    command.env("PATH", cli_path_env(binary)).env("NO_COLOR", "1");
+    for (key, value) in std::env::vars_os() {
+        let upper = key.to_string_lossy().to_uppercase();
+        if CLI_EXTRA_ENV.contains(&upper.as_str()) {
+            command.env(key, value);
+        }
+    }
+    #[cfg(windows)]
+    {
+        // Keep Windows from flashing a console for each call.
+        command.creation_flags(0x0800_0000);
+    }
+    command
+}
+
+/// Models a logged-in CLI offers, from its own listing command. Empty for a CLI
+/// without one (Claude Code, Gemini CLI).
+pub async fn list_cli_models(cli_id: &str, path: &Path) -> std::result::Result<Vec<ModelChoice>, String> {
+    let args: &[&str] = match cli_id {
+        // Claude Code has no listing command; its SDK control protocol answers
+        // `initialize` with the account's models, without sending a prompt.
+        "claude" => &["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"],
+        "codex" => &["debug", "models"],
+        "opencode" | "cursor-agent" | "agy" | "grok" => &["models"],
+        _ => return Ok(Vec::new()),
+    };
+    let label = cli_label(cli_id).unwrap_or(cli_id);
+    let mut command = cli_process(path, path);
+    command
+        .args(args)
+        .current_dir(std::env::temp_dir())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let run = async {
+        let mut child = command.spawn()?;
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        if cli_id == "claude" {
+            stdin
+                .write_all(b"{\"type\":\"control_request\",\"request_id\":\"models\",\"request\":{\"subtype\":\"initialize\"}}\n")
+                .await?;
+        }
+        // Closing stdin ends Claude Code's session once it has answered.
+        drop(stdin);
+        child.wait_with_output().await
+    };
+    let output = tokio::time::timeout(Duration::from_secs(60), run)
+        .await
+        .map_err(|_| format!("{label} CLI took too long to list its models"))?
+        .map_err(|_| format!("{label} CLI could not be started"))?;
+    if !output.status.success() {
+        return Err(format!("{label} CLI could not list its models. Is it logged in?"));
+    }
+    Ok(parse_cli_models(cli_id, &String::from_utf8_lossy(&output.stdout)))
+}
+
+/// One model a provider offers: the id to pass back as `ai.model`, and its display name.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ModelChoice {
+    pub id: String,
+    pub label: String,
+}
+
+impl ModelChoice {
+    pub fn new(id: &str, label: &str) -> Self {
+        let label = label.trim();
+        Self { id: id.into(), label: if label.is_empty() { id } else { label }.into() }
+    }
+}
+
+fn parse_cli_models(cli_id: &str, text: &str) -> Vec<ModelChoice> {
+    let from_json = |models: &Value, id: &str, label: &str| -> Vec<ModelChoice> {
+        models
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|model| cli_id != "codex" || model["visibility"] == "list")
+            .filter_map(|model| {
+                let id = model[id].as_str()?;
+                Some(ModelChoice::new(id, model[label].as_str().unwrap_or(id)))
+            })
+            // The app's own "Default" option already covers Claude Code's default.
+            .filter(|model| model.id != "default")
+            .collect()
+    };
+    if cli_id == "claude" {
+        let response = text
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|event| event["type"] == "control_response")
+            .unwrap_or_default();
+        return from_json(&response["response"]["response"]["models"], "value", "displayName");
+    }
+    if cli_id == "codex" {
+        let catalog: Value = serde_json::from_str(text).unwrap_or_default();
+        return from_json(&catalog["models"], "slug", "display_name");
+    }
+    let is_id = |id: &str| {
+        !id.is_empty()
+            && id.chars().all(|c| c.is_ascii_alphanumeric() || "._:/@-".contains(c))
+    };
+    text.lines()
+        .filter_map(|line| match cli_id {
+            // `id - Label`
+            "cursor-agent" => line.split_once(" - ").map(|(id, label)| {
+                (id.trim(), label.trim_end_matches(" (current, default)").trim_end_matches(" (current)"))
+            }),
+            // `id<TAB>Label`
+            "agy" => line.split_once('\t').map(|(id, label)| (id.trim(), label)),
+            // Indented under "Available models:", the default starred.
+            "grok" => line
+                .starts_with(char::is_whitespace)
+                .then(|| line.trim().trim_start_matches("* "))
+                .and_then(|rest| rest.split_whitespace().next())
+                .map(|id| (id, id)),
+            // One `provider/model` per line.
+            _ => Some((line.trim(), line.trim())),
+        })
+        .filter(|(id, _)| is_id(id))
+        .map(|(id, label)| ModelChoice::new(id, label))
+        .collect()
+}
+
 async fn read_capped<R: AsyncRead + Unpin>(mut reader: R, limit: usize) -> (Vec<u8>, bool) {
     let mut out = Vec::new();
     let mut buf = vec![0u8; 65536];
@@ -1859,12 +1996,10 @@ async fn cli_chat(
         prompt.chars().count()
     );
 
-    let mut command = crate::media::media_command(Path::new(&cmd[0]));
+    let mut command = cli_process(Path::new(&cmd[0]), path);
     command
         .args(&cmd[1..])
         .current_dir(work.path())
-        .env("PATH", cli_path_env(path))
-        .env("NO_COLOR", "1")
         .stdin(if stdin.is_some() {
             Stdio::piped()
         } else {
@@ -1872,17 +2007,6 @@ async fn cli_chat(
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    for (key, value) in std::env::vars_os() {
-        let upper = key.to_string_lossy().to_uppercase();
-        if CLI_EXTRA_ENV.contains(&upper.as_str()) {
-            command.env(key, value);
-        }
-    }
-    #[cfg(windows)]
-    {
-        // Keep Windows from flashing a console for each call.
-        command.creation_flags(0x0800_0000);
-    }
     let mut child = command
         .spawn()
         .map_err(|_| LlmError::fatal(format!("{label} CLI could not be started")))?;
@@ -2136,6 +2260,30 @@ pub(crate) mod test_server {
 mod tests {
     use super::test_server::{serve, Reply};
     use super::*;
+
+    #[test]
+    fn parses_each_cli_model_listing() {
+        let ids = |cli, text| -> Vec<(String, String)> {
+            parse_cli_models(cli, text).into_iter().map(|m| (m.id, m.label)).collect()
+        };
+        let pairs = |list: &[(&str, &str)]| -> Vec<(String, String)> {
+            list.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+        };
+        assert_eq!(ids("claude", concat!(
+            r#"{"type":"system","subtype":"hook_started"}"#, "\n",
+            r#"{"type":"control_response","response":{"subtype":"success","response":{"models":[{"value":"default","displayName":"Default (recommended)"},{"value":"opus","displayName":"Opus 5.5"},{"value":"claude-fable-5-1","displayName":"Fable 5.1"}]}}}"#)),
+            pairs(&[("opus", "Opus 5.5"), ("claude-fable-5-1", "Fable 5.1")]));
+        assert_eq!(ids("opencode", "opencode/big-pickle\nhuggingface/deepseek-ai/DeepSeek-R1\n"),
+            pairs(&[("opencode/big-pickle", "opencode/big-pickle"), ("huggingface/deepseek-ai/DeepSeek-R1", "huggingface/deepseek-ai/DeepSeek-R1")]));
+        assert_eq!(ids("cursor-agent", "Available models\n\nauto - Auto (current, default)\ngpt-5.2 - GPT-5.2\nTip: use --model <id> (or /model <id> in interactive mode) to switch.\n"),
+            pairs(&[("auto", "Auto"), ("gpt-5.2", "GPT-5.2")]));
+        assert_eq!(ids("agy", "Fetching available models...\ngemini-3.1-pro-high\tGemini 3.1 Pro (High)\n"),
+            pairs(&[("gemini-3.1-pro-high", "Gemini 3.1 Pro (High)")]));
+        assert_eq!(ids("grok", "You are logged in with grok.com.\n\nDefault model: grok-4.7\n\nAvailable models:\n  * grok-4.7 (default)\n    grok-4.7-mini\n"),
+            pairs(&[("grok-4.7", "grok-4.7"), ("grok-4.7-mini", "grok-4.7-mini")]));
+        assert_eq!(ids("codex", r#"{"models":[{"slug":"gpt-reserve","visibility":"hide"},{"slug":"gpt-5.5","display_name":"GPT-5.5","visibility":"list"}]}"#),
+            pairs(&[("gpt-5.5", "GPT-5.5")]));
+    }
 
     fn openrouter(key: &str) -> AiSettings {
         AiSettings {
@@ -2548,7 +2696,7 @@ mod tests {
             work.path(),
         )
         .unwrap();
-        assert_eq!(cmd[1], "-p=P");
+        assert_eq!(cmd[1], format!("-p={AGY_ANSWER_ONLY}\n\nP"));
         assert!(stdin.is_none());
         let (_, stdin) = cli_command(
             "gemini",
@@ -2589,6 +2737,11 @@ mod tests {
         );
         assert!(
             parse_cli_output("claude", r#"{"is_error": true, "result": "secret"}"#, p).is_err()
+                && parse_cli_output("agy", r#"{"status": "ERROR", "response": "", "error": "secret"}"#, p).is_err()
+        );
+        assert_eq!(
+            parse_cli_output("agy", r#"{"status": "ERROR", "error": "The stream was interrupted.", "structured_output": {"clips": []}}"#, p).unwrap(),
+            python_json(&json!({"clips": []}))
         );
         assert!(parse_cli_output("claude", "not json", p).is_err());
         let lines = "{\"type\":\"text\",\"part\":{\"text\":\"a\"}}\nnoise\n{\"type\":\"text\",\"part\":{\"text\":\"b\"}}";

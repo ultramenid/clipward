@@ -4,11 +4,12 @@ use crate::layout::types::{ClipLayoutPlan, ShotLayout, SCREEN, SCREEN_CAM, TALKI
 use crate::render::captions::{self, CaptionGenerator, CaptionStyle, CAPTION_PRESETS, MAX_LINGER_MS};
 use crate::render::clip_editor::{remap_plan, TimeMap};
 use crate::render::layout_renderer::{
-    caption_anchor, face_rects, face_zones, shot_chain, shot_views, CaptionPlacer, FaceZone, CAPTION_BOTTOM_LIMIT,
+    caption_anchor, face_rects, face_zones, shot_chain, shot_views, stacked_panel_heights, CaptionPlacer, FaceZone,
+    CAPTION_BOTTOM_LIMIT,
     CAPTION_TOP_LIMIT,
 };
 use crate::render::service::RenderRequest;
-use crate::types::TranscriptWord;
+use crate::types::{TranscriptSegment, TranscriptWord};
 use std::collections::HashSet;
 
 const SRC_W: i64 = 1920;
@@ -205,9 +206,14 @@ fn views_match_the_filter_graph() {
         }
     }
     let views = shot_views(&small_cam, 0, SRC_W, SRC_H, OUT_W, OUT_H);
+    let (top_h, _) = stacked_panel_heights(&small_cam, SRC_H, OUT_H);
+    let chain = shot_chain(0, &small_cam, SRC_W, SRC_H, OUT_W, OUT_H, false);
+    // The whole screen is fitted into the top panel, the webcam into the bottom one.
+    let (sx, sy, sw, _) = views[0].1;
+    assert_eq!(sw, OUT_W);
+    assert!(chain.contains(&format!("overlay={sx}:{sy}[top0]")), "{chain}");
     let (dx, dy, _, _) = views[1].1;
-    let top_h = views[0].1 .3;
-    assert!(shot_chain(0, &small_cam, SRC_W, SRC_H, OUT_W, OUT_H, false).contains(&format!("overlay={dx}:{}", dy - top_h)));
+    assert!(chain.contains(&format!("overlay={dx}:{}[bot0]", dy - top_h)), "{chain}");
 }
 
 #[test]
@@ -440,3 +446,33 @@ fn captions_unchanged_without_faces() {
     let p = plan(vec![shot(0, 10_000, SCREEN)], SRC_W as u32, SRC_H as u32);
     assert_eq!(integration_positions(&p), HashSet::from([("2".into(), "540".into(), "1560".into())]));
 }
+
+/// Start and end (ms) of every event on the face layer.
+fn face_times(ass: &str) -> Vec<(i64, i64)> {
+    ass.lines()
+        .filter(|l| l.starts_with("Dialogue: 4,"))
+        .map(|l| {
+            let f: Vec<&str> = l.splitn(4, ',').collect();
+            (CaptionGenerator::parse_ass_time(f[1]).unwrap(), CaptionGenerator::parse_ass_time(f[2]).unwrap())
+        })
+        .collect()
+}
+
+#[test]
+fn a_word_retimed_into_the_next_segment_never_draws_two_lines() {
+    // "Alhamdulillah." dragged into the next sentence, its segment stretched past it
+    // (a real edit): one line at a time, with word timings or with the segments alone.
+    let style = captions::get_caption_preset("pop").unwrap();
+    let gen = CaptionGenerator::new(&style, &[], None);
+    let moved = segment(1000, 16000, "Oh Alhamdulillah.", vec![word("Oh", 1000, 1200), word("Alhamdulillah.", 2400, 3400)]);
+    let next = segment(2000, 6000, "Kalo di radio", vec![word("Kalo", 2000, 2300), word("di", 2300, 2500), word("radio", 2500, 4000)]);
+    let bare = |s: &TranscriptSegment| TranscriptSegment { words: vec![], ..s.clone() };
+    for segs in [vec![moved.clone(), next.clone()], vec![bare(&moved), bare(&next)]] {
+        let ass = gen.build_ass(&segs, 0, 20000, OUT_W, OUT_H, None, None, None).unwrap();
+        let mut times = face_times(&ass);
+        times.sort();
+        assert!(!times.is_empty());
+        assert!(times.windows(2).all(|p| p[0].1 <= p[1].0), "overlapping caption lines: {times:?}");
+    }
+}
+

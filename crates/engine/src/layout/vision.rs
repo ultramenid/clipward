@@ -190,7 +190,7 @@ mod tests {
             .map(|i| FrameInfo {
                 t_ms: i * 250,
                 faces: vec![Box { x: 0.84, y: 0.8, w: 0.05, h: 0.09 }],
-                hist: vec![],
+                ..Default::default()
             })
             .collect();
         assert_eq!(faces_hint(&frames), "[[0.84, 0.8, 0.05, 0.09]]");

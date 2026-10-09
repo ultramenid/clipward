@@ -2,7 +2,7 @@
 //! test_framing_quality.py (classification golden cases). Synthetic data only;
 //! the FFmpeg end-to-end test skips when ffmpeg or the model is missing.
 use super::analysis::*;
-use super::imgproc::{normalize_l2, HIST_LEN, HIST_S_BINS};
+use super::imgproc::{normalize_l2, FACE_PATCH_H, FACE_PATCH_SPLIT, FACE_PATCH_W, HIST_LEN, HIST_S_BINS};
 use super::*;
 use serde_json::json;
 
@@ -23,7 +23,155 @@ fn hist(seed: usize) -> Vec<f32> {
 }
 
 fn frames_with(duration_ms: i64, faces_at: impl Fn(i64) -> Vec<Box>, hist_at: impl Fn(i64) -> Vec<f32>) -> Vec<FrameInfo> {
-    (0..duration_ms).step_by(250).map(|t| FrameInfo { t_ms: t, faces: faces_at(t), hist: hist_at(t) }).collect()
+    (0..duration_ms).step_by(250).map(|t| FrameInfo { t_ms: t, faces: faces_at(t), hist: hist_at(t), ..Default::default() }).collect()
+}
+
+// -- active speaker ------------------------------------------------------------
+
+/// A face patch whose mouth rows hold `mouth`; its eyes and nose never change.
+fn patch(mouth: f32) -> Vec<f32> {
+    (0..FACE_PATCH_W * FACE_PATCH_H).map(|i| if i / FACE_PATCH_W >= FACE_PATCH_SPLIT { mouth } else { (i % 7) as f32 / 7.0 }).collect()
+}
+
+/// A mouth that opens and shuts from one frame to the next.
+fn talking(t: i64) -> Vec<f32> {
+    patch(if (t / 250) % 2 == 0 { 0.2 } else { -0.2 })
+}
+
+/// Frames every 250 ms with these faces, each talking when `talks(t, face index)`.
+fn panel(duration_ms: i64, faces: &[Box], talks: impl Fn(i64, usize) -> bool) -> Vec<FrameInfo> {
+    (0..duration_ms)
+        .step_by(250)
+        .map(|t| FrameInfo {
+            t_ms: t,
+            faces: faces.to_vec(),
+            patches: (0..faces.len()).map(|i| if talks(t, i) { talking(t) } else { patch(0.0) }).collect(),
+            hist: hist(1),
+            ..Default::default()
+        })
+        .collect()
+}
+
+#[test]
+fn four_people_in_a_wide_shot_follow_the_one_talking() {
+    // Real stage: three guests on a sofa and the host at a desk, faces 8% of
+    // the frame tall. The second guest talks, then the host answers.
+    let faces = [b(0.11, 0.30, 0.045, 0.079), b(0.31, 0.32, 0.045, 0.074), b(0.50, 0.33, 0.045, 0.076), b(0.69, 0.26, 0.045, 0.077)];
+    let fr = panel(16000, &faces, |t, i| if t < 8000 { i == 1 } else { i == 3 });
+    let tracks = track_faces(&fr);
+    let (shot, _) = classify_shot(&tracks, fr.len(), SRC_W, SRC_H);
+    assert_eq!((shot.layout.as_str(), shot.people.len()), (SCREEN, 4), "a group, shown whole until someone talks");
+    let shot = ShotLayout { start_ms: 0, end_ms: 16000, ..shot };
+    let turns = follow_speaker(&shot, &tracks, fr.len(), 0.3164);
+    let followed: Vec<(i64, f64)> = turns.iter().map(|s| (s.start_ms, (s.people[0].cx() * 100.0).round() / 100.0)).collect();
+    assert_eq!(turns.iter().map(|s| s.layout.as_str()).collect::<Vec<_>>(), [TALKING_HEAD, TALKING_HEAD]);
+    assert_eq!(followed[0], (0, 0.33));
+    assert!((followed[1].0 - 8000).abs() <= 1000 && followed[1].1 == 0.71, "{followed:?}");
+    // Full frame keeps a group whole whoever talks.
+    assert_eq!(apply_style(shot.clone(), STYLE_FILL).layout, SCREEN);
+}
+
+#[test]
+fn a_long_silence_hands_the_frame_back() {
+    // A group: the left guest talks, nobody readable does for 8 s (the host
+    // answers in profile), then the left guest again. A 2 s pause is no silence.
+    let faces = [b(0.19, 0.30, 0.06, 0.126), b(0.48, 0.30, 0.06, 0.127), b(0.80, 0.26, 0.07, 0.156)];
+    let fr = panel(24000, &faces, |t, i| i == 0 && !(6000..14000).contains(&t) && !(18000..20000).contains(&t));
+    let tracks = track_faces(&fr);
+    let left = tracks.iter().position(|t| t.median_box().cx() < 0.3).unwrap();
+    let turns = speaker_turns(&tracks, &[0, 1, 2], None, 0, 24000);
+    assert_eq!(turns, [(0, 6000, Some(left)), (6000, 14000, None), (14000, 24000, Some(left))]);
+    // A shot framed on one person goes back to that person instead.
+    let turns = speaker_turns(&tracks, &[0, 1, 2], Some(0), 0, 24000);
+    assert_eq!(turns.iter().map(|t| t.2).collect::<Vec<_>>(), [Some(left), Some(0), Some(left)]);
+}
+
+#[test]
+fn a_hand_over_a_mouth_is_not_a_turn() {
+    // The left guest talks throughout. The right one lifts a hand to their mouth
+    // at 4 s and drops it at 7 s: big changes around a mouth that never talks.
+    let faces = [b(0.15, 0.2, 0.16, 0.34), b(0.7, 0.2, 0.15, 0.32)];
+    let mut fr = panel(12000, &faces, |_, i| i == 0);
+    for f in fr.iter_mut().filter(|f| (4000..7000).contains(&f.t_ms)) {
+        f.patches[1] = patch(if f.t_ms == 4250 { -2.0 } else { 2.0 });
+    }
+    let tracks = track_faces(&fr);
+    let hand = tracks.iter().find(|t| t.median_box().cx() > 0.5).unwrap();
+    assert_eq!(hand.talk.iter().filter(|x| x.1 > 1.0).count(), 4, "the hand arriving, settling and leaving");
+    let turns = speaker_turns(&tracks, &[0, 1], None, 0, 12000);
+    assert_eq!(turns.len(), 1, "{turns:?}");
+    assert!((tracks[turns[0].2.unwrap()].median_box().cx() - faces[0].cx()).abs() < 0.01);
+}
+
+#[test]
+fn a_face_lost_and_found_says_nothing_about_its_mouth() {
+    // Hidden for two seconds (turned away, behind someone): the mouth before
+    // and after are not compared.
+    let face = [HEAD];
+    let mut fr = panel(6000, &face, |_, _| false);
+    for f in fr.iter_mut().filter(|f| f.t_ms >= 2000) {
+        if f.t_ms < 4000 {
+            f.faces.clear();
+            f.patches.clear();
+        } else {
+            f.patches[0] = patch(3.0);
+        }
+    }
+    let tracks = track_faces(&fr);
+    assert_eq!(tracks.len(), 1);
+    assert!(tracks[0].talk.iter().all(|x| x.1 == 0.0), "{:?}", tracks[0].talk);
+    // Unreadable faces (too small) give no readings at all rather than silence.
+    let blank: Vec<FrameInfo> = fr.iter().map(|f| FrameInfo { patches: vec![Vec::new(); f.faces.len()], ..f.clone() }).collect();
+    assert!(track_faces(&blank)[0].talk.is_empty());
+}
+
+#[test]
+fn guests_at_the_sides_are_people_not_webcams() {
+    // Sofa panel from a real podcast: the side guests sit in the upper corners
+    // at the same size as the middle one. The left guest talks.
+    let (left, mid, right) = (b(0.19, 0.30, 0.06, 0.126), b(0.48, 0.30, 0.06, 0.127), b(0.80, 0.26, 0.07, 0.156));
+    assert!(is_corner_overlay(&left) && is_corner_overlay(&right));
+    let fr = panel(8000, &[left, mid, right], |_, i| i == 0);
+    let tracks = track_faces(&fr);
+    let (shot, _) = classify_shot(&tracks, fr.len(), SRC_W, SRC_H);
+    assert_eq!(shot.layout, SCREEN, "three people: a group, not a screen with a webcam");
+    let shot = ShotLayout { start_ms: 0, end_ms: 8000, ..shot };
+    let turns = follow_speaker(&shot, &tracks, fr.len(), 0.3164);
+    assert_eq!(turns.len(), 1, "{turns:?}");
+    assert_eq!(turns[0].layout, TALKING_HEAD);
+    assert!((turns[0].people[0].cx() - left.cx()).abs() < 0.01);
+
+    // Nobody talking: the group stays whole.
+    let quiet = panel(8000, &[left, mid, right], |_, _| false);
+    let tracks = track_faces(&quiet);
+    let turns = follow_speaker(&shot, &tracks, quiet.len(), 0.3164);
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0].layout, SCREEN);
+}
+
+#[test]
+fn follows_whoever_is_talking() {
+    // Big face left, smaller face right (still a co-host). The right one talks
+    // for the first 6 s, then the left one does: the crop must follow.
+    let (left, right) = (b(0.15, 0.2, 0.16, 0.34), b(0.7, 0.42, 0.08, 0.15));
+    let fr = panel(12000, &[left, right], |t, i| (t < 6000) == (i == 1));
+    let tracks = track_faces(&fr);
+    let (shot, _) = classify_shot(&tracks, fr.len(), SRC_W, SRC_H);
+    assert_eq!(shot.layout, TALKING_HEAD, "sizes differ too much for a two-shot");
+    let shot = ShotLayout { start_ms: 0, end_ms: 12000, ..shot };
+    let turns = follow_speaker(&shot, &tracks, fr.len(), 0.3164);
+    assert_eq!(turns.len(), 2, "{turns:?}");
+    assert!((turns[0].people[0].cx() - right.cx()).abs() < 0.01);
+    assert!((turns[1].people[0].cx() - left.cx()).abs() < 0.01);
+    assert!((turns[1].start_ms - 6000).abs() <= 1000);
+    assert!(turns.iter().all(|t| t.layout == TALKING_HEAD && !t.focus_path.is_empty()));
+
+    // Nobody talking: one shot on the largest face, as before.
+    let silent = panel(12000, &[left, right], |_, _| false);
+    let tracks = track_faces(&silent);
+    let turns = follow_speaker(&shot, &tracks, silent.len(), 0.3164);
+    assert_eq!(turns.len(), 1);
+    assert!((turns[0].people[0].cx() - left.cx()).abs() < 0.01);
 }
 
 fn frames(duration_ms: i64, faces_at: impl Fn(i64) -> Vec<Box>) -> Vec<FrameInfo> {
@@ -57,6 +205,21 @@ fn detects_cut_and_merges_blips() {
     assert_eq!(shots.last().unwrap().1, 12000);
     assert!(shots[1..].iter().any(|(s, _)| (s - 4000).abs() <= 250));
     assert!(shots.iter().all(|(s, e)| e - s >= 1200));
+}
+
+#[test]
+fn a_busy_shot_keeps_the_cuts_around_it() {
+    // Real multi-cam podcast: a split screen, a 2.25 s close-up of someone moving
+    // (every frame over the cut threshold), then a wide shot. The close-up used
+    // to dissolve into the split screen, which then framed two empty panels.
+    let thumb = |v: u8| vec![v; 32 * 18];
+    let look = |t: i64| match t {
+        ..8500 => thumb(60),
+        8500..10750 => thumb(if (t / 250) % 2 == 0 { 120 } else { 150 }),
+        _ => thumb(220),
+    };
+    let fr: Vec<FrameInfo> = (0..14000).step_by(250).map(|t| FrameInfo { t_ms: t, thumb: look(t), hist: hist(1), ..Default::default() }).collect();
+    assert_eq!(segment_shots(&fr, 14000), [(0, 8375), (8375, 10625), (10625, 14000)]);
 }
 
 #[test]
@@ -111,6 +274,28 @@ fn moving_webcam_still_counts_as_overlay() {
     let fr = frames(4000, |t| vec![if (t / 1000) % 2 == 1 { CAM_FACE } else { b(0.08, 0.08, 0.05, 0.09) }]);
     let (shot, _) = classify_shot(&track_faces(&fr), fr.len(), SRC_W, SRC_H);
     assert_eq!(shot.layout, SCREEN_CAM);
+}
+
+#[test]
+fn a_face_cut_by_the_edge_is_not_a_second_person() {
+    // Real close-up: the next guest's face half out of frame at the left edge.
+    let fr = frames(4000, |_| vec![b(0.44, 0.2, 0.11, 0.27), b(0.0, 0.2, 0.06, 0.25)]);
+    let (shot, _) = classify_shot(&track_faces(&fr), fr.len(), SRC_W, SRC_H);
+    assert_eq!(shot.layout, TALKING_HEAD);
+    // Alone, a cut face still counts.
+    let fr = frames(4000, |_| vec![b(0.0, 0.2, 0.06, 0.25)]);
+    assert_eq!(classify_shot(&track_faces(&fr), fr.len(), SRC_W, SRC_H).0.layout, TALKING_HEAD);
+}
+
+#[test]
+fn two_corner_guests_are_a_two_shot() {
+    // Real podcast wide shot: host on the left sofa, guest in the right chair,
+    // both small and high enough to pass as corner webcams.
+    let (left, right) = (b(0.24, 0.27, 0.05, 0.12), b(0.69, 0.27, 0.06, 0.13));
+    assert!(is_corner_overlay(&left) && is_corner_overlay(&right));
+    let fr = frames(4000, |_| vec![left, right]);
+    let (shot, _) = classify_shot(&track_faces(&fr), fr.len(), SRC_W, SRC_H);
+    assert_eq!(shot.layout, TWO_SHOT);
 }
 
 // -- webcam following ----------------------------------------------------------
@@ -296,11 +481,46 @@ fn moving_subject_pans_with_capped_speed() {
 // -- styles ----------------------------------------------------------------------
 
 #[test]
-fn fill_turns_split_layouts_into_full_frame() {
-    let shot = apply_style(ShotLayout { people: vec![HEAD, HEAD], ..new_shot(0, 1000, TWO_SHOT) }, STYLE_FILL);
+fn fill_shows_two_or_more_people_whole() {
+    // Full frame never splits or zooms in on a pair or a group: landscape.
+    let pair = apply_style(ShotLayout { people: vec![HEAD, HEAD], ..new_shot(0, 1000, TWO_SHOT) }, STYLE_FILL);
+    assert_eq!(pair.layout, SCREEN);
+    assert_eq!(pair.detected_layout.as_deref(), Some(TWO_SHOT));
+    let group = apply_style(ShotLayout { people: vec![HEAD, HEAD, HEAD], ..new_shot(0, 1000, SCREEN) }, STYLE_FILL);
+    assert_eq!(group.layout, SCREEN);
+    // Smart framing still splits a pair.
+    let pair = apply_style(ShotLayout { people: vec![HEAD, HEAD], ..new_shot(0, 1000, TWO_SHOT) }, STYLE_AUTO);
+    assert_eq!(pair.layout, TWO_SHOT);
+}
+
+#[test]
+fn still_media_is_shown_whole() {
+    // An inserted photo repeats identical frames; a live camera never does.
+    let frame = |t: i64, v: u8| FrameInfo { t_ms: t, thumb: vec![v; 32 * 18], ..Default::default() };
+    let photo: Vec<FrameInfo> = (0..8).map(|i| frame(i * 250, 90)).collect();
+    let live: Vec<FrameInfo> = (0..8).map(|i| frame(i * 250, 90 + (i % 2) as u8)).collect();
+    assert!(is_still_media(&photo));
+    assert!(!is_still_media(&live));
+    assert!(!is_still_media(&photo[..2]), "too short to tell");
+    // Full frame keeps media whole where it center-crops faceless live footage.
+    let media = ShotLayout { source: MEDIA_SOURCE.into(), ..new_shot(0, 1000, SCREEN) };
+    assert_eq!(apply_style(media, STYLE_FILL).layout, SCREEN);
+}
+
+#[test]
+fn fill_center_crops_faceless_shots_and_keeps_webcam_splits() {
+    // A slide (no faces) comes back as SCREEN: Full frame still fills.
+    let shot = apply_style(new_shot(0, 1000, SCREEN), STYLE_FILL);
     assert_eq!(shot.layout, TALKING_HEAD);
-    assert_eq!(shot.detected_layout.as_deref(), Some(TWO_SHOT));
-    assert!(!shot.focus_path.is_empty());
+    assert_eq!(shot.detected_layout.as_deref(), Some(SCREEN));
+    assert_eq!(shot.focus_path, vec![(0, 0.5, 0.5)]);
+    // A vision-confirmed webcam over a screen keeps its split layout.
+    let shot = apply_style(new_shot(0, 1000, SCREEN_CAM), STYLE_FILL);
+    assert_eq!(shot.layout, SCREEN_CAM);
+    // Smart framing keeps faceless shots whole.
+    let shot = apply_style(new_shot(0, 1000, SCREEN), STYLE_AUTO);
+    assert_eq!(shot.layout, SCREEN);
+    assert!(shot.focus_path.is_empty());
 }
 
 #[test]
@@ -343,7 +563,7 @@ fn decode_args_whitelist_inputs() {
     let args = decode_args(Path::new("/v/in.mp4"), 1500, 30000, 640, 360);
     let joined = args.join(" ");
     assert!(joined.starts_with("-nostdin -v error -ss 1.500 -protocol_whitelist file,pipe,fd -format_whitelist"));
-    assert!(joined.contains("-i /v/in.mp4 -t 30.000 -vf fps=4.0,scale=640:360 -f rawvideo -pix_fmt bgr24 -"));
+    assert!(joined.contains("-i /v/in.mp4 -t 30.000 -vf fps=4.0:round=up,scale=640:360 -f rawvideo -pix_fmt bgr24 -"));
 }
 
 fn test_config(assets: &Path) -> EngineConfig {
@@ -459,7 +679,7 @@ fn golden_cases() -> Vec<GoldenCase> {
 /// Face tracking, classification, vision merge and focus path, as the analyzer runs them.
 fn plan_case(case: &GoldenCase) -> ShotLayout {
     let fr: Vec<FrameInfo> =
-        (0..DURATION_MS).step_by(250).map(|t| FrameInfo { t_ms: t, faces: case.faces.clone(), hist: vec![] }).collect();
+        (0..DURATION_MS).step_by(250).map(|t| FrameInfo { t_ms: t, faces: case.faces.clone(), ..Default::default() }).collect();
     let (mut shot, main_track) = classify_shot(&track_faces(&fr), fr.len(), case.width, case.height);
     if let Some(track) = main_track {
         let crop_w_frac = f64::min(1.0, (case.height as f64 * 9.0 / 16.0) / case.width as f64);
@@ -510,4 +730,14 @@ fn no_face_input_uses_safe_screen_fallback() {
     let case =
         GoldenCase { name: "no_faces", width: 1920, height: 1080, faces: vec![], expected_layout: SCREEN, vision_result: None };
     assert_eq!(plan_case(&case).layout, case.expected_layout);
+}
+
+#[test]
+fn cut_frame_is_the_highest_scdet_score_above_the_floor() {
+    let meta = "frame:0    pts:256     pts_time:0.02\nlavfi.scd.mafd=0.000\nlavfi.scd.score=0.000\n\
+                frame:1    pts:768     pts_time:0.06\nlavfi.scd.score=1.200\n\
+                frame:2    pts:1280    pts_time:0.1\nlavfi.scd.score=14.500\n\
+                frame:3    pts:1792    pts_time:0.14\nlavfi.scd.score=6.000\n";
+    assert_eq!(cut_frame_ms(meta), Some(100));
+    assert_eq!(cut_frame_ms("frame:0 pts:1 pts_time:0.02\nlavfi.scd.score=2.0\n"), None);
 }

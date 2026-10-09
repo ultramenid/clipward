@@ -1,7 +1,7 @@
 //! Pure layout heuristics: shot segmentation, face tracking, classification,
 //! webcam following, focus paths, framing styles and vision merge.
 //! Port of the helpers in layout_analyzer.py; constants are unchanged.
-use super::imgproc::compare_hist_bhattacharyya;
+use super::imgproc::{compare_hist_bhattacharyya, face_motion, thumb_diff};
 use super::types::{Box, ShotLayout, SCREEN, SCREEN_CAM, TALKING_HEAD, TWO_SHOT};
 use serde_json::Value;
 
@@ -25,6 +25,9 @@ pub const FACE_NMS_THRESHOLD: f32 = 0.3;
 pub const FACE_TOP_K: usize = 50;
 /// Bhattacharyya distance between consecutive HSV histograms that counts as a cut.
 pub const SHOT_CUT_THRESHOLD: f64 = 0.42;
+/// Mean luma change (0-255) between consecutive 32x18 thumbnails that counts as
+/// a cut. Angle changes on one set measured ~58; motion within a shot stays under 3.
+pub const THUMB_CUT_THRESHOLD: f64 = 25.0;
 pub const MIN_SHOT_MS: i64 = 1200;
 
 /// A face track must be visible in this share of a shot's frames to count.
@@ -43,6 +46,37 @@ pub const CAMERA_DEADZONE: f64 = 0.12;
 pub const CAMERA_MAX_SPEED: f64 = 0.9;
 pub const MAX_PATH_KEYFRAMES: usize = 40;
 pub const FOCUS_STEP_MS: i64 = (1000.0 / ANALYSIS_FPS) as i64;
+
+/// Active speaker: step of the talk decision, shortest turn worth a cut, mouth
+/// movement (see `mouth_change`) that counts as talking, and the lead a new
+/// speaker needs over the current one. On real panels a talking mouth measured
+/// 0.08-0.38 and a listening one 0.00-0.05, behind a mic or a hand included.
+pub const TURN_WINDOW_MS: i64 = 1000;
+pub const MIN_TURN_MS: i64 = 2500;
+pub const TALK_FLOOR: f64 = 0.06;
+pub const TALK_SWITCH_RATIO: f64 = 1.5;
+/// Nobody visibly talking for this long hands the frame back to where the shot
+/// started: whoever talks now can't be read (in profile, behind a mic, off
+/// camera), and staying on someone silent is the worse guess.
+pub const QUIET_RELEASE_MS: i64 = 4000;
+/// Frames are decoded this many times the detector's size when the source has
+/// the pixels, and face patches are read from them: four people in a wide shot
+/// have faces ~27 px tall at ANALYSIS_WIDTH, too small to see a mouth move.
+pub const PATCH_SCALE: u32 = 2;
+/// Eyes-to-mouth distance (decoded pixels) under which a mouth can't be read.
+pub const MIN_TALK_UNIT_PX: f32 = 12.0;
+/// Share of the upper face's change taken off the mouth's: a head that turns or
+/// a detection that wobbles changes both alike, a talking mouth changes the
+/// lower face 1.5-2x as much. At 0.5 a listener turning their head on a real
+/// panel took a 10 s turn; at 1.0 quiet talkers read as silent.
+pub const HEAD_MOTION_SHARE: f64 = 0.75;
+/// Two sightings of a face further apart than this say nothing about its mouth
+/// (the face was lost in between: turned away, hidden behind a hand).
+pub const MAX_TALK_GAP_MS: i64 = 2 * FOCUS_STEP_MS;
+/// Readings a talk window needs before its mouth counts as read at all.
+pub const MIN_TALK_SAMPLES: usize = 3;
+/// ShotLayout.source for inserted media (`is_still_media`).
+pub const MEDIA_SOURCE: &str = "media";
 
 /// Framing styles (config.LayoutStyle).
 pub const STYLE_AUTO: &str = "auto";
@@ -76,13 +110,29 @@ pub fn analysis_dimensions(width: u32, height: u32) -> (u32, u32) {
 pub struct FrameInfo {
     pub t_ms: i64,
     pub faces: Vec<Box>,
+    /// Per face, same order: `imgproc::face_patch`. May be empty (no talk signal).
+    pub patches: Vec<Vec<f32>>,
     pub hist: Vec<f32>,
+    /// `imgproc::luma_thumb`; may be empty (histogram cuts only).
+    pub thumb: Vec<u8>,
 }
 
 /// One person's face across the frames of a shot.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FaceTrack {
     pub samples: Vec<(i64, Box)>,
+    /// (t_ms, how much the mouth changed since the track's previous sample).
+    pub talk: Vec<(i64, f64)>,
+    patch: Vec<f32>,
+}
+
+/// How much a mouth moved between two face patches: what changed around it
+/// beyond what the head and the detector account for. ~0 for a still mouth, a
+/// mouth behind a mic or a hand, and a face that only turned. None when either
+/// face was too small to read.
+fn mouth_change(a: &[f32], b: &[f32]) -> Option<f64> {
+    let (upper, lower) = face_motion(a, b)?;
+    Some((lower - HEAD_MOTION_SHARE * upper).max(0.0))
 }
 
 /// statistics.median: mean of the two middle values for even counts.
@@ -124,34 +174,33 @@ pub fn new_shot(start_ms: i64, end_ms: i64, layout: &str) -> ShotLayout {
 // Pure helpers
 // ------------------------------------------------------------------
 
-/// Split the timeline into shots at histogram cuts; merge shots < MIN_SHOT_MS.
+/// Split the timeline into shots at histogram and thumbnail cuts, none shorter
+/// than MIN_SHOT_MS.
 pub fn segment_shots(frames: &[FrameInfo], duration_ms: i64) -> Vec<(i64, i64)> {
-    if frames.is_empty() {
-        return vec![(0, duration_ms)];
-    }
-    let mut cuts = vec![0i64];
-    for pair in frames.windows(2) {
-        let (prev, cur) = (&pair[0], &pair[1]);
-        let dist = compare_hist_bhattacharyya(&prev.hist, &cur.hist);
-        if dist > SHOT_CUT_THRESHOLD {
+    // (how far over its threshold the change is, when).
+    let mut cuts: Vec<(f64, i64)> = frames
+        .windows(2)
+        .filter_map(|pair| {
+            let (prev, cur) = (&pair[0], &pair[1]);
+            let hist = compare_hist_bhattacharyya(&prev.hist, &cur.hist) / SHOT_CUT_THRESHOLD;
+            let thumb = if prev.thumb.is_empty() { 0.0 } else { thumb_diff(&prev.thumb, &cur.thumb) / THUMB_CUT_THRESHOLD };
             // The cut happened somewhere between the two samples.
-            cuts.push((prev.t_ms + cur.t_ms).div_euclid(2));
+            (hist.max(thumb) > 1.0).then(|| (hist.max(thumb), (prev.t_ms + cur.t_ms).div_euclid(2)))
+        })
+        .collect();
+    // Of cuts closer than MIN_SHOT_MS the strongest stands. A close-up full of
+    // movement trips the threshold over and over; the real cuts into and out of
+    // it are the big ones (measured 59 and 66 against 26-41 inside the shot).
+    cuts.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let mut bounds = vec![0, duration_ms];
+    for (_, t) in cuts {
+        if bounds.iter().all(|b| (t - b).abs() >= MIN_SHOT_MS) && t < duration_ms {
+            bounds.push(t);
         }
     }
-    cuts.push(duration_ms);
-
-    let mut merged: Vec<(i64, i64)> = Vec::new();
-    for pair in cuts.windows(2) {
-        let (start, end) = (pair[0], pair[1]);
-        if end <= start {
-            continue;
-        }
-        match merged.last_mut() {
-            Some(last) if end - start < MIN_SHOT_MS || last.1 - last.0 < MIN_SHOT_MS => last.1 = end,
-            _ => merged.push((start, end)),
-        }
-    }
-    merged
+    bounds.sort_unstable();
+    let shots: Vec<(i64, i64)> = bounds.windows(2).filter(|p| p[1] > p[0]).map(|p| (p[0], p[1])).collect();
+    if shots.is_empty() { vec![(0, duration_ms)] } else { shots }
 }
 
 /// Greedy nearest-center association of face boxes across frames.
@@ -159,9 +208,10 @@ pub fn track_faces(frames: &[FrameInfo]) -> Vec<FaceTrack> {
     let mut tracks: Vec<FaceTrack> = Vec::new();
     for frame in frames {
         let mut used: Vec<usize> = Vec::new();
-        let mut faces = frame.faces.clone();
-        faces.sort_by(|a, b| b.area().partial_cmp(&a.area()).unwrap_or(std::cmp::Ordering::Equal));
-        for face in faces {
+        let mut faces: Vec<(Box, Vec<f32>)> =
+            frame.faces.iter().enumerate().map(|(i, f)| (*f, frame.patches.get(i).cloned().unwrap_or_default())).collect();
+        faces.sort_by(|a, b| b.0.area().partial_cmp(&a.0.area()).unwrap_or(std::cmp::Ordering::Equal));
+        for (face, patch) in faces {
             let mut best: Option<usize> = None;
             let mut best_dist = 0.12;
             for (i, track) in tracks.iter().enumerate() {
@@ -178,11 +228,19 @@ pub fn track_faces(frames: &[FrameInfo]) -> Vec<FaceTrack> {
             }
             match best {
                 None => {
-                    tracks.push(FaceTrack { samples: vec![(frame.t_ms, face)] });
+                    tracks.push(FaceTrack { samples: vec![(frame.t_ms, face)], patch, ..Default::default() });
                     used.push(tracks.len() - 1);
                 }
                 Some(i) => {
-                    tracks[i].samples.push((frame.t_ms, face));
+                    let track = &mut tracks[i];
+                    let seen = track.samples.last().expect("tracks are never empty").0;
+                    if frame.t_ms - seen <= MAX_TALK_GAP_MS {
+                        if let Some(change) = mouth_change(&track.patch, &patch) {
+                            track.talk.push((frame.t_ms, change));
+                        }
+                    }
+                    track.patch = patch;
+                    track.samples.push((frame.t_ms, face));
                     used.push(i);
                 }
             }
@@ -379,11 +437,11 @@ pub fn screen_box_excluding_cam(cam: &Box) -> Box {
     Box { x: 0.0, y: 0.0, w: 1.0, h: 1.0 }
 }
 
-/// Heuristic layout for one shot from its face tracks.
-///
-/// Returns the layout (times filled in by the caller) and, for talking-head
-/// shots, the track the camera should follow.
-pub fn classify_shot(tracks: &[FaceTrack], shot_frames: usize, src_w: u32, src_h: u32) -> (ShotLayout, Option<FaceTrack>) {
+type TrackFaces = Vec<(usize, Box)>;
+
+/// Tracks seen for most of the shot, largest face first, as
+/// (on-camera people, corner webcam overlays).
+fn present_tracks(tracks: &[FaceTrack], shot_frames: usize) -> (TrackFaces, TrackFaces) {
     let min_samples = f64::max(1.0, MIN_TRACK_PRESENCE * shot_frames as f64);
     let mut present: Vec<(usize, Box)> = tracks
         .iter()
@@ -392,10 +450,160 @@ pub fn classify_shot(tracks: &[FaceTrack], shot_frames: usize, src_w: u32, src_h
         .filter(|(i, m)| tracks[*i].samples.len() as f64 >= min_samples && m.h >= MIN_FACE_HEIGHT)
         .collect();
     present.sort_by(|a, b| b.1.area().partial_cmp(&a.1.area()).unwrap_or(std::cmp::Ordering::Equal));
+    let (on_camera, corner): (Vec<_>, Vec<_>) = present.into_iter().partition(|(_, m)| !is_corner_overlay(m));
+    // A corner face about as big as someone on camera is a guest sitting at
+    // the side of the frame (a panel, a sofa), not a webcam over a screen.
+    // So is one sharing the frame with a like-sized corner face: two people
+    // at either side of a wide shot. A webcam shows one face at a time.
+    let similar = |c: &Box, p: &Box| (0.6..=1.6).contains(&(c.h / p.h.max(1e-6)));
+    let together = |a: usize, b: usize| {
+        let times: std::collections::HashSet<i64> = tracks[b].samples.iter().map(|(t, _)| *t).collect();
+        let shared = tracks[a].samples.iter().filter(|(t, _)| times.contains(t)).count();
+        shared * 2 >= tracks[a].samples.len().min(tracks[b].samples.len())
+    };
+    let (guests, overlays): (Vec<_>, Vec<_>) = corner.iter().copied().partition(|(i, c)| {
+        on_camera.iter().any(|(_, p): &(usize, Box)| similar(c, p))
+            || corner.iter().any(|(j, p)| j != i && similar(c, p) && together(*i, *j))
+    });
+    let mut on_camera: Vec<(usize, Box)> = on_camera.into_iter().chain(guests).collect();
+    // A face cut by the frame edge beside a whole one is someone mostly out of
+    // shot (a shoulder at the side of a close-up), not a second person.
+    let cut = |m: &Box| m.x < 0.01 || m.x + m.w > 0.99;
+    if on_camera.iter().any(|(_, m)| !cut(m)) {
+        on_camera.retain(|(_, m)| !cut(m));
+    }
+    on_camera.sort_by(|a, b| b.1.area().partial_cmp(&a.1.area()).unwrap_or(std::cmp::Ordering::Equal));
+    (on_camera, overlays)
+}
 
-    let mut overlays: Vec<(usize, Box)> = present.iter().filter(|(_, m)| is_corner_overlay(m)).copied().collect();
-    let on_camera: Vec<(usize, Box)> =
-        present.iter().filter(|(i, _)| !overlays.iter().any(|(o, _)| o == i)).copied().collect();
+/// Who is talking when, as (start_ms, end_ms, track index) covering [start, end);
+/// None is "nobody" (before the first speaker and through long silences, when
+/// `initial` is None).
+///
+/// Each TURN_WINDOW_MS the mouth that moves most wins, but the camera only
+/// switches for a clear lead (TALK_SWITCH_RATIO) over a moving mouth
+/// (TALK_FLOOR), and turns shorter than MIN_TURN_MS are absorbed so a nod or
+/// a laugh doesn't cut away. `initial` holds the frame until someone talks, and
+/// gets it back once nobody has for QUIET_RELEASE_MS.
+/// A window's movement is its median reading: talking moves a mouth in most
+/// of them, a hand passing over it or a sip in one or two.
+pub fn speaker_turns(
+    tracks: &[FaceTrack],
+    people: &[usize],
+    initial: Option<usize>,
+    start: i64,
+    end: i64,
+) -> Vec<(i64, i64, Option<usize>)> {
+    if people.is_empty() {
+        return Vec::new();
+    }
+    let activity = |i: usize, a: i64, b: i64| -> f64 {
+        let read: Vec<f64> = tracks[i].talk.iter().filter(|(t, _)| a <= *t && *t < b).map(|x| x.1).collect();
+        if read.len() < MIN_TALK_SAMPLES { 0.0 } else { median(read) }
+    };
+    let mut current = initial;
+    // (start, end, who has the frame, whether they visibly talk)
+    let mut steps: Vec<(i64, i64, Option<usize>, bool)> = Vec::new();
+    let mut t = start;
+    while t < end {
+        let w_end = (t + TURN_WINDOW_MS).min(end);
+        // Judge over a window twice as wide as the step, for steadier estimates.
+        let (a, b) = (t - TURN_WINDOW_MS / 2, w_end + TURN_WINDOW_MS / 2);
+        let (best, best_act) = people
+            .iter()
+            .map(|&i| (i, activity(i, a, b)))
+            .max_by(|x, y| x.1.total_cmp(&y.1))
+            .expect("people is non-empty");
+        let held = current.map_or(0.0, |c| activity(c, a, b));
+        if current != Some(best) && best_act >= TALK_FLOOR && best_act > TALK_SWITCH_RATIO * held {
+            current = Some(best);
+        }
+        steps.push((t, w_end, current, current.is_some_and(|c| activity(c, a, b) >= TALK_FLOOR)));
+        t = w_end;
+    }
+    // A long silence goes back to `initial` from the moment the talking stopped.
+    let mut i = 0;
+    while i < steps.len() {
+        let run = steps[i..].iter().take_while(|s| !s.3 && s.2 == steps[i].2).count();
+        if run > 0 && steps[i + run - 1].1 - steps[i].0 >= QUIET_RELEASE_MS {
+            steps[i..i + run].iter_mut().for_each(|s| s.2 = initial);
+        }
+        i += run.max(1);
+    }
+    let mut turns: Vec<(i64, i64, Option<usize>)> = Vec::new();
+    for (s, e, who, _) in steps {
+        match turns.last_mut() {
+            Some(last) if last.2 == who => last.1 = e,
+            _ => turns.push((s, e, who)),
+        }
+    }
+    let mut merged: Vec<(i64, i64, Option<usize>)> = Vec::new();
+    for turn in turns {
+        match merged.last_mut() {
+            Some(last) if last.2 == turn.2 || turn.1 - turn.0 < MIN_TURN_MS => last.1 = turn.1,
+            _ => merged.push(turn),
+        }
+    }
+    if merged.len() > 1 && merged[0].1 - merged[0].0 < MIN_TURN_MS {
+        let opening = merged.remove(0);
+        merged[0].0 = opening.0;
+    }
+    merged
+}
+
+/// Reframe a shot with several people so it follows whoever is talking,
+/// cutting between speakers at turn boundaries. A one-person framing starts on
+/// its subject; a full-frame (group) shot stays whole until someone talks, and
+/// goes back to whole when nobody visibly does.
+/// Shots with one on-camera person, or a group nobody visibly talks in, come
+/// back unchanged.
+pub fn follow_speaker(shot: &ShotLayout, tracks: &[FaceTrack], shot_frames: usize, crop_w_frac: f64) -> Vec<ShotLayout> {
+    let (on_camera, _) = present_tracks(tracks, shot_frames);
+    let Some(&(_, largest)) = on_camera.first() else { return vec![shot.clone()] };
+    // Much smaller faces are background (a poster, a monitor), not a co-host.
+    let people: Vec<usize> = on_camera.iter().filter(|(_, m)| m.h >= 0.4 * largest.h).map(|(i, _)| *i).collect();
+    if people.len() < 2 {
+        return vec![shot.clone()];
+    }
+    let initial = (shot.layout != SCREEN).then_some(people[0]);
+    let turns = speaker_turns(tracks, &people, initial, shot.start_ms, shot.end_ms);
+    if turns.iter().all(|t| t.2.is_none()) {
+        return vec![shot.clone()];
+    }
+    let detected_layout = Some(shot.detected_layout.clone().unwrap_or_else(|| shot.layout.clone()));
+    turns
+        .into_iter()
+        .map(|(start, end, i)| {
+            let Some(i) = i else {
+                return ShotLayout {
+                    source: shot.source.clone(),
+                    detected_layout: detected_layout.clone(),
+                    people: shot.people.clone(),
+                    ..new_shot(start, end, SCREEN)
+                };
+            };
+            let track = &tracks[i];
+            let within: Vec<(i64, Box)> =
+                track.samples.iter().filter(|(t, _)| start <= *t && *t < end).map(|(t, b)| (t - start, *b)).collect();
+            // Face missed for the whole turn: hold its nearest sighting.
+            let samples = if within.is_empty() { track.samples.iter().map(|(t, b)| (t - start, *b)).collect() } else { within };
+            ShotLayout {
+                source: shot.source.clone(),
+                detected_layout: detected_layout.clone(),
+                people: vec![track.median_box()],
+                focus_path: smooth_focus_path(&samples, end - start, crop_w_frac),
+                ..new_shot(start, end, TALKING_HEAD)
+            }
+        })
+        .collect()
+}
+
+/// Heuristic layout for one shot from its face tracks.
+///
+/// Returns the layout (times filled in by the caller) and, for talking-head
+/// shots, the track the camera should follow.
+pub fn classify_shot(tracks: &[FaceTrack], shot_frames: usize, src_w: u32, src_h: u32) -> (ShotLayout, Option<FaceTrack>) {
+    let (on_camera, mut overlays) = present_tracks(tracks, shot_frames);
 
     // A webcam that moves mid-shot splits into several short tracks; judge
     // its presence by all corner-overlay faces together.
@@ -423,7 +631,8 @@ pub fn classify_shot(tracks: &[FaceTrack], shot_frames: usize, src_w: u32, src_h
             return (ShotLayout { people, ..new_shot(0, 0, TWO_SHOT) }, None);
         }
         if on_camera.len() > 2 {
-            return (new_shot(0, 0, SCREEN), None);
+            // A group: shown whole, but its faces let Full frame split it in two.
+            return (ShotLayout { people: on_camera.iter().map(|(_, b)| *b).collect(), ..new_shot(0, 0, SCREEN) }, None);
         }
     }
     if let Some(&(main, main_box)) = on_camera.first() {
@@ -530,6 +739,26 @@ pub fn smooth_focus_path_step(
     keyframes
 }
 
+/// Frame-to-frame change (`imgproc::thumb_diff`) below which a shot is a still
+/// picture: an inserted photo or screenshot repeats identical frames (0.00),
+/// while the stillest live camera shot measured 0.16-0.27 from sensor noise.
+/// ponytail: a slow zoom over a photo (Ken Burns) moves and passes as live.
+pub const STILL_MEDIA_DIFF: f64 = 0.08;
+
+/// The shot is inserted media (a photo, screenshot or card), not a camera.
+pub fn is_still_media(frames: &[FrameInfo]) -> bool {
+    let mut diffs: Vec<f64> = frames
+        .windows(2)
+        .filter(|p| !p[0].thumb.is_empty() && !p[1].thumb.is_empty())
+        .map(|p| thumb_diff(&p[0].thumb, &p[1].thumb))
+        .collect();
+    if diffs.len() < 3 {
+        return false;
+    }
+    diffs.sort_by(f64::total_cmp);
+    diffs[diffs.len() / 2] < STILL_MEDIA_DIFF
+}
+
 /// Adjust a detected layout to the user's chosen framing style.
 pub fn apply_style(mut shot: ShotLayout, style: &str) -> ShotLayout {
     if shot.detected_layout.as_deref().is_none_or(str::is_empty) {
@@ -538,17 +767,18 @@ pub fn apply_style(mut shot: ShotLayout, style: &str) -> ShotLayout {
     if style == STYLE_FIT {
         shot.layout = SCREEN.into();
         shot.source = "style".into();
-    } else if style == STYLE_FILL && [TWO_SHOT, SCREEN_CAM, SCREEN].contains(&shot.layout.as_str()) {
-        let mut focus = shot.people.first().copied();
-        if shot.layout == SCREEN_CAM && shot.cam_face.is_some() {
-            focus = None; // a tiny webcam blown up to full frame looks bad
-        }
+    } else if style == STYLE_FILL && (shot.layout == TWO_SHOT || (shot.layout == SCREEN && !shot.people.is_empty())) {
+        // Full frame shows two or more people whole, in landscape: nobody is cut
+        // out and nobody is zoomed in on.
+        shot.layout = SCREEN.into();
+        shot.source = "style".into();
+    } else if style == STYLE_FILL && shot.layout == SCREEN && shot.source != MEDIA_SOURCE {
+        // Live footage with nobody in it (b-roll) is cropped on its center.
+        // Inserted media stays whole.
         shot.layout = TALKING_HEAD.into();
         shot.source = "style".into();
-        match focus {
-            Some(f) if shot.focus_path.is_empty() => shot.focus_path = vec![(0, f.cx(), f.cy())],
-            _ if shot.focus_path.is_empty() => shot.focus_path = vec![(0, 0.5, 0.5)],
-            _ => {}
+        if shot.focus_path.is_empty() {
+            shot.focus_path = vec![(0, 0.5, 0.5)];
         }
     }
     shot
@@ -703,6 +933,10 @@ pub fn merge_adjacent(shots: Vec<ShotLayout>) -> Vec<ShotLayout> {
     for shot in shots {
         let same_static = merged.last().is_some_and(|prev| {
             prev.layout == shot.layout
+                && prev.detected_layout == shot.detected_layout
+                // Another camera set-up: the editor's split framing needs the cut.
+                && prev.people == shot.people
+                && (prev.source == MEDIA_SOURCE) == (shot.source == MEDIA_SOURCE)
                 && (shot.layout == SCREEN
                     || (shot.layout == SCREEN_CAM
                         && match (prev.cam_box, shot.cam_box) {

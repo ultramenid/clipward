@@ -2,7 +2,7 @@
 
 Clipward is a desktop tool people keep open for hours, so it looks like one: a neutral grey base, dense controls, hairline borders and one blue accent. Surfaces are flat. Colour comes from the footage, the one primary action, a chosen option and status. The visual language (palette, tint strengths, radii, control sizes, motion timings, overlay title bar) is adapted from the [MonoCode](https://github.com/hardbeat920/monocode) desktop app (MIT, see `THIRD_PARTY_NOTICES.md`). Clipward keeps its own name, logo and brand artwork.
 
-Tokens live in `src/renderer/globals.css` (neutrals as HSL components, accent and status as RGB channels, redefined per colour scheme, plus the surface classes) and are mapped to Tailwind names in `tailwind.config.ts`. Reusable pieces live in `src/renderer/components/ui/`. Use them before writing new class strings.
+Tokens live in `crates/app/src/theme.rs` (`Tokens`, computed from Settings → Appearance and the colour scheme, and projected onto gpui-kit's theme). Reusable pieces live in `crates/app/src/ui.rs`. Use them before styling by hand. The class and component names below come from the original React UI (`src/renderer/` on `master`); the GPUI primitives keep the same recipes (see `docs/GPUI_PORT.md`, Porting a page).
 
 ---
 
@@ -30,8 +30,9 @@ Dark is the default. Settings → Appearance → Theme picks System, Dark or Lig
 | `ink-muted` · `ink-subtle` · `ink-faint` | 163 · 125 · 94 grey | 102 · 128 · 166 grey | Solid greys kept for older non-text uses. Text uses `text-ink-secondary` / `text-ink-tertiary` (see Typography). |
 | `stroke` | content 7% | content 7% | Structural hairlines: `border-stroke`, `divide-stroke`, `bg-stroke` |
 | `selection` · `-subtle` · `-strong` · `-hover` | content 10 · 8 · 12 · 15% | 6 · 5 · 7 · 10% | Selected and raised fills |
-| `accent` | `hsl(211 92% 62%)` | `#2986EE` | Primary button, chosen edges, progress, focus ring |
-| `accent-fg` | `#7DB8FA` | `#0A66CC` | Accent used as text on the base |
+| `accent` | `#EBEBEB` (white) | `#2E2E2E` | Primary button, chosen edges, progress, focus ring. Blue is a preset. |
+| `accent-fg` | `#EBEBEB` | `#2E2E2E` | Accent used as text on the base |
+| `accent-ink` | `#171717` | `#FFFFFF` | Text on a solid accent fill |
 | `success` · `warning` · `danger` | green-400 · amber-400 · red-400 | darker variants | Status only |
 | `brand-gold` | `#FFD500` | same | The virality score icon |
 
@@ -99,7 +100,7 @@ Light text on a dark base needs less strength than dark text on a light base for
 
 | Class | What it is | Use |
 | --- | --- | --- |
-| `window-bg` | Base (a tint in glass mode) | The window backdrop behind the title bar and pages |
+| `window-bg` | Base (a tint in glass mode) | The main pane's backdrop behind the title bar and pages (never under the sidebar, whose own tint would stack on it) |
 | `app-bg` | Solid base (82% with blur in glass mode) | Sticky strips that content scrolls under, insets inside a card |
 | `sidebar-bg` | Solid sidebar tone (a tint in glass mode) | The sidebar |
 | `card` | content 3% fill, content 8% border | Panels, empty states, media cards. Use `rounded-xl`. |
@@ -113,9 +114,9 @@ Light text on a dark base needs less strength than dark text on a light base for
 
 ### Window glass
 
-The second glass layer, after the CSS blur on floating surfaces. On macOS and Windows the app shell (`src-tauri/src/window_glass.rs`) creates the window transparent and blurs the desktop behind it: on macOS a WindowServer blur whose radius is the Appearance blur setting (over a visual-effect view faded to 1%, which falls back to the full sidebar material if the private blur call is missing); on Windows 11 Mica, or acrylic on Windows 10, with a fixed blur. Linux stays opaque. Settings → Appearance → **Window transparency** switches it at runtime (`settings.setWindowGlass`, the `window_set_glass` command); it is stored in `settings.json` and on by default.
+The second glass layer, after the CSS blur on floating surfaces. On macOS the app (`crates/app/src/glass.rs`) creates the window transparent and blurs the desktop behind it: on macOS a WindowServer blur whose radius is the Appearance blur setting (over a visual-effect view faded to 1%, which falls back to the full sidebar material if the private blur call is missing). Other platforms stay opaque. Settings → Appearance → **Window transparency** switches it at runtime; it is stored in `settings.json` and on by default.
 
-The renderer sets `html.glass` (`src/renderer/lib/glass.ts`) when the platform supports it, the setting is on and the OS does not ask for reduced transparency. The page, `body` and `#root` go clear, and a few variables in `globals.css` turn chrome into tints of the base over the material:
+Glass mode is on when the platform supports it, the setting is on and the OS does not ask for reduced transparency. The page goes clear, and a few strengths turn chrome into tints of the base over the material:
 
 | Variable | Glass | Opaque | Paints |
 | --- | --- | --- | --- |
@@ -130,7 +131,7 @@ Video, thumbnails and `media-chip` are unchanged. Light mode keeps the opaque va
 
 ### Appearance settings
 
-Settings → Appearance ports MonoCode's appearance page with its ranges and defaults. The app shell stores the values in `settings.json` (`src-tauri/src/appearance.rs` validates them; `src/shared/appearance.ts` mirrors the ranges) and the renderer applies them live (`src/renderer/lib/appearance.ts`) as a class or variable on the root, all in the **Appearance** block of `globals.css`:
+Settings → Appearance ports MonoCode's appearance page with its ranges and defaults. The core stores the values in `settings.json` (`crates/core/src/appearance.rs` validates them) and `crates/app/src/theme.rs` applies them live:
 
 | Setting | Range (default) | Drives |
 | --- | --- | --- |
@@ -181,7 +182,7 @@ Nested shapes step down one size (card `xl` with `p-1` → media `lg`).
 └─────────────────────────────────┴─────────────────────────────────────────────────────┘
 ```
 
-- **Window**: Tauri overlay title bar with a hidden title (`titleBarStyle: "Overlay"`, `hiddenTitle: true`). The sidebar's top 40px strip and the page title bar are `data-tauri-drag-region="deep"`; buttons inside carry `data-tauri-drag-region="false"`. On macOS the sidebar strip pads 78px for the traffic lights (`TRAFFIC_LIGHT_INSET`); when the sidebar is a rail, the title bar adds the difference.
+- **Window**: overlay title bar with a hidden title (`TitlebarOptions` in `crates/app/src/main.rs`). The sidebar's top 40px strip and the page title bar drag the window; buttons inside don't. On macOS the sidebar strip pads 78px for the traffic lights (`TRAFFIC_LIGHT_INSET`); when the sidebar is a rail, the title bar adds the difference.
 - **Sidebar**: 220px, or a 52px icon rail when collapsed or when the window is narrower than 1024px. Nav rows are 32px, `rounded-md`, icon at 70% opacity, `text-label`; active rows get `bg-selection`, others `text-ink-secondary` and `hover:bg-content/10`. The shortcut sits at the right in `text-meta text-ink-tertiary`; Jobs shows a solid accent count instead while jobs run. Group labels are `text-caption font-semibold text-ink-tertiary`; in the rail a hairline replaces them. The footer, above a hairline, shows setup status and the version.
 - **Title bar**: the sidebar toggle (⌘\, saved as Settings → Appearance → Collapsed rail) and a breadcrumb, group › page. Pages scroll below it, so sticky elements use small offsets (`top-2`, `top-6`).
 - **Page**: wrap every page in `<Page width>`: `focus` 720, `narrow` 880, `default` 1280, `wide` 1680. Gutters `px-5`/`sm:px-8`, `pt-6`. Stacks use `gap-2.5`/`space-y-3`; cards pad `p-4`.

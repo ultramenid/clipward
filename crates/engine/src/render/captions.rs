@@ -320,6 +320,11 @@ pub const SENTENCE_END_CHARS: [char; 3] = ['.', '!', '?'];
 /// A group stays up at most this long after its last word ends.
 pub const MAX_LINGER_MS: i64 = 700;
 /// Group entrance: scale overshoot, then settle.
+/// Text layer entrance and exit lengths, and how long a typewriter takes to type, ms.
+const TEXT_IN_MS: i64 = 300;
+const TEXT_OUT_MS: i64 = 250;
+const TYPEWRITER_MS: i64 = 1_200;
+
 pub const POP_TAGS: &str = r"\fscx82\fscy82\t(0,90,\fscx106\fscy106)\t(90,170,\fscx100\fscy100)";
 
 pub const LAYER_PLATE: i64 = 0;
@@ -580,10 +585,13 @@ impl<'a> CaptionGenerator<'a> {
                 all_words.extend(seg.words.iter().cloned());
             }
         }
-        let clip_words: Vec<TranscriptWord> = all_words
+        let mut clip_words: Vec<TranscriptWord> = all_words
             .into_iter()
             .filter(|w| w.end_time_ms > clip_start_ms && w.start_time_ms < clip_end_ms)
             .collect();
+        // In time order: a word the user retimed into another segment's stretch joins
+        // that line instead of drawing a second one on top of it.
+        clip_words.sort_by_key(|w| w.start_time_ms);
         let groups = group_words(&clip_words, self.style.max_words_per_line);
         let mut events = Vec::new();
         for (idx, group) in groups.iter().enumerate() {
@@ -603,9 +611,13 @@ impl<'a> CaptionGenerator<'a> {
         place: PlaceEvents,
     ) -> Vec<String> {
         let mut events = Vec::new();
-        for seg in segments {
+        let mut segments = segments.to_vec();
+        segments.sort_by_key(|s| s.start_time_ms);
+        for (i, seg) in segments.iter().enumerate() {
             let start = (seg.start_time_ms - clip_start_ms).max(0);
-            let end = (clip_end_ms - clip_start_ms).min(seg.end_time_ms - clip_start_ms);
+            // A segment ends where the next begins, so two never show at once.
+            let next = segments.get(i + 1).map_or(i64::MAX, |n| n.start_time_ms);
+            let end = (clip_end_ms - clip_start_ms).min(seg.end_time_ms.min(next) - clip_start_ms);
             if end <= start {
                 continue;
             }
@@ -690,6 +702,98 @@ impl<'a> CaptionGenerator<'a> {
 
     /// One Dialogue line per enabled layer, all sharing the same words.
     fn layered_events(&self, tokens: &[Token], start_ms: i64, end_ms: i64, entrance: bool, active_ms: i64) -> Vec<String> {
+        self.layered_lines(tokens, start_ms, end_ms, entrance, active_ms, self.style.max_words_per_line.max(1) as usize)
+    }
+
+    /// Free text in this preset's look (the editor's text layers): one line per `text`
+    /// line, centred on (x, y) px at `font_size`, shown over [start_ms, end_ms).
+    pub fn text_events(&self, text: &str, (start_ms, end_ms): (i64, i64), (x, y): (i64, i64), font_size: i64, animation: (&str, &str)) -> Vec<String> {
+        let s = self.style;
+        let tokens: Vec<Token> = text
+            .lines()
+            .map(|line| line.trim().chars().filter(|c| !matches!(c, '{' | '}' | '\\')).collect::<String>())
+            .filter(|line| !line.is_empty())
+            .map(|line| Token {
+                text: if s.uppercase { line.to_uppercase() } else { line },
+                state: State::Past,
+                emphasized: false,
+                karaoke_cs: 0,
+            })
+            .collect();
+        if tokens.is_empty() || end_ms <= start_ms {
+            return Vec::new();
+        }
+        let (anim_in, anim_out) = animation;
+        let len = end_ms - start_ms;
+        let (in_ms, out_ms) = (TEXT_IN_MS.min(len / 3), TEXT_OUT_MS.min(len / 3));
+        // Slide in: rise into place from a line lower.
+        let place = if anim_in == "slide" { format!("\\move({x},{},{x},{y},0,{in_ms})", y + font_size) } else { format!("\\pos({x},{y})") };
+        let font = format!("\\an5{place}\\fn{}\\fs{font_size}\\fsp{}\\b{}\\i{}", s.font_name, s.letter_spacing, u8::from(s.bold), u8::from(s.italic));
+        // Tags for one event [from, to): the entrance on the first, the exit on the last.
+        let tags = |first: bool, last: bool, event_len: i64| {
+            let fade_in = if !first { 0 } else {
+                match anim_in {
+                    "fade" | "slide" => in_ms,
+                    "pop" => in_ms / 2,
+                    _ => 0,
+                }
+            };
+            let fade_out = if last && matches!(anim_out, "fade" | "pop") { out_ms } else { 0 };
+            let mut t = String::new();
+            if fade_in > 0 || fade_out > 0 {
+                t += &format!("\\fad({fade_in},{fade_out})");
+            }
+            if first && anim_in == "pop" {
+                t += &format!("\\fscx30\\fscy30\\t(0,{in_ms},\\fscx100\\fscy100)");
+            }
+            if last && anim_out == "pop" {
+                t += &format!("\\t({},{event_len},\\fscx30\\fscy30)", event_len - out_ms);
+            }
+            t
+        };
+        let event = |tokens: &[Token], from: i64, to: i64, first: bool, last: bool| {
+            let head = format!(",,{{{font}{}", tags(first, last, to - from));
+            self.layered_lines(tokens, from, to, false, 0, 1).into_iter().map(move |line| line.replacen(",,{", &head, 1))
+        };
+        if anim_in != "typewriter" {
+            return event(&tokens, start_ms, end_ms, true, true).collect();
+        }
+        // Typewriter: one event per word shown so far; the words still to come are there
+        // but transparent, so the text never shifts as it appears.
+        let words: usize = tokens.iter().map(|t| t.text.split_whitespace().count()).sum();
+        let step = (TYPEWRITER_MS.min(len * 2 / 3) / words.max(1) as i64).max(1);
+        let mut out = Vec::new();
+        for shown in 1..=words {
+            let (from, to) = (start_ms + (shown as i64 - 1) * step, if shown == words { end_ms } else { start_ms + shown as i64 * step });
+            let mut seen = 0;
+            let partial: Vec<Token> = tokens
+                .iter()
+                .map(|t| {
+                    let mut text = String::new();
+                    for (i, word) in t.text.split_whitespace().enumerate() {
+                        if i > 0 {
+                            text.push(' ');
+                        }
+                        if seen == shown {
+                            text += r"{\alpha&HFF&}";
+                        }
+                        seen += 1;
+                        text += word;
+                    }
+                    Token { text, ..t.clone() }
+                })
+                .collect();
+            out.extend(event(&partial, from, to, shown == 1, shown == words));
+        }
+        out
+    }
+
+    /// An empty caption document (header and event list), for text layers on a clip without captions.
+    pub fn empty_document(&self, width: i64, height: i64) -> String {
+        self.header(width, height, None) + Self::EVENTS_HEADER
+    }
+
+    fn layered_lines(&self, tokens: &[Token], start_ms: i64, end_ms: i64, entrance: bool, active_ms: i64, per_line: usize) -> Vec<String> {
         let style = self.style;
         let mut layers: Vec<i64> = Vec::new();
         if style.line_box().is_some() {
@@ -709,7 +813,6 @@ impl<'a> CaptionGenerator<'a> {
         let lead = if entrance { POP_TAGS } else { "" };
         let gap = if style.pill() { " \\h" } else { " " };
         let (start, end) = (Self::format_ass_time(start_ms), Self::format_ass_time(end_ms));
-        let per_line = style.max_words_per_line.max(1) as usize;
         layers
             .into_iter()
             .map(|layer| {

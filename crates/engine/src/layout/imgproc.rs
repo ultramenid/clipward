@@ -125,9 +125,184 @@ pub fn compare_hist_bhattacharyya(a: &[f32], b: &[f32]) -> f64 {
     (1.0 - result * s1).max(0.0).sqrt()
 }
 
+pub const THUMB_W: usize = 32;
+pub const THUMB_H: usize = 18;
+
+/// 32x18 luma thumbnail: catches cuts between angles of the same set, which
+/// share colors (and so a histogram) but not a layout.
+pub fn luma_thumb(bgr: &[u8], width: usize, height: usize) -> Vec<u8> {
+    resize_linear_3c(bgr, width, height, THUMB_W, THUMB_H)
+        .chunks_exact(3)
+        .map(|p| (0.114 * p[0] as f32 + 0.587 * p[1] as f32 + 0.299 * p[2] as f32).round() as u8)
+        .collect()
+}
+
+/// Mean absolute difference of two luma thumbnails (0-255).
+pub fn thumb_diff(a: &[u8], b: &[u8]) -> f64 {
+    a.iter().zip(b).map(|(x, y)| (*x as f64 - *y as f64).abs()).sum::<f64>() / a.len().max(1) as f64
+}
+
+/// 2x box downscale of a packed 3-channel image with even dimensions: the
+/// detector's frame from the sharper one face patches are read from.
+pub fn halve_3c(src: &[u8], sw: usize, sh: usize) -> Vec<u8> {
+    let (dw, dh) = (sw / 2, sh / 2);
+    let mut out = vec![0u8; dw * dh * 3];
+    for y in 0..dh {
+        let (top, bottom) = (&src[2 * y * sw * 3..], &src[(2 * y + 1) * sw * 3..]);
+        for x in 0..dw {
+            for c in 0..3 {
+                let sum = top[6 * x + c] as u32 + top[6 * x + 3 + c] as u32 + bottom[6 * x + c] as u32 + bottom[6 * x + 3 + c] as u32;
+                out[(y * dw + x) * 3 + c] = ((sum + 2) / 4) as u8;
+            }
+        }
+    }
+    out
+}
+
+pub const FACE_PATCH_W: usize = 16;
+pub const FACE_PATCH_H: usize = 18;
+/// Patch rows above this hold the eyes and nose bridge, which move only with
+/// the head; the rows from it down hold the mouth and chin.
+pub const FACE_PATCH_SPLIT: usize = 10;
+/// Cells a patch may slide while aligning (detector jitter, head movement).
+const FACE_PATCH_SLIDE: i32 = 2;
+
+/// Luma patch of a face from above the eyes to below the chin, laid out along
+/// the eyes-to-mouth axis so roll and zoom cancel out, normalized to the upper
+/// face's mean and spread so lighting does too. `row` is a YuNet detection on a frame
+/// `scale` times smaller than `bgr`. Faces whose eyes-to-mouth distance is
+/// under `min_unit_px` get an empty patch (no talk signal): their mouth is a
+/// few noisy pixels.
+pub fn face_patch(bgr: &[u8], width: usize, height: usize, row: &[f32; 15], scale: f32, min_unit_px: f32) -> Vec<f32> {
+    let eye = ((row[4] + row[6]) / 2.0 * scale, (row[5] + row[7]) / 2.0 * scale);
+    let mouth = ((row[10] + row[12]) / 2.0 * scale, (row[11] + row[13]) / 2.0 * scale);
+    let (dx, dy) = (mouth.0 - eye.0, mouth.1 - eye.1);
+    let unit = dx.hypot(dy);
+    if unit.is_nan() || unit < min_unit_px || width == 0 || height == 0 {
+        return Vec::new();
+    }
+    // Unit vectors down the face and across it; eight cells per eyes-to-mouth
+    // distance, the eyes on the fifth row and the mouth on the thirteenth.
+    let (down, across) = ((dx / unit, dy / unit), (dy / unit, -dx / unit));
+    let cell = unit / 8.0;
+    let mut patch = Vec::with_capacity(FACE_PATCH_W * FACE_PATCH_H);
+    for j in 0..FACE_PATCH_H {
+        for i in 0..FACE_PATCH_W {
+            // Four samples per cell: a single pixel would alias on stubble and teeth.
+            let mut sum = 0.0;
+            for (ox, oy) in [(-0.25, -0.25), (0.25, -0.25), (-0.25, 0.25), (0.25, 0.25)] {
+                let lx = (i as f32 + 0.5 + ox - FACE_PATCH_W as f32 / 2.0) * cell;
+                let ly = (j as f32 + 0.5 + oy) * cell - 0.55 * unit;
+                let x = ((eye.0 + across.0 * lx + down.0 * ly).max(0.0) as usize).min(width - 1);
+                let y = ((eye.1 + across.1 * lx + down.1 * ly).max(0.0) as usize).min(height - 1);
+                let p = &bgr[(y * width + x) * 3..];
+                sum += 0.114 * p[0] as f32 + 0.587 * p[1] as f32 + 0.299 * p[2] as f32;
+            }
+            patch.push(sum / 4.0);
+        }
+    }
+    // Normalized by the upper face alone, so an opening mouth can't shift it.
+    let upper = &patch[..FACE_PATCH_SPLIT * FACE_PATCH_W];
+    let mean = upper.iter().sum::<f32>() / upper.len() as f32;
+    let spread = (upper.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / upper.len() as f32).sqrt().max(4.0);
+    patch.iter_mut().for_each(|v| *v = (*v - mean) / spread);
+    patch
+}
+
+/// How much two face patches differ once `b` is slid onto `a` by its eyes and
+/// nose: (what is left in the upper face, what is left around the mouth), as
+/// mean absolute differences. The upper face only changes with the head and
+/// the detector, so it measures everything that is not the mouth moving.
+/// None unless both are `face_patch` results.
+pub fn face_motion(a: &[f32], b: &[f32]) -> Option<(f64, f64)> {
+    if a.len() != FACE_PATCH_W * FACE_PATCH_H || b.len() != a.len() {
+        return None;
+    }
+    let margin = FACE_PATCH_SLIDE as usize;
+    let rest = |sx: i32, sy: i32, rows: std::ops::Range<usize>| -> f64 {
+        let cells = rows.len() * (FACE_PATCH_W - 2 * margin);
+        let mut sum = 0.0;
+        for j in rows {
+            for i in margin..FACE_PATCH_W - margin {
+                let moved = (j as i32 + sy) as usize * FACE_PATCH_W + (i as i32 + sx) as usize;
+                sum += (a[j * FACE_PATCH_W + i] - b[moved]).abs() as f64;
+            }
+        }
+        sum / cells as f64
+    };
+    // Unmoved unless sliding fits the upper face strictly better.
+    let mut best = (rest(0, 0, margin..FACE_PATCH_SPLIT), rest(0, 0, FACE_PATCH_SPLIT..FACE_PATCH_H - margin));
+    for sy in -FACE_PATCH_SLIDE..=FACE_PATCH_SLIDE {
+        for sx in -FACE_PATCH_SLIDE..=FACE_PATCH_SLIDE {
+            let upper = rest(sx, sy, margin..FACE_PATCH_SPLIT);
+            if upper < best.0 {
+                best = (upper, rest(sx, sy, FACE_PATCH_SPLIT..FACE_PATCH_H - margin));
+            }
+        }
+    }
+    Some(best)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A YuNet row for an upright face: eyes level at `eye_y`, mouth `unit` below.
+    fn face_row(cx: f32, eye_y: f32, unit: f32) -> [f32; 15] {
+        let mut row = [0f32; 15];
+        (row[4], row[5], row[6], row[7]) = (cx - unit / 2.0, eye_y, cx + unit / 2.0, eye_y);
+        (row[10], row[11], row[12], row[13]) = (cx - unit / 3.0, eye_y + unit, cx + unit / 3.0, eye_y + unit);
+        row
+    }
+
+    /// A textured face on a 96x96 frame; `open` darkens a slot where the mouth is.
+    fn face_frame(gain: u8, shift: usize, open: bool) -> Vec<u8> {
+        (0..96 * 96)
+            .flat_map(|i| {
+                let (x, y) = ((i % 96 + 96 - shift) % 96, i / 96);
+                let mouth = open && (40..56).contains(&x) && (58..64).contains(&y);
+                let v = if mouth { 10 } else { ((x * 5 + y * 3) % 97) as u8 + 40 } + gain;
+                [v, v, v]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn face_patch_ignores_lighting_and_tiny_faces() {
+        let row = face_row(48.0, 36.0, 24.0);
+        let a = face_patch(&face_frame(0, 0, false), 96, 96, &row, 1.0, 12.0);
+        let b = face_patch(&face_frame(60, 0, false), 96, 96, &row, 1.0, 12.0);
+        assert_eq!(a.len(), FACE_PATCH_W * FACE_PATCH_H);
+        assert!(a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 0.05));
+        assert!(face_patch(&face_frame(0, 0, false), 96, 96, &row, 1.0, 30.0).is_empty());
+        // A detection on the half-size frame reads the same pixels.
+        let half = face_row(24.0, 18.0, 12.0);
+        assert_eq!(face_patch(&face_frame(0, 0, false), 96, 96, &half, 2.0, 12.0), a);
+        assert!(face_patch(&[], 0, 0, &row, 1.0, 12.0).is_empty());
+    }
+
+    #[test]
+    fn face_motion_sees_the_mouth_not_the_head() {
+        let row = face_row(48.0, 36.0, 24.0);
+        let patch = |shift: usize, open: bool| face_patch(&face_frame(0, shift, open), 96, 96, &row, 1.0, 12.0);
+        let (closed, open) = (patch(0, false), patch(0, true));
+        // The same face: nothing left. The detector landing 3 px off: slid back.
+        assert_eq!(face_motion(&closed, &closed), Some((0.0, 0.0)));
+        let (upper, lower) = face_motion(&closed, &patch(3, false)).unwrap();
+        assert!(upper < 0.05 && lower < 0.05, "{upper} {lower}");
+        // An opening mouth stays in the lower face.
+        let (upper, lower) = face_motion(&closed, &open).unwrap();
+        assert!(upper < 0.05 && lower > 0.15, "{upper} {lower}");
+        assert_eq!(face_motion(&closed, &[]), None);
+    }
+
+    #[test]
+    fn halve_averages_blocks() {
+        let src: Vec<u8> = [[0u8, 10, 20], [4, 10, 20], [0, 30, 20], [4, 30, 22]].concat();
+        assert_eq!(halve_3c(&src, 2, 2), vec![2, 20, 21]);
+        let flat: Vec<u8> = [10u8, 20, 200].repeat(8 * 4);
+        assert!(halve_3c(&flat, 8, 4).chunks_exact(3).all(|p| p == [10, 20, 200]));
+    }
 
     #[test]
     fn hsv_matches_opencv_reference_values() {

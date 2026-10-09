@@ -140,6 +140,21 @@ pub struct ClipJobRequest {
     /// None (the default, and every older payload) means the AI picks the moments.
     #[serde(default)]
     pub manual_clips: Option<Vec<ManualClip>>,
+    /// Images stamped on every clip (a brand or channel logo), in drawing order.
+    #[serde(default)]
+    pub logos: Vec<LogoOverlay>,
+}
+
+/// One image stamped on every clip.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LogoOverlay {
+    /// Absolute path of a PNG, JPEG or WebP picked in the app.
+    pub path: String,
+    /// "top-left" | "top-right" | "bottom-left" | "bottom-right"
+    pub position: String,
+    /// Width as a fraction of the frame width.
+    pub size: f64,
 }
 
 /// One moment the user typed in manual clip mode (source seconds).

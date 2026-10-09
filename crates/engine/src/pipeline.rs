@@ -6,9 +6,10 @@ use crate::layout;
 use crate::llm;
 use crate::manual;
 use crate::planner;
+use crate::render::project::Project;
 use crate::render::{self, RenderRequest, Renderer};
 use crate::transcribe;
-use crate::types::{ClipJobRequest, ClipPlanSegment, EngineConfig, Progress, ProgressFn, Stage};
+use crate::types::{ClipJobRequest, ClipPlanSegment, DownloadResult, EngineConfig, Progress, ProgressFn, Stage};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -17,6 +18,10 @@ use tokio_util::sync::CancellationToken;
 
 /// Name of the manifest the app reads back (the Electron engine called it job_output.json).
 pub const RESULT_FILE: &str = "result.json";
+/// What re-editing a clip needs: the request (with run-folder logo copies) and the source.
+pub const REQUEST_FILE: &str = "request.json";
+/// A downloaded source is kept in the run folder under this stem (`source.mp4`, ...).
+pub const SOURCE_STEM: &str = "source";
 
 /// Runs one job and returns the JobOutput JSON (src/shared/job-output.ts), also saved as
 /// `result.json` in `cfg.output_dir`. Clips, transcript.json and plan.json land there too;
@@ -198,6 +203,7 @@ impl Job {
         self.check_cancel()?;
 
         let mut rendered = Vec::new();
+        let mut projects = Vec::new();
         let mut clip_layouts = Vec::new();
         let mut layout_vision_cost = 0.0;
         let mut first_error = None;
@@ -209,6 +215,7 @@ impl Job {
                     result.apply_to(segment);
                     layout_vision_cost += result.layout_cost_usd;
                     clip_layouts.push(result.clip_layout_entry(rendered.len(), &requests[i]));
+                    projects.push(Project::from_render(&requests[i], &result, &self.req.caption_preset, &transcript.segments));
                     rendered.push((result, segment.clone()));
                 }
                 Err(e) => {
@@ -239,6 +246,7 @@ impl Job {
             "transcript_url": file_url(&transcript_path),
             "plan_url": file_url(&plan_path),
             "processing_time_seconds": self.started.elapsed().as_secs_f64(),
+            "created_at": (chrono::Utc::now() - self.started.elapsed()).to_rfc3339(),
             "metrics": {
                 "planned_clip_count": plan.clips.len(),
                 "rendered_clip_count": rendered.len(),
@@ -327,6 +335,16 @@ impl Job {
         output["metrics"] = metrics;
         output["processing_time_seconds"] = json!(self.started.elapsed().as_secs_f64());
         save_json(&self.cfg.output_dir, "result", &output)?;
+        self.report(Stage::Rendering, 95.0, "Keeping the source for editing...", total, total);
+        save_edit_inputs(&self.cfg.output_dir, &self.req, &source)?;
+        for (i, project) in projects.iter().enumerate() {
+            let Some(project) = project else { continue };
+            let name = format!("clip_{i:02}.project");
+            let saved = serde_json::to_value(project).map_err(|_| EngineError::msg("could not encode project"));
+            if let Err(e) = saved.and_then(|value| save_json(&self.cfg.output_dir, &name, &value)) {
+                tracing::warn!("Clip {} can't be opened in the editor: {e}", i + 1);
+            }
+        }
         self.report(Stage::Rendering, 100.0, "Processing complete!", total, total);
         Ok(output)
     }
@@ -356,6 +374,43 @@ fn save_json(dir: &Path, name: &str, data: &Value) -> Result<PathBuf> {
     tmp.as_file().sync_all()?;
     tmp.persist(&path).map_err(|e| EngineError::from(e.error))?;
     Ok(path)
+}
+
+/// Keeps what re-editing a clip needs in the run folder: the downloaded source (moved
+/// out of the work folder; the user's own file stays where it is), copies of the logos,
+/// and `request.json` pointing at both. A downloaded source is stored by file name so
+/// the run folder can move.
+fn save_edit_inputs(out_dir: &Path, req: &ClipJobRequest, source: &DownloadResult) -> Result<()> {
+    let source_path = if source.is_local {
+        source.path.to_string_lossy().into_owned()
+    } else {
+        let ext = source.path.extension().and_then(|e| e.to_str()).unwrap_or("mp4");
+        let name = format!("{SOURCE_STEM}.{ext}");
+        let dest = out_dir.join(&name);
+        if std::fs::rename(&source.path, &dest).is_err() {
+            if let Err(e) = std::fs::copy(&source.path, &dest) {
+                let _ = std::fs::remove_file(&dest);
+                return Err(e.into());
+            }
+        }
+        name
+    };
+    let mut req = req.clone();
+    for (i, logo) in req.logos.iter_mut().enumerate() {
+        let from = Path::new(&logo.path);
+        let ext = from.extension().and_then(|e| e.to_str()).unwrap_or("png").to_ascii_lowercase();
+        let name = format!("logo_{i}.{ext}");
+        match std::fs::copy(from, out_dir.join(&name)) {
+            Ok(_) => logo.path = name,
+            Err(e) => tracing::warn!("Logo {} not kept for editing: {e}", i + 1),
+        }
+    }
+    save_json(
+        out_dir,
+        REQUEST_FILE.trim_end_matches(".json"),
+        &json!({ "request": req, "source": { "path": source_path, "local": source.is_local, "metadata": source.metadata } }),
+    )?;
+    Ok(())
 }
 
 /// Links (or copies across volumes) rendered clips into the run folder as clip_NN.mp4,
@@ -565,6 +620,11 @@ const FAILURES: &[(&[&str], &str, &str)] = &[
         "Check each start and end time against the video's length, then retry.",
     ),
     (
+        &["no moments match the campaign brief"],
+        "Nothing in this video matches the campaign brief.",
+        "Clipward skips moments that break a brief rule. Check the brief fits this video, or loosen a rule, then retry.",
+    ),
+    (
         &["no clip-worthy moments"],
         "Clipward couldn't find any clips in this video.",
         "No clear spoken or visual moment met the selected clip length. If you set a start and end time, widen it or pick a shorter clip length.",
@@ -583,6 +643,11 @@ const FAILURES: &[(&[&str], &str, &str)] = &[
         &["timed out", "connection", "name resolution", "network is unreachable"],
         "A network request failed.",
         "Check your internet connection and retry.",
+    ),
+    (
+        &["returned no content", "returned an unusable response"],
+        "The AI provider gave no answer.",
+        "Retry the run. If it keeps happening, pick another model or AI provider in Settings.",
     ),
     (
         &["video download failed"],
@@ -741,6 +806,51 @@ mod tests {
         assert_eq!(plan["planning_source"], "manual");
         assert_eq!(plan["total_clips"], 2);
         assert!(dir.path().join("run/clip_01.mp4").is_file());
+        let project: Project =
+            serde_json::from_slice(&std::fs::read(dir.path().join("run/clip_00.project.json")).unwrap()).unwrap();
+        // Natural pacing: one piece covering the typed range (plus the render's padding).
+        assert_eq!(project.video.len(), 1);
+        assert!(project.video[0].src_in_ms <= 1_000 && project.video[0].src_out_ms >= 4_500);
+        assert_eq!(project.title.as_deref(), Some("Opening"));
+        // The user's own file is referenced for editing, never moved or copied.
+        let kept: Value = serde_json::from_slice(&std::fs::read(dir.path().join("run").join(REQUEST_FILE)).unwrap()).unwrap();
+        assert_eq!(kept["source"]["path"], video.to_string_lossy().as_ref());
+        assert_eq!(kept["source"]["local"], true);
+        assert_eq!(kept["request"]["manualClips"][0]["title"], "Opening");
+        assert!(video.is_file());
+    }
+
+    /// A downloaded source moves into the run folder and logos are copied next to it, so
+    /// the work folder's removal and a moved logo file cannot break re-editing.
+    #[test]
+    fn edit_inputs_keep_a_downloaded_source_and_logo_copies() {
+        let dir = tempfile::tempdir().unwrap();
+        let (work, run) = (dir.path().join("work"), dir.path().join("run"));
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(work.join("dl.webm"), b"video").unwrap();
+        std::fs::write(dir.path().join("brand.PNG"), b"logo").unwrap();
+        let mut req = manual_request(Path::new("https://example.com/v"), json!(null));
+        req.logos = vec![crate::types::LogoOverlay {
+            path: dir.path().join("brand.PNG").to_string_lossy().into(),
+            position: "top-right".into(),
+            size: 0.2,
+        }];
+        let source = DownloadResult {
+            path: work.join("dl.webm"),
+            metadata: crate::types::VideoMetadata {
+                title: "t".into(), duration_seconds: 1.0, width: 2, height: 2, fps: 30.0, has_audio: true,
+            },
+            is_local: false,
+        };
+        save_edit_inputs(&run, &req, &source).unwrap();
+        assert_eq!(std::fs::read(run.join("source.webm")).unwrap(), b"video");
+        assert!(!work.join("dl.webm").exists());
+        assert_eq!(std::fs::read(run.join("logo_0.png")).unwrap(), b"logo");
+        let kept: Value = serde_json::from_slice(&std::fs::read(run.join(REQUEST_FILE)).unwrap()).unwrap();
+        assert_eq!(kept["source"]["path"], "source.webm");
+        assert_eq!(kept["request"]["logos"][0]["path"], "logo_0.png");
+        assert_eq!(kept["source"]["metadata"]["width"], 2);
     }
 
     #[tokio::test]
@@ -783,11 +893,13 @@ mod tests {
 
     #[test]
     fn maps_known_failures_to_fixed_text() {
+        assert_eq!(message("Planner returned no content (finish_reason=stop)"), "The AI provider gave no answer.");
         assert_eq!(message("YouTube download failed. Last error: ERROR: unable to download video data: HTTP Error 403: Forbidden"), "The video service refused the download.");
         let (m, h) = describe_failure(&EngineError::msg("socks5h://user:secret-pass@10.0.0.1:1 /Users/someone/private.mp4"));
         assert_eq!(m, "The clipping pipeline failed.");
         assert!(!h.contains("secret-pass"));
         assert_eq!(message("No clip-worthy moments found (the video may have no speech)"), "Clipward couldn't find any clips in this video.");
+        assert_eq!(message(crate::planner::NO_CLIPS_MATCH_BRIEF), "Nothing in this video matches the campaign brief.");
         assert_eq!(message("Whisper model is not downloaded"), "The offline transcription model is not downloaded.");
         assert_eq!(message("Local transcription failed"), "Offline transcription failed.");
         assert_eq!(message("Claude Code CLI is not logged in (unauthorized)"), "The AI CLI is not logged in.");

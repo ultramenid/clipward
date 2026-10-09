@@ -1,0 +1,37 @@
+[package]
+name = "clipward_core"
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
+description = "Clipward's app logic (settings, jobs, library, editor previews), shared by the desktop shells."
+
+[dependencies]
+clip_engine = { path = "../engine" }
+tokio.workspace = true
+tokio-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+chrono = "0.4"
+dirs = "6"
+file-id = "0.2"
+regex = "1"
+same-file = "1"
+sha2 = "0.10"
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+which = "7"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# API keys live in the OS keychain (Keychain, Credential Manager, Secret Service),
+# as Electron's safeStorage kept them.
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
