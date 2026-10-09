@@ -579,6 +579,8 @@ fn strip_positions(ass: &str) -> String {
 }
 
 #[test]
+// The Python fixtures hold POSIX paths; Windows joins with backslashes.
+#[cfg_attr(windows, ignore = "golden commands use POSIX paths")]
 fn render_flows_match_python() {
     let mut placed_mismatch = 0;
     let flows = comparable("flows");

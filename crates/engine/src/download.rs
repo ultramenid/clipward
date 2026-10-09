@@ -1372,7 +1372,7 @@ mod tests {
             }
             assert!(info.iter().any(|a| a == "-J"));
             assert!(has_pair(&dl, "--merge-output-format", "mp4"));
-            assert!(has_pair(&dl, "--ffmpeg-location", "/opt/ff/ffmpeg"));
+            assert!(has_pair(&dl, "--ffmpeg-location", &tool_path(ffmpeg).to_string_lossy()));
             assert!(has_pair(&dl, "--max-filesize", "20000000000"));
             assert!(has_pair(&dl, "--format-sort", YOUTUBE_FORMAT_SORT));
             assert!(has_pair(&dl, "--retries", "10"));
