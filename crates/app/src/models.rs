@@ -197,6 +197,7 @@ pub fn editable(s: &PublicSettings) -> EditableSettings {
         custom_vocabulary: s.custom_vocabulary.clone(),
         ai_provider: s.ai_provider.clone(),
         ai_model: s.ai_model.clone(),
+        ai_effort: Some(s.ai_effort.clone()),
         whisper_model: s.whisper_model.clone(),
         local_base_url: Some(s.local_base_url.clone()),
         local_model: Some(s.local_model.clone()),

@@ -103,6 +103,7 @@ mod tests {
             custom_vocabulary: String::new(),
             ai_provider: provider.into(),
             ai_model: String::new(),
+            ai_effort: String::new(),
             whisper_model: "base".into(),
             openrouter_configured: false,
             anthropic_configured: true,

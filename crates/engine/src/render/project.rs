@@ -1442,6 +1442,7 @@ impl Renderer {
                     start_time_ms: first.1,
                     duration_ms: first.2,
                     filter_complex: &filter_complex,
+                    audio_graph: None,
                     audio_label: audio.then_some("[aout]"),
                     extra_inputs: &extra_inputs,
                     fps: &project.fps,

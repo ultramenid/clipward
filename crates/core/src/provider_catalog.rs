@@ -83,6 +83,47 @@ pub fn provider_label(provider: &str) -> String {
     api_provider(provider).map_or_else(|| provider.into(), |api| api.label.into())
 }
 
+/// "Low", "Extra high"…; empty (the provider's default) is "Default".
+pub fn effort_label(level: &str) -> &'static str {
+    match level {
+        "low" => "Low",
+        "medium" => "Medium",
+        "high" => "High",
+        "xhigh" => "Extra high",
+        "max" => "Max",
+        _ => "Default",
+    }
+}
+
+/// Why the Effort picker is off for a provider without effort control.
+pub fn effort_note(provider: &str) -> &'static str {
+    match provider {
+        "cli:cursor-agent" => "Cursor sets this through its model list.",
+        "cli:opencode" => "OpenCode sets this with a model variant (provider/model#variant).",
+        "cli:agy" => "Pick a model to choose its effort.",
+        _ => "This provider has no effort setting.",
+    }
+}
+
+/// Antigravity puts the effort in the model id (`gemini-3.8-flash-high`): the base
+/// id and its effort, or the id as it is when it has none.
+pub fn agy_effort_split(id: &str) -> (&str, Option<&'static str>) {
+    clip_engine::llm::EFFORT_LEVELS
+        .iter()
+        .find_map(|level| {
+            let base = id.strip_suffix(level)?.strip_suffix('-')?;
+            Some((base, Some(*level))).filter(|_| !base.is_empty())
+        })
+        .unwrap_or((id, None))
+}
+
+/// An Antigravity label without its effort: "Gemini 3.8 Flash (High)" -> "Gemini 3.8 Flash".
+pub fn agy_base_label<'a>(label: &'a str, level: &str) -> &'a str {
+    label
+        .strip_suffix(&format!(" ({})", effort_label(level)))
+        .unwrap_or(label)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WhisperModelInfo {
     pub id: &'static str,
@@ -184,6 +225,20 @@ mod tests {
         assert_eq!(provider_label("openai"), "OpenAI");
         assert_eq!(provider_label("cli:nope"), "cli:nope");
         assert_eq!(whisper_label("large-v3"), "Large v3");
+    }
+
+    #[test]
+    fn agy_model_ids_carry_their_effort() {
+        assert_eq!(agy_effort_split("gemini-3.8-flash-high"), ("gemini-3.8-flash", Some("high")));
+        assert_eq!(agy_effort_split("claude-opus-5-5-xhigh"), ("claude-opus-5-5", Some("xhigh")));
+        assert_eq!(agy_effort_split("gpt-oss-120b-medium"), ("gpt-oss-120b", Some("medium")));
+        assert_eq!(agy_effort_split("gemini-3.1-pro"), ("gemini-3.1-pro", None));
+        assert_eq!(agy_effort_split("high"), ("high", None));
+        assert_eq!(agy_effort_split("-low"), ("-low", None));
+        assert_eq!(agy_base_label("Gemini 3.8 Flash (High)", "high"), "Gemini 3.8 Flash");
+        assert_eq!(agy_base_label("Odd label", "low"), "Odd label");
+        assert_eq!(effort_label(""), "Default");
+        assert_eq!(effort_label("xhigh"), "Extra high");
     }
 
     #[test]

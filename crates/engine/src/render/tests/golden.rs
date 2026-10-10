@@ -323,7 +323,7 @@ fn service_helpers_match_python() {
             .collect();
         let (graph, extra) =
             compose_overlays("[0:v]null[base];[base]null[captioned]", &overlays, c["video_filter"].as_str().unwrap());
-        assert_eq!(graph, c["graph"].as_str().unwrap());
+        assert_eq!(unloop(&graph), c["graph"].as_str().unwrap());
         let extra: Vec<String> = extra.iter().map(|p| p.to_string_lossy().into_owned()).collect();
         assert_eq!(json!(extra), c["extra"]);
     }
@@ -342,6 +342,38 @@ fn service_helpers_match_python() {
     let style = captions::get_caption_preset("glow").unwrap();
     let scaled = landscape_caption_style(&style, 2160);
     assert_eq!((scaled.font_size, scaled.outline_width, scaled.max_words_per_line), (104, 0, 6));
+}
+
+/// Python looped image inputs (`-loop 1`); the Rust graph repeats one decoded frame instead.
+fn unloop(graph: &str) -> String {
+    let graph = graph.replace(",loop=loop=-1:size=1", "");
+    let one_frame = regex::Regex::new(r"\[(\d+):v\]loop=loop=-1:size=1\[img\d+\];(\[\w+\])\[img\d+\]").unwrap();
+    one_frame.replace_all(&graph, "$2[$1:v]").into_owned()
+}
+
+/// A Rust render command in Python's form: one graph (Rust gives audio its own
+/// -filter_complex) and `-loop 1` image inputs.
+fn as_python(mut cmd: Vec<String>) -> Vec<String> {
+    let graphs: Vec<usize> = (0..cmd.len()).filter(|&i| cmd[i] == "-filter_complex" || cmd[i] == "-/filter_complex").collect();
+    let Some(&first) = graphs.first() else { return cmd };
+    let text = |v: &str| v.strip_prefix("SCRIPT:").unwrap_or(v).to_string();
+    let mut graph = text(&cmd[first + 1]);
+    if let Some(&audio) = graphs.get(1) {
+        graph = graph.replacen(";[base]", &format!(";{};[base]", text(&cmd[audio + 1])), 1);
+        cmd.drain(audio..audio + 2);
+    }
+    let graph = unloop(&graph);
+    (cmd[first], cmd[first + 1]) = if graph.len() > crate::render::service::MAX_INLINE_FILTER_GRAPH_BYTES {
+        ("-/filter_complex".into(), format!("SCRIPT:{graph}"))
+    } else {
+        ("-filter_complex".into(), graph)
+    };
+    for i in (0..cmd.len().saturating_sub(2)).rev() {
+        if cmd[i] == "-protocol_whitelist" && cmd[i + 2] == "-i" {
+            cmd.splice(i..i, ["-loop".to_string(), "1".to_string()]);
+        }
+    }
+    cmd
 }
 
 // ------------------------------------------------------------------
@@ -364,9 +396,10 @@ impl FlowRunner {
     fn record(&self, program: &Path, args: &[String]) {
         let mut cmd: Vec<String> = vec![program.to_string_lossy().into_owned()];
         cmd.extend(args.iter().cloned());
-        if let Some(pos) = cmd.iter().position(|a| a == "-/filter_complex") {
+        for pos in (0..cmd.len()).filter(|&i| cmd[i] == "-/filter_complex").collect::<Vec<_>>() {
             cmd[pos + 1] = format!("SCRIPT:{}", std::fs::read_to_string(&cmd[pos + 1]).unwrap());
         }
+        let cmd = as_python(cmd);
         let text = serde_json::to_string(&cmd).unwrap().replace(&self.dir, "{DIR}").replace(&self.fonts, "{FONTS}");
         self.log.lock().unwrap().push(serde_json::from_str(&text).unwrap());
     }
@@ -500,6 +533,7 @@ fn run_flow(case: &Value) -> (Vec<Value>, Value, Option<String>) {
         x264: tokio::sync::OnceCell::new_with(Some(true)),
         audio_padding_ms: 150,
         temp_dir: None,
+        probe_cache: Default::default(),
     };
     let banner = case["banner"].as_bool().unwrap();
     let request = RenderRequest {
@@ -559,7 +593,8 @@ fn run_flow(case: &Value) -> (Vec<Value>, Value, Option<String>) {
 fn expected_log(case: &Value) -> Vec<Value> {
     let mut out = Vec::new();
     for e in case["log"].as_array().unwrap() {
-        if e[0] == "PLAN" && e[1] == "fit" {
+        // Rust also probes a source once per renderer, not once per fallback rung.
+        if (e[0] == "PLAN" && e[1] == "fit") || (e[0] == "ffprobe" && out.contains(e)) {
             continue;
         }
         if e[0] == "VALIDATE" {

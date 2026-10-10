@@ -552,6 +552,16 @@ fn graph_error(detail: &str) -> EngineError {
 
 /// Filter graph from [0:v] (and [0:a]) to [base] (and [aout]).
 pub fn build_layout_graph(plan: &ClipLayoutPlan, out_w: i64, out_h: i64, opts: &GraphOptions) -> Result<String> {
+    let (video, audio) = build_layout_graphs(plan, out_w, out_h, opts)?;
+    Ok(match audio {
+        Some(audio) => format!("{video};{audio}"),
+        None => video,
+    })
+}
+
+/// `build_layout_graph` as two graphs, [0:v] -> [base] and [0:a] -> [aout]: FFmpeg
+/// runs each graph on its own thread.
+pub fn build_layout_graphs(plan: &ClipLayoutPlan, out_w: i64, out_h: i64, opts: &GraphOptions) -> Result<(String, Option<String>)> {
     validate_video_speed(opts.video_speed)?;
     let (src_w, src_h) = (plan.source_width as i64, plan.source_height as i64);
     let pieces = timeline_pieces(plan, opts.keeps);
@@ -607,27 +617,28 @@ pub fn build_layout_graph(plan: &ClipLayoutPlan, out_w: i64, out_h: i64, opts: &
     let inputs: String = (0..n).map(|k| format!("[v{k}]")).collect();
     parts.push(format!("{inputs}concat=n={n}:v=1:a=0,settb=expr=1/({fps}),setpts=N,fps={fps}[base]"));
 
+    let mut audio: Vec<String> = Vec::new();
     if opts.with_audio {
         let default = [(0, window_end)];
         let audio_keeps = opts.keeps.unwrap_or(&default);
         let audio_n = audio_keeps.len();
-        parts.push(format!("anullsrc=r=48000:cl=stereo:d={:.3}[silence]", window_end as f64 / 1000.0));
-        parts.push(format!("[0:a:0]{AUDIO_FORMAT},{AUDIO_SYNC}[clocked_audio]"));
+        audio.push(format!("anullsrc=r=48000:cl=stereo:d={:.3}[silence]", window_end as f64 / 1000.0));
+        audio.push(format!("[0:a:0]{AUDIO_FORMAT},{AUDIO_SYNC}[clocked_audio]"));
         let source_audio = format!(
             "[silence][clocked_audio]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,atrim=end={:.3}",
             window_end as f64 / 1000.0
         );
         if audio_n == 1 {
-            parts.push(format!("{source_audio}[as0]"));
+            audio.push(format!("{source_audio}[as0]"));
         } else {
-            parts.push(format!(
+            audio.push(format!(
                 "{source_audio},asplit={audio_n}{}",
                 (0..audio_n).map(|k| format!("[as{k}]")).collect::<String>()
             ));
         }
         for (k, &(start, end)) in audio_keeps.iter().enumerate() {
             let fades = audio_fades((end - start) as f64 / 1000.0, k == 0, k == audio_n - 1);
-            parts.push(format!(
+            audio.push(format!(
                 "[as{k}]atrim=start={:.3}:end={:.3},asetpts=PTS-{:.3}/TB{fades}[a{k}]",
                 start as f64 / 1000.0,
                 end as f64 / 1000.0,
@@ -637,12 +648,12 @@ pub fn build_layout_graph(plan: &ClipLayoutPlan, out_w: i64, out_h: i64, opts: &
         let inputs: String = (0..audio_n).map(|k| format!("[a{k}]")).collect();
         let kept: i64 = audio_keeps.iter().map(|(s, e)| e - s).sum();
         let loudness = opts.loudness_filter.map(str::to_string).unwrap_or_else(loudness_filter_default);
-        parts.push(format!(
+        audio.push(format!(
             "{inputs}concat=n={audio_n}:v=0:a=1,{loudness},{}asettb=1/48000,asetpts=N[aout]",
             speed_audio_filter(opts.video_speed, kept)?
         ));
     }
-    Ok(parts.join(";"))
+    Ok((parts.join(";"), opts.with_audio.then(|| audio.join(";"))))
 }
 
 // ------------------------------------------------------------------

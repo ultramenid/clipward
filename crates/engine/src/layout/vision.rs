@@ -8,6 +8,7 @@ use crate::llm::{self, LlmRequest};
 use crate::types::AiSettings;
 use serde_json::{json, Value};
 use std::sync::Mutex;
+use tokio::sync::{watch, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 pub fn vision_schema() -> Value {
@@ -64,12 +65,27 @@ pub struct Keyframe {
 }
 
 /// Vision answers reused across clips of the same video, keyed by frame look
-/// and heuristic signature. Share one per job (it is `Sync`).
-type CacheEntry = (Vec<f32>, (String, usize), Value);
+/// and heuristic signature. Share one per job (it is `Sync`). A setup still
+/// being asked about holds a sender; callers for the same setup wait on it.
+type Signature = (String, usize);
+type CacheEntry = (Vec<f32>, Signature, std::result::Result<Value, watch::Sender<()>>);
 
 #[derive(Debug, Default)]
 pub struct VisionCache {
     entries: Mutex<Vec<CacheEntry>>,
+}
+
+enum Claim<'a> {
+    Answer(Value),
+    /// Another call is asking about this setup; closes when it settles.
+    Wait(watch::Receiver<()>),
+    /// Ask the model; the setup stays reserved until `Asking` answers or drops.
+    Ask(Asking<'a>),
+}
+
+struct Asking<'a> {
+    cache: &'a VisionCache,
+    done: watch::Receiver<()>,
 }
 
 impl VisionCache {
@@ -77,18 +93,35 @@ impl VisionCache {
         Self::default()
     }
 
-    fn lookup(&self, hist: &[f32], signature: &(String, usize)) -> Option<Value> {
-        let entries = self.entries.lock().ok()?;
-        entries
-            .iter()
-            .find(|(h, sig, _)| sig == signature && compare_hist_bhattacharyya(hist, h) < 0.2)
-            .map(|(_, _, v)| v.clone())
-    }
-
-    fn insert(&self, hist: Vec<f32>, signature: (String, usize), result: Value) {
-        if let Ok(mut entries) = self.entries.lock() {
-            entries.push((hist, signature, result));
+    fn claim(&self, hist: &[f32], signature: &Signature) -> Claim<'_> {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        match entries.iter().find(|(h, sig, _)| sig == signature && compare_hist_bhattacharyya(hist, h) < 0.2) {
+            Some((_, _, Ok(v))) => Claim::Answer(v.clone()),
+            Some((_, _, Err(tx))) => Claim::Wait(tx.subscribe()),
+            None => {
+                let (tx, done) = watch::channel(());
+                entries.push((hist.to_vec(), signature.clone(), Err(tx)));
+                Claim::Ask(Asking { cache: self, done })
+            }
         }
+    }
+}
+
+impl Asking<'_> {
+    /// Store the answer (dropping the sender wakes the waiters).
+    fn answer(self, result: Value) {
+        let mut entries = self.cache.entries.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(e) = entries.iter_mut().find(|e| matches!(&e.2, Err(tx) if tx.subscribe().same_channel(&self.done))) {
+            e.2 = Ok(result);
+        }
+    }
+}
+
+impl Drop for Asking<'_> {
+    /// No answer (failure, cancellation): free the setup; waiters claim it again.
+    fn drop(&mut self) {
+        let mut entries = self.cache.entries.lock().unwrap_or_else(|e| e.into_inner());
+        entries.retain(|e| !matches!(&e.2, Err(tx) if tx.subscribe().same_channel(&self.done)));
     }
 }
 
@@ -138,20 +171,52 @@ fn parse_reply(text: &str) -> Option<Value> {
     serde_json::from_str::<Value>(trimmed.get(start..=end)?).ok().filter(Value::is_object)
 }
 
-/// Ask the vision model about one keyframe; cached per visual setup.
+/// One shot to ask about: its keyframe (None: skip it), frames and heuristic layout.
+pub type VisionAsk<'a> = (Option<&'a Keyframe>, &'a [FrameInfo], &'a ShotLayout);
+
+/// Ask the vision model about each shot's keyframe, all at once; cached per visual setup.
+/// Setups are claimed in shot order before anything is sent, so a shot reuses
+/// the same earlier answer it would asking one after another (when calls succeed).
 /// Provider failures fall back to heuristics (None); only cancellation errors out.
 pub async fn vision_classify(
     ai: &AiSettings,
-    keyframe: &Keyframe,
-    shot_frames: &[FrameInfo],
-    heuristic: &ShotLayout,
+    shots: &[VisionAsk<'_>],
     cache: &VisionCache,
     cancel: &CancellationToken,
+) -> Result<Vec<(Option<Value>, f64)>> {
+    let signature = |h: &ShotLayout| (h.layout.clone(), h.people.len());
+    let claims: Vec<Option<Claim>> = shots.iter().map(|(k, _, h)| k.map(|k| cache.claim(&k.hist, &signature(h)))).collect();
+    // At most 4 calls at once per clip (a local server answers one at a time).
+    let calls = &Semaphore::new(4);
+    futures::future::try_join_all(shots.iter().zip(claims).map(|(&(keyframe, shot_frames, heuristic), claim)| async move {
+        let (Some(keyframe), Some(mut claim)) = (keyframe, claim) else { return Ok((None, 0.0)) };
+        loop {
+            match claim {
+                Claim::Answer(cached) => return Ok((Some(cached), 0.0)),
+                Claim::Wait(mut done) => {
+                    tokio::select! {
+                        _ = done.changed() => {}
+                        _ = cancel.cancelled() => return Err(EngineError::Cancelled),
+                    }
+                    claim = cache.claim(&keyframe.hist, &signature(heuristic));
+                }
+                Claim::Ask(asking) => {
+                    let _call = calls.acquire().await.expect("never closed");
+                    return ask(ai, keyframe, shot_frames, asking, cancel).await;
+                }
+            }
+        }
+    }))
+    .await
+}
+
+async fn ask(
+    ai: &AiSettings,
+    keyframe: &Keyframe,
+    shot_frames: &[FrameInfo],
+    asking: Asking<'_>,
+    cancel: &CancellationToken,
 ) -> Result<(Option<Value>, f64)> {
-    let signature = (heuristic.layout.clone(), heuristic.people.len());
-    if let Some(cached) = cache.lookup(&keyframe.hist, &signature) {
-        return Ok((Some(cached), 0.0));
-    }
     let req = LlmRequest {
         system: String::new(),
         user: VISION_PROMPT.replace("{faces}", &faces_hint(shot_frames)),
@@ -163,7 +228,7 @@ pub async fn vision_classify(
     match llm::complete(ai, req, cancel).await {
         Ok(resp) => match parse_reply(&resp.text) {
             Some(result) => {
-                cache.insert(keyframe.hist.clone(), signature, result.clone());
+                asking.answer(result.clone());
                 Ok((Some(result), resp.cost_usd))
             }
             None => {
@@ -219,6 +284,41 @@ mod tests {
         assert!(!vision_available(&ai));
         ai.local_images = true;
         assert!(vision_available(&ai));
+    }
+
+    #[test]
+    fn a_setup_being_asked_about_is_asked_once() {
+        let cache = VisionCache::new();
+        let sig = ("screen".to_string(), 0);
+        let (a, b) = (vec![1.0, 0.0], vec![0.0, 1.0]);
+        let Claim::Ask(first) = cache.claim(&a, &sig) else { panic!("first caller asks") };
+        let Claim::Wait(done) = cache.claim(&a, &sig) else { panic!("same setup waits") };
+        assert!(matches!(cache.claim(&b, &sig), Claim::Ask(_)), "another look asks");
+        assert!(matches!(cache.claim(&a, &("talking_head".into(), 1)), Claim::Ask(_)), "another layout asks");
+        drop(first);
+        assert!(done.has_changed().is_err(), "a failed ask wakes the waiters");
+        let Claim::Ask(again) = cache.claim(&a, &sig) else { panic!("waiters claim it again") };
+        again.answer(json!({"layout": "screen"}));
+        assert!(matches!(cache.claim(&a, &sig), Claim::Answer(v) if v["layout"] == "screen"));
+    }
+
+    #[tokio::test]
+    async fn shots_ask_once_per_setup_and_share_the_answer() {
+        use crate::llm::test_server::{serve, Reply};
+        let reply = |layout: &str| {
+            let content = json!({"layout": layout}).to_string();
+            Reply::json(200, &json!({"model": "m", "choices": [{"message": {"content": content}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 1, "completion_tokens": 1}}))
+        };
+        let server = serve(vec![reply("screen"), reply("talking_head")]).await;
+        let ai = AiSettings { provider: "local".into(), model: "m".into(), base_url: Some(server.url.clone()), local_images: true, ..Default::default() };
+        let k = |hist: Vec<f32>| Keyframe { t_ms: 0, jpeg: vec![0], hist };
+        let (a, b) = (k(vec![1.0, 0.0]), k(vec![0.0, 1.0]));
+        let shot = ShotLayout { layout: "screen".into(), ..Default::default() };
+        let asks: [VisionAsk; 4] = [(Some(&a), &[], &shot), (Some(&b), &[], &shot), (Some(&a), &[], &shot), (None, &[], &shot)];
+        let got = vision_classify(&ai, &asks, &VisionCache::new(), &CancellationToken::new()).await.unwrap();
+        assert_eq!(server.seen.lock().unwrap().len(), 2, "one call per setup");
+        assert!(got[0].0.is_some() && got[0].0 == got[2].0 && got[0].0 != got[1].0);
+        assert!(got[3].0.is_none());
     }
 
     #[test]

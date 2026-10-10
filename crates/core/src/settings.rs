@@ -51,6 +51,8 @@ pub struct AppSettings {
     pub ai_provider: String,
     /// Optional model override; empty uses the provider's default.
     pub ai_model: String,
+    /// Reasoning effort (`clip_engine::llm::EFFORT_LEVELS`); empty uses the provider's default.
+    pub ai_effort: String,
     pub whisper_model: String,
     pub output_directory: String,
     /// Names and jargon the speech-to-text should spell correctly, one per line.
@@ -121,6 +123,7 @@ impl AppSettings {
             } else {
                 self.ai_model.clone()
             },
+            effort: (!local && !self.ai_effort.is_empty()).then(|| self.ai_effort.clone()),
             openrouter_api_key: key("openrouter", &self.openrouter_api_key),
             anthropic_api_key: key("anthropic", &self.anthropic_api_key),
             openai_api_key: key("openai", &self.openai_api_key),
@@ -140,6 +143,7 @@ pub struct PublicSettings {
     pub custom_vocabulary: String,
     pub ai_provider: String,
     pub ai_model: String,
+    pub ai_effort: String,
     pub whisper_model: String,
     pub openrouter_configured: bool,
     pub anthropic_configured: bool,
@@ -166,6 +170,9 @@ pub struct EditableSettings {
     pub custom_vocabulary: String,
     pub ai_provider: String,
     pub ai_model: String,
+    /// Absent keeps the saved value; empty is the provider's default.
+    #[serde(default)]
+    pub ai_effort: Option<String>,
     pub whisper_model: String,
     /// Local AI fields; absent keeps the saved value.
     #[serde(default)]
@@ -182,6 +189,9 @@ struct PersistedSettings {
     version: u32,
     ai_provider: String,
     ai_model: String,
+    /// Missing in files written before the Effort setting, and when it is Default.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    ai_effort: String,
     whisper_model: String,
     output_directory: String,
     #[serde(default)]
@@ -229,6 +239,7 @@ pub fn public_settings(settings: &AppSettings) -> PublicSettings {
         custom_vocabulary: settings.custom_vocabulary.clone(),
         ai_provider: settings.ai_provider.clone(),
         ai_model: settings.ai_model.clone(),
+        ai_effort: settings.ai_effort.clone(),
         whisper_model: settings.whisper_model.clone(),
         openrouter_configured: !settings.openrouter_api_key.is_empty(),
         anthropic_configured: !settings.anthropic_api_key.is_empty(),
@@ -290,6 +301,7 @@ impl SettingsStore {
                 local_api_key: String::new(),
                 ai_provider: "openrouter".into(),
                 ai_model: String::new(),
+                ai_effort: String::new(),
                 whisper_model: DEFAULT_WHISPER_MODEL.into(),
                 output_directory: home.join("Clipward").to_string_lossy().into_owned(),
                 custom_vocabulary: String::new(),
@@ -338,6 +350,12 @@ impl SettingsStore {
             local_api_key: settings.local_api_key.trim().into(),
             ai_provider: or_default(&settings.ai_provider, &self.defaults.ai_provider),
             ai_model: settings.ai_model.trim().into(),
+            // Only the fixed levels reach the engine (and a CLI's argv); anything else is Default.
+            ai_effort: if clip_engine::llm::EFFORT_LEVELS.contains(&settings.ai_effort.as_str()) {
+                settings.ai_effort
+            } else {
+                String::new()
+            },
             // A model dropped from the list falls back to the default instead of breaking settings.
             whisper_model: if is_whisper_model_id(&settings.whisper_model) {
                 settings.whisper_model
@@ -410,6 +428,7 @@ impl SettingsStore {
         let mut settings = AppSettings {
             ai_provider: persisted.ai_provider,
             ai_model: persisted.ai_model,
+            ai_effort: persisted.ai_effort,
             whisper_model: persisted.whisper_model,
             output_directory: persisted.output_directory,
             custom_vocabulary: persisted.custom_vocabulary,
@@ -483,6 +502,7 @@ impl SettingsStore {
             version: SETTINGS_VERSION,
             ai_provider: settings.ai_provider.clone(),
             ai_model: settings.ai_model.clone(),
+            ai_effort: settings.ai_effort.clone(),
             whisper_model: settings.whisper_model.clone(),
             output_directory: settings.output_directory.clone(),
             custom_vocabulary: settings.custom_vocabulary.clone(),
@@ -524,6 +544,7 @@ impl SettingsStore {
             custom_vocabulary: update.custom_vocabulary,
             ai_provider: update.ai_provider,
             ai_model: update.ai_model,
+            ai_effort: update.ai_effort.unwrap_or_else(|| current.ai_effort.clone()),
             whisper_model: update.whisper_model,
             local_base_url: update
                 .local_base_url
@@ -728,6 +749,7 @@ mod tests {
                 custom_vocabulary: String::new(),
                 ai_provider: "local".into(),
                 ai_model: String::new(),
+                ai_effort: None,
                 whisper_model: current.whisper_model.clone(),
                 local_base_url: base.map(str::to_string),
                 local_model: model.map(str::to_string),
@@ -779,6 +801,44 @@ mod tests {
     }
 
     #[test]
+    fn effort_defaults_for_old_files_is_validated_and_round_trips() {
+        let old: PersistedSettings = serde_json::from_str(
+            r#"{"version":1,"aiProvider":"cli:claude","aiModel":"","whisperModel":"base","outputDirectory":"/x"}"#,
+        )
+        .unwrap();
+        assert!(old.ai_effort.is_empty());
+        // Default is not written, so files stay as they were.
+        assert!(!serde_json::to_string(&old).unwrap().contains("aiEffort"));
+
+        let dir = std::env::temp_dir().join(format!("clipward-effort-{}", uuid::Uuid::new_v4()));
+        let home = std::env::temp_dir();
+        let store = SettingsStore::new(&dir, None, &home);
+        let current = store.load().unwrap();
+        let edit = |effort: Option<&str>| EditableSettings {
+            output_directory: current.output_directory.clone(),
+            custom_vocabulary: String::new(),
+            ai_provider: "cli:claude".into(),
+            ai_model: String::new(),
+            ai_effort: effort.map(str::to_string),
+            whisper_model: current.whisper_model.clone(),
+            local_base_url: None,
+            local_model: None,
+            local_images: None,
+        };
+        assert_eq!(store.save_public(edit(Some("low"))).unwrap().ai_effort, "low");
+        // Absent keeps it; anything outside the fixed levels is Default.
+        assert_eq!(store.save_public(edit(None)).unwrap().ai_effort, "low");
+        let reread = SettingsStore::new(&dir, None, &home).load().unwrap();
+        assert_eq!(reread.ai_effort, "low");
+        assert_eq!(reread.engine_ai(None).effort.as_deref(), Some("low"));
+        for bad in ["--model=x", "LOW", "low ", "turbo"] {
+            assert_eq!(store.save_public(edit(Some(bad))).unwrap().ai_effort, "", "{bad}");
+        }
+        assert!(SettingsStore::new(&dir, None, &home).load().unwrap().engine_ai(None).effort.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn only_the_selected_provider_gets_its_key_and_the_local_server() {
         let store = SettingsStore::new(Path::new("/tmp/x"), None, Path::new("/home/u"));
         let settings = AppSettings {
@@ -788,10 +848,13 @@ mod tests {
             local_model: "qwen2.5:14b".into(),
             local_images: true,
             ai_provider: "local".into(),
+            ai_effort: "high".into(),
             ..store.defaults.clone()
         };
         let ai = settings.engine_ai(None);
         assert_eq!(ai.model, "qwen2.5:14b");
+        // A local server gets no effort.
+        assert!(ai.effort.is_none());
         assert_eq!(ai.base_url.as_deref(), Some("http://localhost:11434/v1"));
         assert_eq!(ai.local_api_key.as_deref(), Some("lm-key"));
         assert!(ai.local_images && ai.openai_api_key.is_none());

@@ -51,6 +51,8 @@ pub struct ParseContext<'a> {
     pub visual_frame_times: &'a [f64],
     /// Drop clips entirely outside start/end_limit instead of clamping them in.
     pub drop_outside_range: bool,
+    /// The prompt showed line times in whole seconds, floored (see `line_edge`).
+    pub whole_second_lines: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -220,6 +222,10 @@ pub fn parse_clip_plan_response(
         }
         if end > 100000.0 {
             end /= 1000.0;
+        }
+        if ctx.whole_second_lines {
+            start = line_edge(transcript, start, |s| s.start_time_ms, false);
+            end = line_edge(transcript, end, |s| s.end_time_ms, true);
         }
         let mut duration = end - start;
         if duration < 5.0 {
@@ -419,6 +425,29 @@ pub fn parse_clip_plan_response(
     }
     tracing::info!("Parsed {} clips from planner response", segments.len());
     Ok(ParsedPlan { segments, insights })
+}
+
+/// The prompt prints line times as floored whole seconds, so a whole-second time
+/// means the line `edge` inside that second, when there is one (the first, or with
+/// `last` the last, so two short lines in one second stay in the clip). Without this a
+/// floored start lands in the previous line's last word (Whisper lines touch) and the
+/// start snap keeps that word. Other times are returned unchanged.
+fn line_edge(
+    transcript: &[TranscriptSegment],
+    seconds: f64,
+    edge: impl Fn(&TranscriptSegment) -> i64,
+    last: bool,
+) -> f64 {
+    if seconds.fract() != 0.0 || !seconds.is_finite() {
+        return seconds;
+    }
+    let shown = seconds as i64 * 1000;
+    let mut inside = transcript
+        .iter()
+        .map(edge)
+        .filter(|ms| (shown..shown + 1000).contains(ms));
+    let ms = if last { inside.last() } else { inside.next() };
+    ms.map_or(seconds, |ms| ms as f64 / 1000.0)
 }
 
 /// Python `str.strip()` (Unicode whitespace).

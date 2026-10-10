@@ -306,6 +306,8 @@ fn parse_cases_match_python() {
             longform: case["longform"].as_bool().unwrap(),
             visual_frame_times: &times,
             drop_outside_range: false,
+            // The Python planner printed one-decimal times.
+            whole_second_lines: false,
         };
         let result =
             parse_clip_plan_response(case["content"].as_str(), Some("stop"), &ctx, &settings);
@@ -472,8 +474,79 @@ fn schema_is_strict_compatible() {
 #[test]
 fn transcript_includes_speakers_and_audio_events() {
     let text = prompts::build_transcript_text(&planner_transcript(70));
-    assert!(text.contains("[0.0 - 4.5] (S1) word0 end."));
-    assert!(text.contains("[60.0 - 64.5] (S1) word60 end. (laughter)"));
+    assert!(text.contains("[0 - 4] (S1) word0 end."));
+    assert!(text.contains("[60 - 64] (S1) word60 end. (laughter)"));
+    // One speaker: no label on every line.
+    let text = prompts::build_transcript_text(&make_transcript(2));
+    assert_eq!(text.lines().next().unwrap(), "[1 - 5] w0_0 w0_1 w0_2 w0_3 w0_4 w0_5 w0_6 w0_7 w0_8 w0_9 w0_10 w0_11.");
+}
+
+/// Whisper-like lines that touch: each starts where the last word before it ends.
+/// Every line is at least a second long.
+fn touching_lines() -> Vec<TranscriptSegment> {
+    let (mut t, mut seed) = (730i64, 7u64);
+    (0..120)
+        .map(|s| {
+            let n = 5 + s % 9;
+            let words: Vec<TranscriptWord> = (0..n)
+                .map(|w| {
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    let dur = 200 + (seed >> 33) as i64 % 500;
+                    t += dur;
+                    word(&format!("t{s}_{w}{}", if w == n - 1 { "." } else { "" }), t - dur, t)
+                })
+                .collect();
+            TranscriptSegment {
+                start_time_ms: words[0].start_time_ms,
+                end_time_ms: t,
+                text: words.iter().map(|w| w.word.clone()).collect::<Vec<_>>().join(" "),
+                words,
+                ..Default::default()
+            }
+        })
+        .collect()
+}
+
+/// The prompt shows whole seconds (floored). A clip the model copies from those lines
+/// must get the same edges as one with the lines' exact times, and as one copied from
+/// the old one-decimal lines.
+#[test]
+fn whole_second_lines_snap_to_the_same_clip_edges() {
+    let mut transcripts = fixture_transcripts();
+    transcripts.remove("empty");
+    transcripts.insert("touching".into(), touching_lines());
+    let settings = PlannerSettings::default();
+    let (mut checked, mut old_misses) = (0, 0);
+    for (name, tr) in &transcripts {
+        let edges = |start: f64, end: f64, whole_second_lines: bool| -> Vec<(i64, i64)> {
+            let c = ParseContext { whole_second_lines, ..ctx(tr, Some(5), Some(600)) };
+            let text = content(vec![clip(start, end, five(8.0))]);
+            let plan = parse_clip_plan_response(Some(&text), Some("stop"), &c, &settings).unwrap();
+            plan.segments.iter().map(|s| (s.start_time_ms, s.end_time_ms)).collect()
+        };
+        for i in 0..tr.len() {
+            for j in [i + 2, i + 7].into_iter().filter(|&j| j < tr.len()) {
+                let (s, e) = (tr[i].start_time_ms, tr[j].end_time_ms);
+                let exact = edges(s as f64 / 1000.0, e as f64 / 1000.0, false);
+                let whole = edges(s.div_euclid(1000) as f64, e.div_euclid(1000) as f64, true);
+                let old = edges(shown(s), shown(e), false);
+                assert_eq!(whole, exact, "{name} lines {i}-{j}");
+                if name != "touching" {
+                    // The same, but for the old display's own rounding of an unsnapped edge.
+                    let near = |a: &[(i64, i64)], b: &[(i64, i64)]| {
+                        a.len() == b.len()
+                            && a.iter().zip(b).all(|(x, y)| (x.0 - y.0).abs() <= 50 && (x.1 - y.1).abs() <= 50)
+                    };
+                    assert!(near(&whole, &old), "{name} lines {i}-{j}: {whole:?} {old:?}");
+                } else if whole != old {
+                    // One decimal rounded down lands in the word before a touching line.
+                    old_misses += 1;
+                }
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 1000 && old_misses > 0, "{checked} {old_misses}");
 }
 
 #[test]
@@ -715,6 +788,26 @@ async fn non_retryable_error_fails_fast() {
     let err = result.unwrap_err().to_string();
     assert!(err.contains("(401)") && !err.contains("bad key"));
     assert_eq!(server.seen.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_reply_cut_off_at_the_token_limit_is_not_resent() {
+    let mut cut = completion("{\"insights\": \"x\", \"clips\": [{\"start_time\": 1", "m", Some(0.01));
+    cut["choices"][0]["finish_reason"] = json!("length");
+    let good = content(vec![clip(10.0, 40.0, five(8.0))]);
+    let replies = vec![Reply::json(200, &cut), Reply::json(200, &completion(&good, "m", None))];
+    let (result, server) = plan_with_server(PlannerSettings::default(), replies).await;
+    assert!(result.unwrap_err().to_string().contains("output token limit"));
+    assert_eq!(server.seen.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn a_timed_out_cli_is_retried_once() {
+    let failed = PlanError::retry("Claude Code CLI failed (exit 3)");
+    let timed_out = PlanError::retry("Claude Code CLI timed out");
+    assert!(!give_up(&failed, 0) && !give_up(&failed, 1) && give_up(&failed, 2));
+    assert!(!give_up(&timed_out, 0) && give_up(&timed_out, 1));
+    assert!(give_up(&PlanError { message: "x".into(), retryable: false }, 0));
 }
 
 #[tokio::test]

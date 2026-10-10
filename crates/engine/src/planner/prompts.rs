@@ -145,23 +145,26 @@ pub fn build_visual_only_system_prompt(
     )
 }
 
-/// `[start - end] (speaker) text (events)` lines.
+/// `[start - end] (speaker) text (events)` lines, in whole seconds (floored; the
+/// parser maps a copied time back to its line's exact edge). The speaker is left out
+/// when there is only one: it would repeat on every line.
 pub fn build_transcript_text(transcript: &[TranscriptSegment]) -> String {
     if transcript.is_empty() {
         return "[No transcript available]".into();
     }
+    let label = |seg: &TranscriptSegment| seg.speaker_label.clone().filter(|s| !s.is_empty());
+    let first = transcript.iter().find_map(label);
+    let several_speakers = transcript.iter().filter_map(label).any(|s| Some(s) != first);
     transcript
         .iter()
         .map(|seg| {
             let time = format!(
-                "[{:.1} - {:.1}]",
-                seg.start_time_ms as f64 / 1000.0,
-                seg.end_time_ms as f64 / 1000.0
+                "[{} - {}]",
+                seg.start_time_ms.div_euclid(1000),
+                seg.end_time_ms.div_euclid(1000)
             );
-            let speaker = seg
-                .speaker_label
-                .as_deref()
-                .filter(|s| !s.is_empty())
+            let speaker = label(seg)
+                .filter(|_| several_speakers)
                 .map(|s| format!("({s}) "))
                 .unwrap_or_default();
             let events = if seg.audio_events.is_empty() {

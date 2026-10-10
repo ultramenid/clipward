@@ -18,12 +18,14 @@ use crate::error::{EngineError, Result};
 use crate::media;
 use crate::types::{EngineConfig, Progress, ProgressFn, Stage, Transcript, TranscriptSegment, TranscriptWord};
 use std::os::raw::c_int;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
+use whisper_rs::WhisperContext;
 
 /// Context kept around a requested time range so sentence boundaries at its edges still resolve.
 pub const TRANSCRIPTION_RANGE_PAD_SECONDS: f64 = 5.0;
@@ -63,6 +65,24 @@ const MEDIA_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Pipeline percent while transcribing (the Python pipeline kept 15 for the whole stage).
 const TRANSCRIBING_PERCENT: f64 = 15.0;
+
+/// Silero VAD model, read from next to the whisper model. When it is there long
+/// silences and music are cut before decoding (they cost no encoder time and can't
+/// turn into hallucinated words); without it every second is decoded.
+/// ponytail: the app doesn't download it yet. On a 57 min talk show it was 3% slower
+/// and changed 15% of words (some loops gone, new ones added); fetch it from core once
+/// real-video accuracy checks favour it.
+pub const VAD_MODEL_FILE: &str = "ggml-silero-v5.1.2.bin";
+/// Audio kept either side of detected speech so word onsets and endings survive.
+const VAD_SPEECH_PAD_MS: c_int = 200;
+/// Pauses up to this long stay as they are; longer ones (silence, music) shrink to it.
+const VAD_MAX_PAUSE_SAMPLES: usize = SAMPLE_RATE;
+
+/// The last loaded model, shared by jobs: loading it costs 0.3-3.5 s per job otherwise.
+// ponytail: stays resident until another model is used; drop it when idle if memory matters.
+static MODEL: Mutex<Option<(PathBuf, Arc<WhisperContext>)>> = Mutex::new(None);
+/// One transcription at a time: two jobs sharing the GPU finish no sooner than in turn.
+static TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Environment variables media tools keep (media_process._ALLOWED_ENV); provider keys never reach them.
 const ALLOWED_ENV: [&str; 16] = [
@@ -113,11 +133,25 @@ pub async fn transcribe(
     ensure_model(&model_path)?;
     let prompt = initial_prompt(&cfg.custom_vocabulary);
 
+    let turn = match TURN.try_lock() {
+        Ok(turn) => turn,
+        Err(_) => {
+            report(progress, "Waiting for another job to finish transcribing...".into());
+            tokio::select! {
+                turn = TURN.lock() => turn,
+                _ = cancel.cancelled() => return Err(EngineError::Cancelled),
+            }
+        }
+    };
     report(progress, "Transcribing audio on this computer...".into());
     let raw = {
         let progress = progress.clone();
         let cancel = cancel.clone();
-        tokio::task::spawn_blocking(move || run_whisper(&model_path, samples, prompt, progress, cancel))
+        tokio::task::spawn_blocking(move || {
+            // Released when whisper.cpp is done, even if this job's future is dropped.
+            let _turn = turn;
+            run_whisper(&model_path, samples, prompt, progress, cancel)
+        })
             .await
             .map_err(|_| EngineError::msg("local transcription failed"))??
     };
@@ -127,6 +161,15 @@ pub async fn transcribe(
 
     let words = words_from_whisper(&raw);
     Ok(build_transcript(words, window_start, duration, whisper_model_label(&cfg.whisper_model_path)))
+}
+
+/// Starts loading the model on a background thread so it is ready by the time the
+/// audio is; a job calls this before downloading its source.
+pub fn preload_model(path: &Path) {
+    if path.is_file() {
+        let path = path.to_path_buf();
+        std::thread::spawn(move || load_model(&path));
+    }
 }
 
 /// `ggml-large-v3-turbo.bin` -> `whisper.cpp large-v3-turbo`.
@@ -616,17 +659,23 @@ fn run_whisper(
     progress: ProgressFn,
     cancel: CancellationToken,
 ) -> Result<Vec<(i64, i64, String)>> {
-    use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+    use whisper_rs::{FullParams, SamplingStrategy};
 
     let failed = || EngineError::msg("local transcription failed");
-    whisper_rs::install_logging_hooks();
-    // Flash attention: about a quarter faster on the GPU (transcribe_bench), word timing as good.
-    let mut context = WhisperContextParameters::default();
-    context.flash_attn(true);
-    let ctx = WhisperContext::new_with_params(model_path, context).map_err(|_| {
-        tracing::error!("whisper.cpp could not load the model");
-        failed()
-    })?;
+    let ctx = load_model(model_path)?;
+    // Speech only when the VAD model is installed; `map` leads its times back to the source.
+    let (samples, map) = match speech_spans(&model_path.with_file_name(VAD_MODEL_FILE), &samples) {
+        Some(spans) => {
+            let joined = join_speech(&samples, &spans);
+            tracing::info!("VAD kept {:.0} s of {:.0} s of audio", joined.0.len() as f64 / SAMPLE_RATE as f64, samples.len() as f64 / SAMPLE_RATE as f64);
+            drop(samples);
+            joined
+        }
+        None => (samples, Vec::new()),
+    };
+    if samples.is_empty() {
+        return Ok(Vec::new()); // no speech at all
+    }
     let mut state = ctx.create_state().map_err(|_| failed())?;
 
     let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
@@ -671,9 +720,124 @@ fn run_whisper(
     let mut raw = Vec::new();
     for segment in state.as_iter() {
         let text = segment.to_str_lossy().map_err(|_| failed())?.into_owned();
-        raw.push((segment.start_timestamp(), segment.end_timestamp(), text));
+        let (t0, t1) = source_times(segment.start_timestamp(), segment.end_timestamp(), &map);
+        raw.push((t0, t1, text));
     }
     Ok(raw)
+}
+
+/// The cached model for `path`, loading it (and dropping another) when needed.
+fn load_model(path: &Path) -> Result<Arc<WhisperContext>> {
+    // Held while loading, so a job waits for a preload in flight instead of loading twice.
+    let mut cached = MODEL.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((loaded, ctx)) = cached.as_ref() {
+        if loaded == path {
+            return Ok(ctx.clone());
+        }
+    }
+    *cached = None;
+    whisper_rs::install_logging_hooks();
+    // Flash attention: about a quarter faster on the GPU (transcribe_bench), word timing as good.
+    let mut params = whisper_rs::WhisperContextParameters::default();
+    params.flash_attn(true);
+    let ctx = WhisperContext::new_with_params(path, params).map_err(|_| {
+        tracing::error!("whisper.cpp could not load the model");
+        EngineError::msg("local transcription failed")
+    })?;
+    let ctx = Arc::new(ctx);
+    *cached = Some((path.to_path_buf(), ctx.clone()));
+    // ggml frees its Metal device at exit and aborts if a model still holds GPU memory then;
+    // registered after the first load, this runs before that.
+    #[cfg(target_os = "macos")]
+    {
+        extern "C" fn unload() {
+            if let Ok(mut cached) = MODEL.try_lock() {
+                *cached = None;
+            }
+        }
+        static UNLOAD_AT_EXIT: std::sync::Once = std::sync::Once::new();
+        UNLOAD_AT_EXIT.call_once(|| unsafe {
+            libc::atexit(unload);
+        });
+    }
+    Ok(ctx)
+}
+
+/// Speech as (start, end) sample ranges, padded, with pauses up to
+/// [`VAD_MAX_PAUSE_SAMPLES`] kept inside them. None when the VAD model is missing or
+/// fails, which decodes everything.
+fn speech_spans(vad_model: &Path, samples: &[f32]) -> Option<Vec<(usize, usize)>> {
+    use whisper_rs::{WhisperVadContext, WhisperVadContextParams, WhisperVadParams};
+    // whisper.cpp's built-in VAD (FullParams::enable_vad) only runs in whisper_full,
+    // not in the whisper_full_with_state whisper-rs calls, so it is applied here.
+    if !vad_model.is_file() {
+        return None;
+    }
+    // One thread: the model runs once per 32 ms of audio, and syncing more threads that
+    // often costs far more than the work (minutes for five minutes of audio on a busy CPU).
+    let mut context = WhisperVadContextParams::default();
+    context.set_n_threads(1);
+    let mut vad = WhisperVadContext::new(vad_model.to_str()?, context).ok()?;
+    let mut params = WhisperVadParams::default();
+    params.set_speech_pad(VAD_SPEECH_PAD_MS);
+    let segments = vad.segments_from_samples(params, samples).ok()?;
+    let at = |cs: f32| ((cs as f64 * (SAMPLE_RATE / 100) as f64).round() as usize).min(samples.len());
+    // The audio's own edges count as speech, so audio without a long pause is decoded as is.
+    let mut spans: Vec<(usize, usize)> = vec![(0, 0)];
+    for segment in segments {
+        let (start, end) = (at(segment.start), at(segment.end));
+        match spans.last_mut() {
+            Some(last) if start <= last.1 + VAD_MAX_PAUSE_SAMPLES => last.1 = last.1.max(end),
+            _ => spans.push((start, end)),
+        }
+    }
+    if let Some(last) = spans.last_mut().filter(|last| samples.len() <= last.1 + VAD_MAX_PAUSE_SAMPLES) {
+        last.1 = samples.len();
+    }
+    spans.retain(|&(start, end)| start < end);
+    Some(spans)
+}
+
+/// The speech spans back to back, [`VAD_MAX_PAUSE_SAMPLES`] of silence between them,
+/// and per span its (start in that audio, start in the source audio, length) in samples.
+fn join_speech(samples: &[f32], spans: &[(usize, usize)]) -> (Vec<f32>, Vec<(usize, usize, usize)>) {
+    let mut speech = Vec::new();
+    let mut map = Vec::new();
+    for &(start, end) in spans {
+        if !speech.is_empty() {
+            speech.resize(speech.len() + VAD_MAX_PAUSE_SAMPLES, 0.0);
+        }
+        map.push((speech.len(), start, end - start));
+        speech.extend_from_slice(&samples[start..end]);
+    }
+    (speech, map)
+}
+
+/// A word's whisper times (10 ms units) in the joined speech, on the source timeline.
+///
+/// whisper starts the first word after a pause where the word before it ended, and
+/// often times all of it in the silence. Speech before a pause ends inside its padded
+/// span, so a time in the silence between spans belongs to the next span, and a word
+/// starts no earlier than the span it ends in.
+fn source_times(t0: i64, t1: i64, map: &[(usize, usize, usize)]) -> (i64, i64) {
+    const PER_TICK: usize = SAMPLE_RATE / 100;
+    if map.is_empty() {
+        return (t0, t1);
+    }
+    // (span, source sample) of a time.
+    let locate = |t: i64| {
+        let at = t.max(0) as usize * PER_TICK;
+        let i = map.partition_point(|&(joined, ..)| joined <= at).saturating_sub(1);
+        let (joined, source, len) = map[i];
+        match map.get(i + 1) {
+            _ if at < joined + len => (i, source + at - joined),
+            Some(&(_, next, _)) => (i + 1, next),
+            None => (i, source + len),
+        }
+    };
+    let ((i0, start), (i1, end)) = (locate(t0), locate(t1));
+    let start = if i1 > i0 { map[i1].1 } else { start };
+    ((start / PER_TICK) as i64, (end / PER_TICK) as i64)
 }
 
 // ---------------------------------------------------------------------------
@@ -791,6 +955,25 @@ mod tests {
         assert!(t.segments.is_empty());
         let err = transcribe(&with_audio, &c, Some((6.0, 7.0)), &progress, &cancel).await.unwrap_err();
         assert_eq!(err.to_string(), "whisper model is not downloaded");
+    }
+
+    #[test]
+    fn speech_only_times_map_back_onto_the_source() {
+        // Speech at 1-2 s and 5-6 s of a 7 s source; whisper times are in 10 ms units.
+        let source: Vec<f32> = (0..7 * 16000).map(|i| i as f32).collect();
+        let (speech, map) = join_speech(&source, &[(16000, 32000), (80000, 96000)]);
+        assert_eq!(speech.len(), 32000 + VAD_MAX_PAUSE_SAMPLES);
+        assert_eq!(speech[16000 + VAD_MAX_PAUSE_SAMPLES], 80000.0);
+        let (pause, second) = ((16000 + VAD_MAX_PAUSE_SAMPLES / 2) as i64 / 160, (16000 + VAD_MAX_PAUSE_SAMPLES) as i64 / 160);
+        assert_eq!(source_times(0, 50, &map), (100, 150));
+        assert_eq!(source_times(second, second + 50, &map), (500, 550));
+        assert_eq!(source_times(second + 500, second + 500, &map), (600, 600));
+        // The silence between spans belongs to the next one, and a word ending in a
+        // span starts in it.
+        assert_eq!(source_times(pause, second + 50, &map), (500, 550));
+        assert_eq!(source_times(80, pause, &map), (500, 500));
+        assert_eq!(source_times(50, second + 50, &map), (500, 550));
+        assert_eq!(source_times(42, 50, &[]), (42, 50));
     }
 
     #[test]

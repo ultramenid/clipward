@@ -147,12 +147,16 @@ pub fn thumb_diff(a: &[u8], b: &[u8]) -> f64 {
 pub fn halve_3c(src: &[u8], sw: usize, sh: usize) -> Vec<u8> {
     let (dw, dh) = (sw / 2, sh / 2);
     let mut out = vec![0u8; dw * dh * 3];
-    for y in 0..dh {
-        let (top, bottom) = (&src[2 * y * sw * 3..], &src[(2 * y + 1) * sw * 3..]);
-        for x in 0..dw {
+    if dw == 0 {
+        return out;
+    }
+    // Fixed-size chunks instead of indexing: no bounds checks in the loop.
+    for (o, rows) in out.chunks_exact_mut(dw * 3).zip(src.chunks_exact(2 * sw * 3)) {
+        let (top, bottom) = rows.split_at(sw * 3);
+        for ((o, t), b) in o.as_chunks_mut::<3>().0.iter_mut().zip(top.as_chunks::<6>().0).zip(bottom.as_chunks::<6>().0) {
             for c in 0..3 {
-                let sum = top[6 * x + c] as u32 + top[6 * x + 3 + c] as u32 + bottom[6 * x + c] as u32 + bottom[6 * x + 3 + c] as u32;
-                out[(y * dw + x) * 3 + c] = ((sum + 2) / 4) as u8;
+                let sum = t[c] as u32 + t[3 + c] as u32 + b[c] as u32 + b[3 + c] as u32;
+                o[c] = ((sum + 2) / 4) as u8;
             }
         }
     }

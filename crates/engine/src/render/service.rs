@@ -4,7 +4,7 @@
 //! render_clip pipeline:
 //!   1. Layout plan (9:16): per-shot framing from the layout analyzer.
 //!   2. Pacing: keep intervals from the clip editor (tight pacing cuts dead air/fillers).
-//!   3. One filter graph: video and audio edited on the same presentation clock.
+//!   3. Video and audio graphs cut by the same keeps, on the same presentation clock.
 //!   4. Captions and title/banner overlays remapped onto the edited timeline.
 use super::captions::{self, CaptionRequest, CaptionStyle};
 use super::clip_editor::{
@@ -13,7 +13,7 @@ use super::clip_editor::{
 };
 use super::fonts::{self, Canvas, TextFont};
 use super::layout_renderer::{
-    banner_y, build_layout_graph, caption_anchor, even, face_zones, measured_loudness_filter, per_shot_expr, title_y,
+    banner_y, build_layout_graphs, caption_anchor, even, face_zones, measured_loudness_filter, per_shot_expr, title_y,
     CaptionPlacer, GraphOptions, AUDIO_FORMAT, AUDIO_SYNC,
 };
 use super::process::{MediaOutput, MediaRunner, SystemRunner, MEDIA_INPUT_OPTIONS, MEDIA_TIMEOUT, PROBE_TIMEOUT};
@@ -115,11 +115,20 @@ pub fn get_landscape_dimensions(source_width: i64, source_height: i64) -> (i64, 
     (1920, 1080)
 }
 
-/// Parallel renders on the desktop: scale with cores. A render keeps ~3 busy, and its
-/// serial filter chain and the next clip's layout analysis overlap the other's encode.
+/// Clips analysed at once on the desktop: scale with cores. Encodes queue separately
+/// (`encode_slots`), so the next clips' analysis overlaps the current encode.
 pub fn max_concurrent_renders() -> usize {
     let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     (cpus / 4).clamp(1, 4)
+}
+
+/// Clip encodes at once across the whole process, so concurrent jobs share the encoder
+/// instead of oversubscribing it. One VideoToolbox encode nearly saturates the hardware
+/// encoder, but a second still overlaps its decode and filters (M1 Pro, 4 clips: 2 beat 1).
+fn encode_slots() -> &'static tokio::sync::Semaphore {
+    static SLOTS: std::sync::LazyLock<tokio::sync::Semaphore> =
+        std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(max_concurrent_renders()));
+    &SLOTS
 }
 
 /// Request for rendering one clip (RenderRequest in the Python engine).
@@ -381,6 +390,8 @@ pub struct Renderer {
     pub audio_padding_ms: i64,
     /// Script-file directory for long filter graphs (system temp when None).
     pub temp_dir: Option<PathBuf>,
+    /// Source probe outputs by argument list: every clip of a job reads the same source.
+    pub probe_cache: std::sync::Mutex<std::collections::HashMap<Vec<String>, MediaOutput>>,
 }
 
 impl Renderer {
@@ -404,6 +415,7 @@ impl Renderer {
             x264: tokio::sync::OnceCell::new(),
             audio_padding_ms: AUDIO_PADDING_MS,
             temp_dir: None,
+            probe_cache: Default::default(),
         }
     }
 
@@ -425,6 +437,20 @@ impl Renderer {
         &self,
         request: &'r RenderRequest,
         cancel: &CancellationToken,
+        render_edit: F,
+    ) -> Result<RenderResult>
+    where
+        F: FnMut(EditJob<'r>) -> BoxFuture<'r, Result<()>>,
+    {
+        self.render_clip_in(request, cancel, None, render_edit).await
+    }
+
+    /// `render_clip_with` that gives up `analysis_slot` once the clip is analysed.
+    async fn render_clip_in<'r, F>(
+        &self,
+        request: &'r RenderRequest,
+        cancel: &CancellationToken,
+        analysis_slot: Option<tokio::sync::SemaphorePermit<'_>>,
         mut render_edit: F,
     ) -> Result<RenderResult>
     where
@@ -468,18 +494,33 @@ impl Renderer {
             (request.start_time_ms, duration_ms)
         };
 
-        let timer = std::time::Instant::now();
-        let mut plan: Option<ClipLayoutPlan> = None;
-        if !is_landscape {
-            plan = self.plan_layout(request, source_w, source_h, window_start_ms, window_ms, cancel).await?;
-        }
+        let analysis = async {
+            let timer = std::time::Instant::now();
+            let mut plan: Option<ClipLayoutPlan> = None;
+            if !is_landscape {
+                plan = self.plan_layout(request, source_w, source_h, window_start_ms, window_ms, cancel).await?;
+            }
+            // Pacing needs to know what's on screen even when the framing doesn't use it.
+            let mut pacing_plan = plan.clone();
+            if pacing_plan.is_none() && (is_landscape || request.layout_style == LAYOUT_STYLE_FIT) && paces(request) {
+                pacing_plan = self.content_plan(request, source_w, source_h, window_start_ms, window_ms, cancel).await?;
+            }
+            Ok::<_, EngineError>((plan, pacing_plan, timer.elapsed().as_secs_f64()))
+        };
+        // Longform audio gets two-pass (linear) loudness normalization, measured meanwhile.
+        let loudness = async {
+            let timer = std::time::Instant::now();
+            let mut loudness_filter = None;
+            if request.longform && request.include_audio && self.has_audio(&request.video_path, cancel).await? {
+                loudness_filter = self.measure_loudness(&request.video_path, window_start_ms, window_ms, cancel).await?;
+            }
+            Ok::<_, EngineError>((loudness_filter, timer.elapsed().as_secs_f64()))
+        };
+        let (analysis, loudness) = futures::join!(analysis, loudness);
+        let (plan, pacing_plan, analysis_seconds) = analysis?;
+        let (loudness_filter, loudness_seconds) = loudness?;
+        drop(analysis_slot);
         let analyzed = plan.is_some();
-        // Pacing needs to know what's on screen even when the framing doesn't use it.
-        let mut pacing_plan = plan.clone();
-        if pacing_plan.is_none() && (is_landscape || request.layout_style == LAYOUT_STYLE_FIT) && paces(request) {
-            pacing_plan = self.content_plan(request, source_w, source_h, window_start_ms, window_ms, cancel).await?;
-        }
-        let analysis_seconds = timer.elapsed().as_secs_f64();
         let face_samples = pacing_plan.as_ref().map(|p| p.face_samples.clone()).unwrap_or_default();
         let style_plan = |source: &str| ClipLayoutPlan {
             shots: vec![ShotLayout {
@@ -504,14 +545,6 @@ impl Renderer {
         let smart = analyzed && !plan.is_letterbox_only();
         let vision_cost = if analyzed { plan.vision_cost_usd } else { 0.0 };
 
-        // Longform audio gets two-pass (linear) loudness normalization.
-        let timer = std::time::Instant::now();
-        let mut loudness_filter = None;
-        if request.longform && request.include_audio && self.has_audio(&request.video_path, cancel).await? {
-            loudness_filter = self.measure_loudness(&request.video_path, window_start_ms, window_ms, cancel).await?;
-        }
-        let loudness_seconds = timer.elapsed().as_secs_f64();
-
         // Fallback ladder: as planned -> letterbox with the same cuts -> letterbox
         // at natural timing (a pacing edge case can be what failed, so cuts go last).
         let letterbox = style_plan("fallback");
@@ -523,6 +556,11 @@ impl Renderer {
             ladder.push((&letterbox, &natural_map, Some("letterbox_natural")));
         }
 
+        // Analysis runs ahead; encodes queue process-wide for the encoder.
+        let encode_slot = tokio::select! {
+            slot = encode_slots().acquire() => slot.map_err(|_| EngineError::Cancelled)?,
+            _ = cancel.cancelled() => return Err(EngineError::Cancelled),
+        };
         let timer = std::time::Instant::now();
         let mut rendered: Option<(&ClipLayoutPlan, &TimeMap, Option<&str>)> = None;
         for (step,&(step_plan, step_map, fallback)) in ladder.iter().enumerate() {
@@ -552,6 +590,7 @@ impl Renderer {
             }
         }
         let encode_seconds = timer.elapsed().as_secs_f64();
+        drop(encode_slot);
         let (plan, time_map, render_fallback) = rendered.ok_or_else(|| render_error("no render attempted"))?;
         let (smart, analyzed) = if render_fallback.is_some() { (false, false) } else { (smart, analyzed) };
 
@@ -609,7 +648,7 @@ impl Renderer {
         let request = job.request;
         let (plan, time_map, fps) = (&job.plan, &job.time_map, job.fps.as_str());
         let has_audio = request.include_audio && self.has_audio(&request.video_path, cancel).await?;
-        let mut graph = build_layout_graph(
+        let (mut graph, audio_graph) = build_layout_graphs(
             plan,
             job.width,
             job.height,
@@ -651,6 +690,7 @@ impl Renderer {
                     start_time_ms: job.window_start_ms,
                     duration_ms: job.window_ms,
                     filter_complex: &filter_complex,
+                    audio_graph: audio_graph.as_deref(),
                     audio_label: has_audio.then_some("[aout]"),
                     extra_inputs: &extra_inputs,
                     fps,
@@ -1052,13 +1092,26 @@ impl Renderer {
         self.runner.run(&self.ffprobe, args, PROBE_TIMEOUT, MAX_TOOL_OUTPUT_BYTES, cancel).await
     }
 
+    /// `probe` of a source: a successful answer is kept for the renderer's lifetime.
+    async fn probe_source(&self, args: &[String], cancel: &CancellationToken) -> Result<MediaOutput> {
+        let cached = self.probe_cache.lock().unwrap().get(args).cloned();
+        if let Some(out) = cached {
+            return Ok(out);
+        }
+        let out = self.probe(args, cancel).await?;
+        if out.success() {
+            self.probe_cache.lock().unwrap().insert(args.to_vec(), out.clone());
+        }
+        Ok(out)
+    }
+
     /// Source frame rate as an FFmpeg rational, capped at MAX_OUTPUT_FPS; "30" when unknown.
     pub async fn probe_fps(&self, video_path: &Path, cancel: &CancellationToken) -> Result<String> {
         let args = self.probe_args(
             &["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=avg_frame_rate,r_frame_rate", "-of", "json"],
             video_path,
         );
-        match self.probe(&args, cancel).await {
+        match self.probe_source(&args, cancel).await {
             Err(EngineError::Cancelled) => Err(EngineError::Cancelled),
             Err(e) => {
                 tracing::warn!("Failed to probe frame rate, using 30 fps: {e}");
@@ -1074,7 +1127,7 @@ impl Renderer {
             &["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=s=x:p=0"],
             video_path,
         );
-        match self.probe(&args, cancel).await {
+        match self.probe_source(&args, cancel).await {
             Err(EngineError::Cancelled) => Err(EngineError::Cancelled),
             Err(e) => {
                 tracing::warn!("Failed to probe video dimensions: {e}");
@@ -1093,7 +1146,7 @@ impl Renderer {
             &["-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0"],
             video_path,
         );
-        let out = self.probe(&args, cancel).await.map_err(map_render_err)?;
+        let out = self.probe_source(&args, cancel).await.map_err(map_render_err)?;
         if !out.success() {
             return Err(render_error("Could not verify the source audio track"));
         }
@@ -1239,45 +1292,47 @@ impl Renderer {
         .await
     }
 
-    /// Run FFmpeg; long filter graphs go through a private script file.
+    /// Run FFmpeg; long filter graphs go through private script files.
     pub async fn run_cmd(&self, args: &[String], cancel: &CancellationToken) -> Result<()> {
         let run = |args: Vec<String>| async move {
             self.runner.run(&self.ffmpeg, &args, MEDIA_TIMEOUT, MAX_TOOL_OUTPUT_BYTES, cancel).await.map_err(map_render_err)
         };
-        let graph_index = args.iter().position(|a| a == "-filter_complex");
-        let out = match graph_index {
-            Some(i) if args.get(i + 1).map(|g| g.len() > MAX_INLINE_FILTER_GRAPH_BYTES).unwrap_or(false) => {
-                // A private (0600) file, removed when `script` drops - after FFmpeg exits,
-                // or right after the child is killed on cancellation.
-                let mut builder = tempfile::Builder::new();
-                builder.prefix("clipward-filter-").suffix(".ffgraph");
-                let file = match &self.temp_dir {
-                    Some(dir) => builder.tempfile_in(dir),
-                    None => builder.tempfile(),
-                }
-                .map_err(io_render_error)?;
-                std::fs::write(file.path(), &args[i + 1]).map_err(io_render_error)?;
-                let script = file.into_temp_path();
-                let mut script_args = args.to_vec();
-                script_args[i] = "-/filter_complex".into();
-                script_args[i + 1] = script.to_string_lossy().into_owned();
-                let mut out = run(script_args.clone()).await?;
-                // FFmpeg 6 predates file-backed option values; FFmpeg 9 removed the
-                // older script option. Retry only when the option itself is unknown.
-                if !out.success() {
-                    let stderr = String::from_utf8_lossy(&out.stderr);
-                    if stderr.contains("Unrecognized option '/filter_complex'.")
-                        && stderr.contains("Error splitting the argument list: Option not found")
-                    {
-                        script_args[i] = "-filter_complex_script".into();
-                        out = run(script_args).await?;
-                    }
-                }
-                drop(script);
-                out
+        let long_graphs: Vec<usize> = (1..args.len())
+            .filter(|&i| args[i - 1] == "-filter_complex" && args[i].len() > MAX_INLINE_FILTER_GRAPH_BYTES)
+            .collect();
+        let mut script_args = args.to_vec();
+        // Private (0600) files, removed when `scripts` drops - after FFmpeg exits,
+        // or right after the child is killed on cancellation.
+        let mut scripts = Vec::new();
+        for &i in &long_graphs {
+            let mut builder = tempfile::Builder::new();
+            builder.prefix("clipward-filter-").suffix(".ffgraph");
+            let file = match &self.temp_dir {
+                Some(dir) => builder.tempfile_in(dir),
+                None => builder.tempfile(),
             }
-            _ => run(args.to_vec()).await?,
-        };
+            .map_err(io_render_error)?;
+            std::fs::write(file.path(), &args[i]).map_err(io_render_error)?;
+            let script = file.into_temp_path();
+            script_args[i - 1] = "-/filter_complex".into();
+            script_args[i] = script.to_string_lossy().into_owned();
+            scripts.push(script);
+        }
+        let mut out = run(script_args.clone()).await?;
+        // FFmpeg 6 predates file-backed option values; FFmpeg 9 removed the
+        // older script option. Retry only when the option itself is unknown.
+        if !scripts.is_empty() && !out.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if stderr.contains("Unrecognized option '/filter_complex'.")
+                && stderr.contains("Error splitting the argument list: Option not found")
+            {
+                for &i in &long_graphs {
+                    script_args[i - 1] = "-filter_complex_script".into();
+                }
+                out = run(script_args).await?;
+            }
+        }
+        drop(scripts);
         if !out.success() {
             let text = if out.stderr.is_empty() {
                 "Unknown error".to_string()
@@ -1367,6 +1422,8 @@ pub struct FfmpegJob<'a> {
     pub start_time_ms: i64,
     pub duration_ms: i64,
     pub filter_complex: &'a str,
+    /// A separate audio graph (FFmpeg runs it on its own thread) ending in `audio_label`.
+    pub audio_graph: Option<&'a str>,
     pub audio_label: Option<&'a str>,
     pub extra_inputs: &'a [PathBuf],
     pub fps: &'a str,
@@ -1400,11 +1457,16 @@ pub fn build_ffmpeg_args(job: &FfmpegJob, codec_args: &[String]) -> Vec<String> 
         cmd.push(s("-i"));
         cmd.push(path.to_string_lossy().into_owned());
     }
+    // One frame each: the graph repeats it (compose_overlays_from).
     for extra in job.extra_inputs {
-        cmd.extend([s("-loop"), s("1"), s("-protocol_whitelist"), s("file,pipe,fd"), s("-i")]);
+        cmd.extend([s("-protocol_whitelist"), s("file,pipe,fd"), s("-i")]);
         cmd.push(extra.to_string_lossy().into_owned());
     }
-    cmd.extend([s("-filter_complex"), s(job.filter_complex), s("-map"), s("[out]")]);
+    cmd.extend([s("-filter_complex"), s(job.filter_complex)]);
+    if let Some(audio) = job.audio_graph {
+        cmd.extend([s("-filter_complex"), s(audio)]);
+    }
+    cmd.extend([s("-map"), s("[out]")]);
     cmd.extend(codec_args.iter().cloned());
     cmd.extend([s("-pix_fmt"), s("yuv420p"), s("-r"), s(job.fps), s("-movflags"), s("+faststart")]);
     match job.audio_label {
@@ -1588,6 +1650,7 @@ pub fn compose_overlays(graph: &str, overlays: &[Overlay], video_filter: &str) -
 
 /// `compose_overlays` with the overlay images as inputs `first_input`.. (after the video inputs).
 pub fn compose_overlays_from(graph: &str, overlays: &[Overlay], video_filter: &str, first_input: usize) -> (String, Vec<PathBuf>) {
+    const STILL_LOOP: &str = "loop=loop=-1:size=1";
     if overlays.is_empty() {
         return (format!("{graph};[captioned]{video_filter}[out]"), Vec::new());
     }
@@ -1597,14 +1660,15 @@ pub fn compose_overlays_from(graph: &str, overlays: &[Overlay], video_filter: &s
         let index = index + 1;
         let input = index - 1 + first_input;
         let label = if index == overlays.len() { "composited".to_string() } else { format!("ov{index}") };
-        let mut image = format!("[{input}:v]");
-        if let Some(image_filter) = &overlay.filter {
-            parts.push(format!("[{input}:v]{image_filter}[img{index}]"));
-            image = format!("[img{index}]");
-        }
+        // Each image is a one-frame input: filter it once, then repeat that frame. A fade
+        // changes per frame, so it runs on the repeats.
+        let filter = overlay.filter.as_deref().unwrap_or_default();
+        let (still, fades) = filter.split_at(filter.find("fade=").unwrap_or(filter.len()));
+        let chain: Vec<&str> = [still.trim_end_matches(','), STILL_LOOP, fades].into_iter().filter(|f| !f.is_empty()).collect();
+        parts.push(format!("[{input}:v]{}[img{index}]", chain.join(",")));
         let enable = overlay.enable.as_ref().map(|e| format!(":enable='{e}'")).unwrap_or_default();
         parts.push(format!(
-            "[{current}]{image}overlay=x='{}':y='{}':shortest=1{enable}[{label}]",
+            "[{current}][img{index}]overlay=x='{}':y='{}':shortest=1{enable}[{label}]",
             overlay.x, overlay.y
         ));
         current = label;
@@ -1840,9 +1904,9 @@ impl AudioPacketChecker {
 // Many clips
 // ------------------------------------------------------------------
 
-/// Render clips in parallel (at most `max_concurrent`), reporting progress
-/// 50% -> 90% as each finishes. Results keep the input order; one failed clip
-/// does not stop the others. Cancellation stops them all.
+/// Render clips in parallel (at most `max_concurrent` analysed at once; encodes queue for
+/// `encode_slots`), reporting progress 50% -> 90% as each finishes. Results keep the input
+/// order; one failed clip does not stop the others. Cancellation stops them all.
 pub async fn render_clips(
     renderer: &Renderer,
     requests: &[RenderRequest],
@@ -1860,8 +1924,8 @@ pub async fn render_clips(
     for request in requests {
         let (finished, slots, progress) = (&finished, &slots, progress.as_ref());
         jobs.push(async move {
-            let _slot = slots.acquire().await.map_err(|_| EngineError::Cancelled)?;
-            let result = renderer.render_clip(request, cancel).await;
+            let slot = slots.acquire().await.map_err(|_| EngineError::Cancelled)?;
+            let result = renderer.render_clip_in(request, cancel, Some(slot), |job| Box::pin(renderer.render_edit(job, cancel))).await;
             let done = finished.fetch_add(1, Ordering::SeqCst) + 1;
             if let Some(progress) = progress {
                 progress(crate::types::Progress {

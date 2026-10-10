@@ -238,8 +238,9 @@ pub async fn plan_in_parts(
     let per_part = 1i64.max((total as f64 / n as f64 * PART_CLIP_SURPLUS).ceil() as i64);
     tracing::info!("Planning {span:.0}s in {n} parallel parts ({per_part} clips each, {total} kept)");
 
-    // A local server runs one model at a time; hosted APIs and CLIs take a few at once.
-    let concurrency = if ai.provider == "local" { 1 } else { 3 };
+    // A local server runs one model at a time; hosted APIs and CLIs take every part
+    // at once (a 4 h video is 4 parts), so planning takes as long as one part.
+    let concurrency = if ai.provider == "local" { 1 } else { n };
     let step = |done: usize| format!("Planning clips · {done} of {n} parts done");
     report(progress, 30.0, &step(0));
     let mut results = futures::stream::iter(parts.into_iter().map(|(s, e)| {
@@ -456,6 +457,14 @@ pub fn build_request(
     }
 }
 
+const MAX_ATTEMPTS: u32 = 3;
+
+/// Whether failed attempt `attempt` (from 0) ends planning: a fatal error, the last
+/// attempt, or a CLI timing out after a retry (each try already took CLI_TIMEOUT).
+fn give_up(e: &PlanError, attempt: u32) -> bool {
+    !e.retryable || attempt == MAX_ATTEMPTS - 1 || (e.message.contains("CLI timed out") && attempt >= 1)
+}
+
 /// Plan clips (IntelligencePlannerService.plan_clips).
 pub async fn plan(
     settings: &PlannerSettings,
@@ -609,6 +618,8 @@ pub async fn plan(
         longform,
         visual_frame_times: &visual_frame_times,
         drop_outside_range: input.drop_outside_range,
+        // prompts::build_transcript_text prints whole seconds.
+        whole_second_lines: true,
     };
     tracing::info!(
         "Calling planner model {} (fallbacks: {:?}) for clip planning ({} transcript segments, {} frames, {} clips)",
@@ -619,7 +630,6 @@ pub async fn plan(
         clip_count
     );
 
-    const MAX_ATTEMPTS: u32 = 3;
     let (mut prompt_tokens, mut completion_tokens, mut cost) = (0u64, 0u64, 0.0f64);
     let mut cost_incomplete = false;
     let mut served_by = request.model.clone();
@@ -660,12 +670,20 @@ pub async fn plan(
                             }
                         }
                     }
-                    parse_clip_plan_response(
+                    let parsed = parse_clip_plan_response(
                         reply.text.as_deref(),
                         reply.finish_reason.as_deref(),
                         &ctx,
                         settings,
-                    )
+                    );
+                    // A reply cut off at the output limit would be cut off again: don't resend it.
+                    match parsed {
+                        Err(e) if reply.finish_reason.as_deref() == Some("length") => Err(PlanError {
+                            message: format!("{} (the reply hit the output token limit)", e.message),
+                            retryable: false,
+                        }),
+                        other => other,
+                    }
                 }
             };
         match outcome {
@@ -691,7 +709,7 @@ pub async fn plan(
                 });
             }
             Err(e) => {
-                if !e.retryable || attempt == MAX_ATTEMPTS - 1 {
+                if give_up(&e, attempt) {
                     tracing::error!(
                         "Clip planning failed after {attempts} attempt(s): {}",
                         e.message

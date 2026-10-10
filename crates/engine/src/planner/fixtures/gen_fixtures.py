@@ -97,6 +97,21 @@ def seg_json(segs):
     } for s in segs]
 
 
+def transcript_text(segs):
+    """The Rust planner's compact transcript lines (the Python planner printed `[12.3 - 17.8] (S1) ...`):
+    whole seconds, floored, and speaker labels only when there are several speakers."""
+    if not segs:
+        return "[No transcript available]"
+    labels = {s.speaker_label for s in segs if s.speaker_label}
+    lines = []
+    for s in segs:
+        speaker = f"({s.speaker_label}) " if len(labels) > 1 and s.speaker_label else ""
+        events = getattr(s, "audio_events", []) or []
+        lines.append(f"[{s.start_time_ms // 1000} - {s.end_time_ms // 1000}] {speaker}{s.text}"
+                     + (" " + " ".join(events) if events else ""))
+    return "\n".join(lines)
+
+
 TRANSCRIPTS = {
     "regular": sentences(120),
     "long": sentences(200),
@@ -125,7 +140,7 @@ for req in ["  Mention Acme.\nNo swearing. {braces} #tag  ", "x", "Ünïcode —
     prompts.append({"kind": "brief", "requirements": req, "text": campaign_brief_section(req)})
 for name in ("speakers", "segments", "empty", "regular"):
     prompts.append({"kind": "transcript", "transcript": name,
-                    "text": p._build_transcript_text(TRANSCRIPTS[name])})
+                    "text": transcript_text(TRANSCRIPTS[name])})
 
 frames = [{"base64": "QUJD", "mime_type": "image/jpeg", "timestamp_ms": t} for t in (10000, 20550, 31049)]
 for name, frame_set, count, duration, longform in [
@@ -133,7 +148,7 @@ for name, frame_set, count, duration, longform in [
     ("empty", frames, 4, 60.0, False), ("regular", frames, 2, 0.0, True), ("empty", [], 3, 0.0, False),
 ]:
     tr = TRANSCRIPTS[name]
-    msgs = p._build_vision_messages("SYS", p._build_transcript_text(tr), frame_set, count, tr, duration, longform)
+    msgs = p._build_vision_messages("SYS", transcript_text(tr), frame_set, count, tr, duration, longform)
     parts = []
     for part in msgs[1]["content"]:
         if part["type"] == "text":

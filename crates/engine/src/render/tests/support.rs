@@ -102,6 +102,7 @@ pub fn renderer(runner: Arc<dyn MediaRunner>) -> Renderer {
         x264: tokio::sync::OnceCell::new_with(Some(true)),
         audio_padding_ms: 150,
         temp_dir: None,
+        probe_cache: Default::default(),
     }
 }
 

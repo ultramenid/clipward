@@ -32,10 +32,13 @@ use crate::error::{EngineError, Result};
 use crate::media;
 use crate::types::{AiSettings, EngineConfig};
 use analysis::*;
+use futures::{StreamExt, TryStreamExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::LazyLock;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use yunet::YuNet;
 
@@ -95,17 +98,18 @@ pub async fn analyze_layout(
         return Ok(None);
     }
 
-    let (frames, keyframes) = decode_and_detect(&cfg.ffmpeg, &model, req, cancel).await?;
-    if frames.is_empty() {
-        tracing::warn!("Layout analysis decoded no frames; using letterbox");
-        return Ok(None);
-    }
-
     let ai: AiSettings = match &req.vision_model {
         Some(m) if !m.trim().is_empty() => AiSettings { model: m.clone(), ..cfg.ai.clone() },
         _ => cfg.ai.clone(),
     };
     let use_vision = req.vision && vision::vision_available(&ai);
+
+    let (frames, keyframes) = decode_and_detect(&cfg.ffmpeg, &model, req, use_vision, cancel).await?;
+    if frames.is_empty() {
+        tracing::warn!("Layout analysis decoded no frames; using letterbox");
+        return Ok(None);
+    }
+
     let local_cache;
     let cache = match vision_cache {
         Some(c) => c,
@@ -120,6 +124,7 @@ pub async fn analyze_layout(
     let mut vision_cost = 0.0;
 
     let cuts = snap_cuts(&cfg.ffmpeg, req, segment_shots(&frames, req.duration_ms), cancel).await?;
+    let mut planned = Vec::with_capacity(cuts.len());
     for (shot_start, shot_end) in cuts {
         if cancel.is_cancelled() {
             return Err(EngineError::Cancelled);
@@ -133,23 +138,31 @@ pub async fn analyze_layout(
             let rel: Vec<(i64, Box)> = track.samples.iter().map(|(t, b)| (t - shot_start, *b)).collect();
             shot.focus_path = smooth_focus_path(&rel, shot_end - shot_start, crop_w_frac);
         }
+        planned.push((shot_start, shot_end, shot_frames, tracks, shot));
+    }
 
-        if use_vision {
-            if let Some(keyframe) = vision::pick_keyframe(&keyframes, (shot_start + shot_end).div_euclid(2)) {
-                let (result, cost) =
-                    vision::vision_classify(&ai, keyframe, &shot_frames, &shot, cache, cancel).await?;
-                vision_cost += cost;
-                if let Some(result) = result {
-                    let mut refined = merge_vision_result(&shot, &result);
-                    if refined.layout == TALKING_HEAD && refined.focus_path.is_empty() {
-                        refined.focus_path = match refined.people.first() {
-                            Some(f) => vec![(0, f.cx(), f.cy())],
-                            None => vec![(0, 0.5, 0.5)],
-                        };
-                    }
-                    shot = refined;
-                }
+    let mut answers = vec![None; planned.len()];
+    if use_vision {
+        let asks: Vec<vision::VisionAsk> = planned
+            .iter()
+            .map(|(s, e, f, _, shot)| (vision::pick_keyframe(&keyframes, (s + e).div_euclid(2)), f.as_slice(), shot))
+            .collect();
+        for (answer, (result, cost)) in answers.iter_mut().zip(vision::vision_classify(&ai, &asks, cache, cancel).await?) {
+            vision_cost += cost;
+            *answer = result;
+        }
+    }
+
+    for ((shot_start, shot_end, shot_frames, tracks, mut shot), result) in planned.into_iter().zip(answers) {
+        if let Some(result) = result {
+            let mut refined = merge_vision_result(&shot, &result);
+            if refined.layout == TALKING_HEAD && refined.focus_path.is_empty() {
+                refined.focus_path = match refined.people.first() {
+                    Some(f) => vec![(0, f.cx(), f.cy())],
+                    None => vec![(0, 0.5, 0.5)],
+                };
             }
+            shot = refined;
         }
 
         // Without vision the webcam box is a guess from the face alone (it assumes a
@@ -255,21 +268,29 @@ async fn snap_cuts(
     mut shots: Vec<(i64, i64)>,
     cancel: &CancellationToken,
 ) -> Result<Vec<(i64, i64)>> {
-    for i in 1..shots.len() {
-        let from = shots[i].0 - CUT_SEARCH_MS;
-        let mut args: Vec<String> = vec!["-nostdin".into(), "-v".into(), "error".into(), "-ss".into()];
-        args.push(format!("{:.3}", (req.start_ms + from) as f64 / 1000.0));
-        args.extend(media::MEDIA_INPUT_OPTIONS.iter().map(|s| s.to_string()));
-        args.extend(["-i".into(), req.video_path.to_string_lossy().into_owned(), "-t".into()]);
-        args.push(format!("{:.3}", 2.0 * CUT_SEARCH_MS as f64 / 1000.0));
-        args.extend(["-an", "-vf", "scale=64:-2,scdet,metadata=print:file=-", "-f", "null", "-"].map(String::from));
-        let out = match media::run_bounded(ffmpeg, &args, Duration::from_secs(30), media::MAX_TOOL_OUTPUT_BYTES, cancel).await {
-            Err(EngineError::Cancelled) => return Err(EngineError::Cancelled),
-            Ok(out) if out.status.success() => out,
-            _ => continue,
-        };
-        if let Some(at) = cut_frame_ms(&String::from_utf8_lossy(&out.stdout)) {
-            let cut = from + at;
+    // A few cuts at once; each search depends only on its own sampled boundary.
+    let found: Vec<Option<i64>> = futures::stream::iter(1..shots.len())
+        .map(|i| {
+            let from = shots[i].0 - CUT_SEARCH_MS;
+            let mut args: Vec<String> = vec!["-nostdin".into(), "-v".into(), "error".into(), "-ss".into()];
+            args.push(format!("{:.3}", (req.start_ms + from) as f64 / 1000.0));
+            args.extend(media::MEDIA_INPUT_OPTIONS.iter().map(|s| s.to_string()));
+            args.extend(["-i".into(), req.video_path.to_string_lossy().into_owned(), "-t".into()]);
+            args.push(format!("{:.3}", 2.0 * CUT_SEARCH_MS as f64 / 1000.0));
+            args.extend(["-an", "-vf", "scale=64:-2,scdet,metadata=print:file=-", "-f", "null", "-"].map(String::from));
+            async move {
+                match media::run_bounded(ffmpeg, &args, Duration::from_secs(30), media::MAX_TOOL_OUTPUT_BYTES, cancel).await {
+                    Err(EngineError::Cancelled) => Err(EngineError::Cancelled),
+                    Ok(out) if out.status.success() => Ok(cut_frame_ms(&String::from_utf8_lossy(&out.stdout)).map(|at| from + at)),
+                    _ => Ok(None),
+                }
+            }
+        })
+        .buffered(4)
+        .try_collect()
+        .await?;
+    for (i, cut) in (1..).zip(found) {
+        if let Some(cut) = cut {
             shots[i - 1].1 = cut;
             shots[i].0 = cut;
         }
@@ -370,10 +391,19 @@ async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R, buf: &mut [u8]) -> std
     Ok(filled)
 }
 
+/// Detectors (one core each) running at once across every clip being analysed.
+fn detect_threads() -> usize {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
+}
+
+static DETECT_SLOTS: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(detect_threads()));
+
+/// `want_keyframes`: keep JPEG keyframes for the vision model.
 async fn decode_and_detect(
     ffmpeg: &Path,
     model: &Path,
     req: &LayoutRequest,
+    want_keyframes: bool,
     cancel: &CancellationToken,
 ) -> Result<(Vec<FrameInfo>, Vec<Keyframe>)> {
     media::validate_video_dimensions(req.src_w, req.src_h)?;
@@ -422,8 +452,9 @@ async fn decode_and_detect(
         let mut frames: Vec<FrameInfo> = Vec::new();
         let mut keyframes: Vec<Keyframe> = Vec::new();
         let mut keyframe_bytes = 0usize;
-        // Detect several frames at once (results collected in order) while FFmpeg keeps decoding.
-        let in_flight = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 4);
+        // Detect several frames at once (results collected in order) while FFmpeg keeps
+        // decoding; DETECT_SLOTS caps the detectors running across all clips.
+        let in_flight = 2 * detect_threads();
         let mut pending: std::collections::VecDeque<tokio::task::JoinHandle<Result<Analyzed>>> =
             std::collections::VecDeque::with_capacity(in_flight);
         let mut index = 0usize;
@@ -457,9 +488,11 @@ async fn decode_and_detect(
                 return Err(EngineError::msg("layout analysis exceeds the frame limit"));
             }
             let t_ms = (index as f64 * 1000.0 / ANALYSIS_FPS) as i64;
-            let is_keyframe = index.is_multiple_of(keyframe_every);
+            let is_keyframe = want_keyframes && index.is_multiple_of(keyframe_every);
             let det = detector.clone();
+            let slot = DETECT_SLOTS.acquire().await.expect("detector slots are never closed");
             pending.push_back(tokio::task::spawn_blocking(move || {
+                let _slot = slot;
                 process_frame(&det, &buf, width, height, scale, t_ms, is_keyframe)
             }));
             if pending.len() >= in_flight {

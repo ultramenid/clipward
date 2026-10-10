@@ -11,7 +11,7 @@ use crate::theme::{ActiveTokens, Tokens};
 use crate::ui::{self, Btn, Hue, TypeScale, Truncate, u};
 use crate::{shell, state};
 use clipward_core::ai_providers::{LocalModelsResult, ProviderTestResult};
-use clipward_core::clip_engine::llm::ModelChoice;
+use clipward_core::clip_engine::llm::{EFFORT_LEVELS, ModelChoice, effort_levels};
 use clipward_core::provider_catalog::{
     self as catalog, API_PROVIDERS, LOCAL_DEFAULT_BASE_URL, LOCAL_EXAMPLE_MODEL, LOCAL_ID, LOCAL_KEY,
 };
@@ -28,6 +28,9 @@ use std::time::Duration;
 use super::widgets::{Choice, error_text, eyebrow, field, option_tile, refresh_button, tile_columns};
 
 type ModelSelect = SelectState<SearchableVec<Choice>>;
+
+/// Antigravity: its model ids carry the effort (`gemini-3.8-flash-high`).
+const AGY: &str = "cli:agy";
 
 /// A key field's local draft: never persisted until edited (use-api-key-drafts.ts).
 struct KeyDraft {
@@ -58,6 +61,7 @@ pub struct ProviderSetup {
     models_task: Option<Task<()>>,
     model_input: Entity<InputState>,
     model_select: Entity<ModelSelect>,
+    effort_select: Entity<ModelSelect>,
     // Local AI
     url_input: Entity<InputState>,
     local_model_input: Entity<InputState>,
@@ -134,7 +138,17 @@ impl ProviderSetup {
             window,
             |this, _, event: &SelectEvent<SearchableVec<Choice>>, _, cx| {
                 let SelectEvent::Confirm(Some(value)) = event else { return };
-                this.save_model(value.to_string(), cx);
+                this.pick_model(value.to_string(), cx);
+            },
+        ));
+        let effort_select =
+            cx.new(|cx| SelectState::new(SearchableVec::new(Vec::<Choice>::new()), None, window, cx));
+        subscriptions.push(cx.subscribe_in(
+            &effort_select,
+            window,
+            |this, _, event: &SelectEvent<SearchableVec<Choice>>, _, cx| {
+                let SelectEvent::Confirm(Some(value)) = event else { return };
+                this.save_effort(value.to_string(), cx);
             },
         ));
         // Navigation may close the page before the debounce fires.
@@ -173,6 +187,7 @@ impl ProviderSetup {
             models_task: None,
             model_input,
             model_select,
+            effort_select,
             url_input,
             local_model_input,
             detected: None,
@@ -238,7 +253,7 @@ impl ProviderSetup {
                 input.update(cx, |input, cx| input.set_value(value, window, cx));
             }
         }
-        let selected = SharedString::from(s.ai_model.clone());
+        let selected = Self::model_value(&s);
         self.model_select.update(cx, |select, cx| {
             if select.selected_value() != Some(&selected) {
                 select.set_selected_value(&selected, window, cx);
@@ -260,6 +275,7 @@ impl ProviderSetup {
             self.detect_local(window, cx);
         }
         self.was_local = local;
+        self.refresh_effort_options(window, cx);
         cx.notify();
     }
 
@@ -291,12 +307,74 @@ impl ProviderSetup {
         let s = self.saved(cx);
         let default_detail = catalog::api_provider(&s.ai_provider).map_or("CLI default", |api| api.default_model);
         let mut options = vec![Choice { detail: Some(default_detail.into()), ..Choice::new("", "Default") }];
-        options.extend(self.models.iter().map(|model| Choice {
-            detail: (model.label != model.id).then(|| model.id.clone().into()),
-            ..Choice::new(model.id.clone(), model.label.clone())
+        let agy = s.ai_provider == AGY;
+        let mut seen = std::collections::HashSet::new();
+        // Antigravity lists each effort as its own model: show each model once.
+        options.extend(self.models.iter().filter_map(|model| {
+            let (id, label) = match catalog::agy_effort_split(&model.id) {
+                (base, Some(level)) if agy => (base, catalog::agy_base_label(&model.label, level)),
+                _ => (model.id.as_str(), model.label.as_str()),
+            };
+            seen.insert(id).then(|| Choice {
+                detail: (label != id).then(|| id.to_string().into()),
+                ..Choice::new(id.to_string(), label.to_string())
+            })
         }));
-        let selected = SharedString::from(s.ai_model);
+        let selected = Self::model_value(&s);
         self.model_select.update(cx, |select, cx| {
+            select.set_items(SearchableVec::new(options), window, cx);
+            select.set_selected_value(&selected, window, cx);
+        });
+        self.refresh_effort_options(window, cx);
+    }
+
+    /// The model picker's value: Antigravity's model without its effort, else the saved id.
+    fn model_value(s: &PublicSettings) -> SharedString {
+        if s.ai_provider == AGY {
+            catalog::agy_effort_split(&s.ai_model).0.to_string().into()
+        } else {
+            s.ai_model.clone().into()
+        }
+    }
+
+    /// Antigravity's listed ids for `base`, with their effort, lowest first.
+    fn agy_variants(&self, base: &str) -> Vec<(String, &'static str)> {
+        let mut variants: Vec<(String, &'static str)> = self
+            .models
+            .iter()
+            .filter_map(|model| match catalog::agy_effort_split(&model.id) {
+                (b, Some(level)) if b == base => Some((model.id.clone(), level)),
+                _ => None,
+            })
+            .collect();
+        variants.sort_by_key(|(_, level)| EFFORT_LEVELS.iter().position(|l| l == level));
+        variants
+    }
+
+    /// The Effort options and value: Default plus the levels the provider takes, or for
+    /// Antigravity the efforts its chosen model is listed with. No options: no effort here.
+    fn effort_choices(&self, s: &PublicSettings) -> (Vec<Choice>, SharedString) {
+        if s.ai_provider == AGY {
+            let (base, level) = catalog::agy_effort_split(&s.ai_model);
+            let options = self
+                .agy_variants(base)
+                .into_iter()
+                .map(|(_, level)| Choice::new(level, catalog::effort_label(level)))
+                .collect();
+            return (options, level.unwrap_or_default().into());
+        }
+        let levels = effort_levels(&s.ai_provider);
+        if levels.is_empty() {
+            return (Vec::new(), SharedString::default());
+        }
+        let mut options = vec![Choice::new("", "Default")];
+        options.extend(levels.iter().map(|level| Choice::new(*level, catalog::effort_label(level))));
+        (options, s.ai_effort.clone().into())
+    }
+
+    fn refresh_effort_options(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (options, selected) = self.effort_choices(&self.saved(cx));
+        self.effort_select.update(cx, |select, cx| {
             select.set_items(SearchableVec::new(options), window, cx);
             select.set_selected_value(&selected, window, cx);
         });
@@ -304,17 +382,51 @@ impl ProviderSetup {
 
     fn choose(&mut self, provider: String, cx: &mut Context<Self>) {
         self.test = None;
-        // A model name only means something to the provider it was written for.
+        // A model name or effort only means something to the provider it was set for.
         let ok = self.settings.update(cx, |s, cx| {
             s.save(
                 |e| {
                     e.ai_provider = provider;
                     e.ai_model = String::new();
+                    e.ai_effort = Some(String::new());
                 },
                 cx,
             )
         });
         self.error = (!ok).then(|| self.save_error(cx, "Could not save the provider"));
+        cx.notify();
+    }
+
+    /// A model picked from the list. For Antigravity that is a model without its effort:
+    /// keep the current effort when the model has it, else medium, else its lowest.
+    fn pick_model(&mut self, value: String, cx: &mut Context<Self>) {
+        let s = self.saved(cx);
+        if s.ai_provider != AGY || value.is_empty() {
+            return self.save_model(value, cx);
+        }
+        let current = catalog::agy_effort_split(&s.ai_model).1;
+        let variants = self.agy_variants(&value);
+        let id = [current, Some("medium")]
+            .into_iter()
+            .flatten()
+            .find_map(|want| variants.iter().find(|(_, level)| *level == want))
+            .or(variants.first())
+            .map_or(value, |(id, _)| id.clone());
+        self.save_model(id, cx);
+    }
+
+    fn save_effort(&mut self, level: String, cx: &mut Context<Self>) {
+        let s = self.saved(cx);
+        if s.ai_provider == AGY {
+            // Antigravity keeps the effort in the model id.
+            let base = catalog::agy_effort_split(&s.ai_model).0;
+            if let Some((id, _)) = self.agy_variants(base).into_iter().find(|(_, l)| *l == level) {
+                self.save_model(id, cx);
+            }
+            return;
+        }
+        let ok = self.settings.update(cx, |s, cx| s.save(|e| e.ai_effort = Some(level), cx));
+        self.error = (!ok).then(|| self.save_error(cx, "Could not save the effort"));
         cx.notify();
     }
 
@@ -855,7 +967,21 @@ impl Render for ProviderSetup {
                     .text_caption()
                     .into_any_element()
             };
-            field("Model (optional)", None, control, hint.map(|h| h.into_any_element()), &t)
+            let effort_on = !self.effort_choices(&s).0.is_empty();
+            let effort = Select::new(&self.effort_select)
+                .with_size(Size::Small)
+                .text_caption()
+                .when(!effort_on, |select| {
+                    select.placeholder(if self.loading_models { "Loading…" } else { "Not available" }).disabled(true)
+                });
+            let effort_hint = (!effort_on && !self.loading_models)
+                .then(|| catalog::effort_note(&s.ai_provider).into_any_element());
+            div()
+                .flex()
+                .items_start()
+                .gap(u(12.))
+                .child(field("Model (optional)", None, control, hint.map(|h| h.into_any_element()), &t).flex_1().min_w_0())
+                .child(field("Effort", None, effort, effort_hint, &t).w(u(168.)).flex_shrink_0())
         });
 
         let test = div()

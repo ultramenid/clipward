@@ -99,6 +99,28 @@ pub struct LlmResponse {
     pub cost_incomplete: bool,
 }
 
+/// Every effort level the Effort setting can hold, lowest first.
+pub const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+/// Effort levels `provider` takes from the Effort setting. Empty when it has no
+/// effort control here: Antigravity puts the effort in its model ids, and a local
+/// server, Cursor, OpenCode and Gemini CLI have no flag for it.
+pub fn effort_levels(provider: &str) -> &'static [&'static str] {
+    match provider {
+        // `claude --effort` and Codex's `model_reasoning_effort` take all five.
+        "cli:claude" | "cli:codex" => &EFFORT_LEVELS,
+        "openrouter" | "anthropic" | "openai" | "cli:grok" => &EFFORT_LEVELS[..3],
+        _ => &[],
+    }
+}
+
+/// The saved effort as one of the fixed strings `ai.provider` takes, or None for the
+/// provider's default. Anything else is dropped, so no free text reaches argv or a body.
+fn effort(ai: &AiSettings) -> Option<&'static str> {
+    let wanted = ai.effort.as_deref()?;
+    effort_levels(&ai.provider).iter().copied().find(|level| *level == wanted)
+}
+
 /// Whether `provider` takes images regardless of model. CLI providers read text
 /// only; a local server depends on its model, so it counts as text only here: use
 /// [`ai_supports_images`] when the settings are at hand.
@@ -298,7 +320,13 @@ pub async fn chat(
                 ),
                 ("X-Title", "Clipward AI Clipping Agent".to_string()),
             ];
-            let payload = openrouter_payload(req);
+            let mut payload = openrouter_payload(req);
+            if let Some(effort) = effort(ai) {
+                // The Effort setting replaces the caller's (the planner's medium).
+                let obj = payload.as_object_mut().expect("object");
+                obj.remove("temperature");
+                obj.insert("reasoning".into(), json!({"effort": effort, "exclude": true}));
+            }
             with_cancel(
                 cancel,
                 post_chat_completion(base, &headers, &payload, "OpenRouter"),
@@ -313,7 +341,7 @@ pub async fn chat(
             };
             let base = req.base_url.as_deref().unwrap_or(OPENAI_BASE_URL);
             let headers = vec![("Authorization", format!("Bearer {key}"))];
-            let payload = openai_payload(req, &ai.model);
+            let payload = openai_payload(req, &ai.model, effort(ai));
             with_cancel(
                 cancel,
                 post_chat_completion(base, &headers, &payload, "OpenAI"),
@@ -327,7 +355,7 @@ pub async fn chat(
                 ));
             };
             let base = req.base_url.as_deref().unwrap_or(ANTHROPIC_BASE_URL);
-            let payload = anthropic_payload(req, &ai.model);
+            let payload = anthropic_payload(req, &ai.model, effort(ai));
             with_cancel(cancel, anthropic_messages(base, key, &payload, cancel)).await
         }
         "local" => local_chat(ai, req, cancel).await,
@@ -433,12 +461,17 @@ pub fn openrouter_payload(req: &ChatRequest) -> Value {
     Value::Object(payload)
 }
 
-/// OpenAI body: OpenRouter-only routing keys removed, `max_completion_tokens`.
-fn openai_payload(req: &ChatRequest, model: &str) -> Value {
+/// OpenAI body: OpenRouter-only routing keys removed, `max_completion_tokens`, and
+/// `reasoning_effort` only when the Effort setting picks one.
+fn openai_payload(req: &ChatRequest, model: &str, effort: Option<&str>) -> Value {
     let mut payload = openrouter_payload(req);
     let obj = payload.as_object_mut().expect("object");
     for key in ["plugins", "provider", "models", "reasoning"] {
         obj.remove(key);
+    }
+    if let Some(effort) = effort {
+        obj.remove("temperature");
+        obj.insert("reasoning_effort".into(), Value::String(effort.into()));
     }
     let model = if model.is_empty() {
         DEFAULT_OPENAI_MODEL
@@ -1223,7 +1256,7 @@ fn looks_like_ollama(base: &str) -> bool {
 // Anthropic (BYOK), streamed so long transcripts and 32k output don't time out
 // ---------------------------------------------------------------------------
 
-fn anthropic_payload(req: &ChatRequest, model: &str) -> Value {
+fn anthropic_payload(req: &ChatRequest, model: &str, effort: Option<&str>) -> Value {
     let blocks: Vec<Value> = req
         .user
         .iter()
@@ -1250,11 +1283,16 @@ fn anthropic_payload(req: &ChatRequest, model: &str) -> Value {
     if let Some(system) = req.system.as_deref().filter(|s| !s.is_empty()) {
         request.insert("system".into(), Value::String(system.to_string()));
     }
+    let mut output = Map::new();
     if let Some((_, schema)) = &req.schema {
-        request.insert(
-            "output_config".into(),
-            json!({"format": {"type": "json_schema", "schema": schema}}),
-        );
+        output.insert("format".into(), json!({"type": "json_schema", "schema": schema}));
+    }
+    // GA `output_config.effort`; older models (Sonnet/Haiku 4.5) reject it, so Default sends nothing.
+    if let Some(effort) = effort {
+        output.insert("effort".into(), Value::String(effort.into()));
+    }
+    if !output.is_empty() {
+        request.insert("output_config".into(), Value::Object(output));
     }
     request.insert("stream".into(), Value::Bool(true));
     Value::Object(request)
@@ -1286,7 +1324,8 @@ async fn anthropic_messages(
     payload: &Value,
     cancel: &CancellationToken,
 ) -> LlmResult<ChatReply> {
-    const MAX_RETRIES: u32 = 2;
+    // One quick retry that honours retry-after; the planner retries on top of it.
+    const MAX_RETRIES: u32 = 1;
     let client = http_client()?;
     let url = format!("{}/v1/messages", base_url.trim_end_matches('/'));
     let body = serde_json::to_vec(payload)
@@ -1509,10 +1548,10 @@ fn cli_label(cli_id: &str) -> Option<&'static str> {
         .map(|(_, label)| *label)
 }
 
-/// All text of the request, system first, joined by blank lines.
-fn prompt_text(req: &ChatRequest) -> String {
+/// All text of the request, system first (when `with_system`), joined by blank lines.
+fn prompt_text(req: &ChatRequest, with_system: bool) -> String {
     let mut parts: Vec<&str> = Vec::new();
-    if let Some(system) = &req.system {
+    if let Some(system) = req.system.as_ref().filter(|_| with_system) {
         parts.push(system);
     }
     for part in &req.user {
@@ -1575,13 +1614,18 @@ fn ascii_json_string(s: &str) -> String {
     out
 }
 
-/// Command line and stdin for one non-interactive, tool-free call.
+/// Command line and stdin for one non-interactive, tool-free call. `system` is set
+/// only for a CLI that takes it on its own (Claude Code); the others get it in `prompt`.
+/// `effort` comes from [`effort`], one of the fixed levels.
+#[allow(clippy::too_many_arguments)]
 fn cli_command(
     cli_id: &str,
     path: &Path,
     prompt: String,
+    system: Option<&str>,
     schema: Option<&Value>,
     model: &str,
+    effort: Option<&str>,
     work: &Path,
 ) -> std::io::Result<(Vec<String>, Option<String>)> {
     let schema_json = schema.map(python_json);
@@ -1589,6 +1633,8 @@ fn cli_command(
     let s = |v: &str| v.to_string();
     match cli_id {
         "claude" => {
+            // No MCP servers, skills or default system prompt: they slow every call
+            // and none of them help. (Not --bare: it allows only API-key logins.)
             let mut cmd = vec![
                 path,
                 s("--print"),
@@ -1597,12 +1643,26 @@ fn cli_command(
                 s("--tools"),
                 s(""),
                 s("--no-session-persistence"),
+                s("--strict-mcp-config"),
+                s("--disable-slash-commands"),
             ];
+            if let Some(system) = system {
+                // A file: the planner prompt would crowd a Windows command line.
+                let system_path = work.join("system.txt");
+                std::fs::write(&system_path, system)?;
+                cmd.extend([
+                    s("--system-prompt-file"),
+                    system_path.to_string_lossy().into_owned(),
+                ]);
+            }
             if let Some(schema) = schema_json {
                 cmd.extend([s("--json-schema"), schema]);
             }
             if !model.is_empty() {
                 cmd.extend([s("--model"), s(model)]);
+            }
+            if let Some(effort) = effort {
+                cmd.extend([s("--effort"), s(effort)]);
             }
             return Ok((cmd, Some(prompt)));
         }
@@ -1628,6 +1688,9 @@ fn cli_command(
             }
             if !model.is_empty() {
                 cmd.extend([s("-m"), s(model)]);
+            }
+            if let Some(effort) = effort {
+                cmd.extend([s("-c"), format!("model_reasoning_effort=\"{effort}\"")]);
             }
             cmd.push(s("-"));
             return Ok((cmd, Some(prompt)));
@@ -1668,6 +1731,9 @@ fn cli_command(
             }
             if !model.is_empty() {
                 cmd.extend([s("-m"), s(model)]);
+            }
+            if let Some(effort) = effort {
+                cmd.extend([s("--reasoning-effort"), s(effort)]);
             }
             return Ok((cmd, None));
         }
@@ -1984,13 +2050,24 @@ async fn cli_chat(
         )));
     };
     let schema = req.schema.as_ref().map(|(_, s)| s);
-    let prompt = prompt_text(req);
+    let own_system = cli_id == "claude";
+    let system = req.system.as_deref().filter(|_| own_system);
+    let prompt = prompt_text(req, !own_system);
     let work = tempfile::Builder::new()
         .prefix("clipward-cli-")
         .tempdir()
         .map_err(|_| LlmError::fatal(format!("{label} CLI could not be started")))?;
-    let (cmd, stdin) = cli_command(cli_id, path, prompt.clone(), schema, &ai.model, work.path())
-        .map_err(|_| LlmError::fatal(format!("{label} CLI could not be started")))?;
+    let (cmd, stdin) = cli_command(
+        cli_id,
+        path,
+        prompt.clone(),
+        system,
+        schema,
+        &ai.model,
+        effort(ai),
+        work.path(),
+    )
+    .map_err(|_| LlmError::fatal(format!("{label} CLI could not be started")))?;
     tracing::info!(
         "Calling {label} CLI for planning ({} prompt chars)",
         prompt.chars().count()
@@ -2484,12 +2561,56 @@ mod tests {
         r.response_healing = true;
         r.require_parameters = true;
         r.reasoning_effort = Some("high".into());
-        let p = openai_payload(&r, "");
-        for key in ["plugins", "provider", "models", "reasoning", "max_tokens"] {
+        let p = openai_payload(&r, "", None);
+        for key in ["plugins", "provider", "models", "reasoning", "max_tokens", "reasoning_effort"] {
             assert!(p.get(key).is_none(), "{key}");
         }
         assert_eq!(p["model"], DEFAULT_OPENAI_MODEL);
         assert_eq!(p["max_completion_tokens"], 10);
+        r.temperature = Some(0.3);
+        let p = openai_payload(&r, "", Some("low"));
+        assert_eq!(p["reasoning_effort"], "low");
+        assert!(p.get("temperature").is_none());
+    }
+
+    #[test]
+    fn effort_is_sent_only_as_a_level_the_provider_takes() {
+        let ai = |provider: &str, effort: &str| AiSettings {
+            provider: provider.into(),
+            effort: Some(effort.into()),
+            ..Default::default()
+        };
+        assert_eq!(effort(&ai("cli:claude", "max")), Some("max"));
+        assert_eq!(effort(&ai("cli:codex", "xhigh")), Some("xhigh"));
+        assert_eq!(effort(&ai("anthropic", "high")), Some("high"));
+        // Not offered for the provider, unknown, or a provider without effort control.
+        assert_eq!(effort(&ai("openai", "max")), None);
+        assert_eq!(effort(&ai("cli:claude", "low; rm -rf /")), None);
+        assert_eq!(effort(&ai("cli:claude", "")), None);
+        for provider in ["local", "cli:agy", "cli:cursor-agent", "cli:opencode", "cli:gemini"] {
+            assert_eq!(effort(&ai(provider, "low")), None, "{provider}");
+        }
+        assert_eq!(effort(&AiSettings { provider: "openai".into(), ..Default::default() }), None);
+
+        let mut r = req("x");
+        r.schema = Some(("s".into(), json!({"type": "object"})));
+        let body = anthropic_payload(&r, "", Some("low"));
+        assert_eq!(body["output_config"]["effort"], "low");
+        assert_eq!(body["output_config"]["format"]["type"], "json_schema");
+        r.schema = None;
+        assert!(anthropic_payload(&r, "", None).get("output_config").is_none());
+    }
+
+    #[tokio::test]
+    async fn openrouter_effort_replaces_the_callers_reasoning() {
+        let server = serve(vec![Reply::json(200, &json!({"choices": [{"message": {"content": "ok"}}]}))]).await;
+        let mut r = req(&server.url);
+        r.reasoning_effort = Some("none".into());
+        let ai = AiSettings { effort: Some("high".into()), ..openrouter("k") };
+        chat(&ai, &r, &CancellationToken::new()).await.unwrap();
+        let sent = server.seen.lock().unwrap()[0].json();
+        assert_eq!(sent["reasoning"], json!({"effort": "high", "exclude": true}));
+        assert!(sent.get("temperature").is_none());
     }
 
     #[tokio::test]
@@ -2634,7 +2755,8 @@ mod tests {
             base64: "x".into(),
         });
         r.user.push(ContentPart::Text("end".into()));
-        assert_eq!(prompt_text(&r), "S\n\nhi\n\nend");
+        assert_eq!(prompt_text(&r, true), "S\n\nhi\n\nend");
+        assert_eq!(prompt_text(&r, false), "hi\n\nend");
     }
 
     #[test]
@@ -2650,12 +2772,15 @@ mod tests {
     fn cli_commands_match_the_python_gateway() {
         let work = tempfile::tempdir().unwrap();
         let schema = json!({"type": "object"});
+        let system_file = work.path().join("system.txt").to_string_lossy().into_owned();
         let (cmd, stdin) = cli_command(
             "claude",
             Path::new("/bin/claude"),
             "P".into(),
+            Some("SYS"),
             Some(&schema),
             "sonnet",
+            Some("low"),
             work.path(),
         )
         .unwrap();
@@ -2669,30 +2794,44 @@ mod tests {
                 "--tools",
                 "",
                 "--no-session-persistence",
+                "--strict-mcp-config",
+                "--disable-slash-commands",
+                "--system-prompt-file",
+                system_file.as_str(),
                 "--json-schema",
                 r#"{"type": "object"}"#,
                 "--model",
-                "sonnet"
+                "sonnet",
+                "--effort",
+                "low"
             ]
         );
         assert_eq!(stdin.as_deref(), Some("P"));
+        assert_eq!(std::fs::read_to_string(work.path().join("system.txt")).unwrap(), "SYS");
         let (cmd, _) = cli_command(
             "codex",
             Path::new("/bin/codex"),
             "P".into(),
+            None,
             Some(&schema),
             "",
+            Some("medium"),
             work.path(),
         )
         .unwrap();
         assert_eq!(cmd.last().unwrap(), "-");
+        assert!(cmd.windows(2).any(|w| w == ["-c", "model_reasoning_effort=\"medium\""]));
         assert!(work.path().join("schema.json").is_file());
+        let (cmd, _) = cli_command("grok", Path::new("/bin/grok"), "P".into(), None, None, "", Some("high"), work.path()).unwrap();
+        assert!(cmd.ends_with(&["--reasoning-effort".to_string(), "high".to_string()]));
         let (cmd, stdin) = cli_command(
             "agy",
             Path::new("/bin/agy"),
             "P".into(),
             None,
+            None,
             "",
+            None,
             work.path(),
         )
         .unwrap();
@@ -2702,8 +2841,10 @@ mod tests {
             "gemini",
             Path::new("/bin/g"),
             "P".into(),
+            None,
             Some(&schema),
             "",
+            None,
             work.path(),
         )
         .unwrap();
@@ -2715,12 +2856,14 @@ mod tests {
             Path::new("/bin/c"),
             "P".into(),
             None,
+            None,
             "",
+            None,
             work.path(),
         )
         .unwrap();
         assert_eq!(cmd.last().unwrap(), "auto");
-        assert!(cli_command("nope", Path::new("/x"), "P".into(), None, "", work.path()).is_err());
+        assert!(cli_command("nope", Path::new("/x"), "P".into(), None, None, "", None, work.path()).is_err());
     }
 
     #[test]
@@ -2773,10 +2916,11 @@ mod tests {
     #[tokio::test]
     async fn cli_runs_with_minimal_env_and_stdin_prompt() {
         let dir = tempfile::tempdir().unwrap();
-        // Echo stdin length and whether a secret env var leaked through.
+        // Echo stdin length, whether a secret env var leaked through, and the
+        // system prompt (Claude Code reads it from a file, not stdin).
         let path = script(
             dir.path(),
-            r#"input=$(cat); printf '{"result": "%s|%s|%s"}' "${#input}" "${OPENROUTER_API_KEY:-none}" "${NO_COLOR:-}""#,
+            r#"input=$(cat); while [ "$1" != "--system-prompt-file" ]; do shift; done; printf '{"result": "%s|%s|%s|%s"}' "${#input}" "${OPENROUTER_API_KEY:-none}" "${NO_COLOR:-}" "$(cat "$2")""#,
         );
         std::env::set_var("OPENROUTER_API_KEY", "sk-env-secret");
         let mut r = req("x");
@@ -2784,7 +2928,7 @@ mod tests {
         let reply = chat(&cli_ai(Some(path)), &r, &CancellationToken::new())
             .await
             .unwrap();
-        assert_eq!(reply.text.as_deref(), Some("7|none|1"));
+        assert_eq!(reply.text.as_deref(), Some("2|none|1|SYS"));
         assert_eq!(reply.cost, Some(0.0));
         assert_eq!(reply.model, "claude cli");
     }

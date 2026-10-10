@@ -1,9 +1,12 @@
 //! Times whisper.cpp on a slice of a video with the engine's settings, and writes the
 //! words so two runs can be compared:
 //! `cargo run --release -p clip_engine --example transcribe_bench -- <video> <model> <start s> <length s> <words.json>`
-//! BENCH_FLASH=1 turns flash attention on; BENCH_VAD=<silero ggml model> skips non-speech;
-//! BENCH_DTW=1 writes each word's end from whisper.cpp's DTW alignment in place of its
-//! start (a reference to judge the others by; large-v3-turbo only, not with flash attention).
+//! BENCH_FLASH=1 turns flash attention on; BENCH_DTW=1 writes each word's end from
+//! whisper.cpp's DTW alignment in place of its start (a reference to judge the others by;
+//! large-v3-turbo only, not with flash attention).
+//! BENCH_JOBS=<n> instead runs the engine's own transcription n times in one process (model
+//! cache, one transcription at a time, VAD when transcribe::VAD_MODEL_FILE sits next to
+//! <model>), all at once with BENCH_PARALLEL=1, and writes every job's words.
 use std::path::PathBuf;
 use std::time::Instant;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
@@ -11,6 +14,9 @@ use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextPar
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let ffmpeg = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../engine-bin/ffmpeg");
+    if let Ok(jobs) = std::env::var("BENCH_JOBS") {
+        return engine_jobs(&args, ffmpeg, jobs.parse().unwrap());
+    }
     // The engine's own extraction (transcribe::extract_args).
     let audio = std::process::Command::new(ffmpeg)
         .args(["-nostdin", "-v", "error", "-ss", &args[3], "-t", &args[4], "-i", &args[1], "-map", "0:a:0", "-vn"])
@@ -41,11 +47,6 @@ fn main() {
     params.set_max_len(1);
     params.set_split_on_word(true);
     params.set_language(Some("auto"));
-    let vad = std::env::var("BENCH_VAD").ok();
-    if let Some(path) = vad.as_deref() {
-        params.set_vad_model_path(Some(path));
-        params.enable_vad(true);
-    }
 
     let run = Instant::now();
     state.full(params, &samples).unwrap();
@@ -63,4 +64,63 @@ fn main() {
     std::fs::write(&args[5], serde_json::to_string(&words).unwrap()).unwrap();
     let seconds = samples.len() as f64 / 16_000.0;
     println!("audio {seconds:.0}s  load {load:.1}s  transcribe {run:.1}s  ({:.1}x real time)  {} words", seconds / run, words.len());
+}
+
+/// BENCH_JOBS: `transcribe::transcribe` as a job calls it, after the job-start preload.
+fn engine_jobs(args: &[String], ffmpeg: PathBuf, jobs: usize) {
+    use clip_engine::transcribe;
+    use clip_engine::types::{EngineConfig, ProgressFn};
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+
+    let cfg = Arc::new(EngineConfig {
+        ffprobe: ffmpeg.with_file_name("ffprobe"),
+        ffmpeg,
+        ytdlp: None,
+        assets_dir: PathBuf::new(),
+        whisper_model_path: args[2].clone().into(),
+        ai: Default::default(),
+        custom_vocabulary: vec![],
+        work_dir: std::env::temp_dir(),
+        output_dir: std::env::temp_dir(),
+    });
+    let video = PathBuf::from(&args[1]);
+    let start: f64 = args[3].parse().unwrap();
+    let range = Some((start, start + args[4].parse::<f64>().unwrap()));
+    let parallel = std::env::var("BENCH_PARALLEL").is_ok();
+    let began = Instant::now();
+    let job = move |i: usize| {
+        let (cfg, video) = (cfg.clone(), video.clone());
+        async move {
+            let t = Instant::now();
+            transcribe::preload_model(&cfg.whisper_model_path);
+            let progress: ProgressFn = Arc::new(move |p| {
+                if p.step.starts_with("Waiting") {
+                    println!("job {i}: {}", p.step);
+                }
+            });
+            let transcript = transcribe::transcribe(&video, &cfg, range, &progress, &CancellationToken::new()).await.unwrap();
+            println!("job {i}: {:.2}s", t.elapsed().as_secs_f64());
+            transcript.segments.into_iter().flat_map(|s| s.words).map(|w| (w.start_time_ms, w.end_time_ms, w.word)).collect::<Vec<_>>()
+        }
+    };
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let words: Vec<Vec<(i64, i64, String)>> = runtime.block_on(async {
+        if parallel {
+            let handles: Vec<_> = (0..jobs).map(|i| tokio::spawn(job(i))).collect();
+            let mut words = Vec::new();
+            for handle in handles {
+                words.push(handle.await.unwrap());
+            }
+            words
+        } else {
+            let mut words = Vec::new();
+            for i in 0..jobs {
+                words.push(job(i).await);
+            }
+            words
+        }
+    });
+    println!("all jobs: {:.2}s", began.elapsed().as_secs_f64());
+    std::fs::write(&args[5], serde_json::to_string(&words).unwrap()).unwrap();
 }

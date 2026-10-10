@@ -93,6 +93,9 @@ pub struct AiSettings {
     pub local_images: bool,
     /// Optional bearer key for a local server that requires one.
     pub local_api_key: Option<String>,
+    /// Reasoning effort from Settings ("low" ... "max"); None keeps the provider's
+    /// default. Only levels in [`crate::llm::effort_levels`] are ever sent.
+    pub effort: Option<String>,
 }
 
 /// Paths and settings the app shell hands the engine for every job.
@@ -210,4 +213,11 @@ pub struct DownloadResult {
     pub metadata: VideoMetadata,
     /// True when the file is the user's own local file (never delete it).
     pub is_local: bool,
+}
+
+/// A link source's audio, on disk while its video is still downloading.
+#[derive(Debug, Clone)]
+pub struct EarlyAudio {
+    pub path: PathBuf,
+    pub duration_seconds: f64,
 }

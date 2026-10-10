@@ -208,7 +208,7 @@ fn render(tools: &(PathBuf, PathBuf), path: &Path, dir: &Path, o: RenderOpts) ->
         let mut canvas = crate::render::fonts::Canvas::new(2, 2);
         canvas.rounded_rect(0.0, [255, 255, 255, 255]);
         std::fs::write(&image, canvas.encode_png().unwrap()).unwrap();
-        graph += ";[base][1:v]overlay=shortest=1[out]";
+        graph += ";[1:v]loop=loop=-1:size=1[img];[base][img]overlay=shortest=1[out]";
         extra.push(image);
     } else {
         graph += ";[base]null[out]";
@@ -222,6 +222,7 @@ fn render(tools: &(PathBuf, PathBuf), path: &Path, dir: &Path, o: RenderOpts) ->
         start_time_ms: (o.start * 1000.0).round() as i64,
         duration_ms,
         filter_complex: &graph,
+        audio_graph: None,
         audio_label: (!o.no_audio).then_some("[aout]"),
         extra_inputs: &extra,
         fps,
@@ -724,6 +725,7 @@ fn renders_in_software_when_the_gpu_encoder_fails() {
         start_time_ms: 0,
         duration_ms: 2000,
         filter_complex: "[0:v]null[out]",
+        audio_graph: None,
         audio_label: None,
         extra_inputs: &[],
         fps: "30",

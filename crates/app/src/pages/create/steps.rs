@@ -1062,7 +1062,14 @@ impl CreatePage {
             .read(cx)
             .value
             .as_ref()
-            .map(|s| (s.ai_provider.clone(), s.ai_model.clone()))
+            .map(|s| {
+                // "sonnet · Low effort" (Antigravity's effort is already in its model id).
+                let effort = clipward_core::clip_engine::llm::effort_levels(&s.ai_provider)
+                    .contains(&s.ai_effort.as_str())
+                    .then(|| format!("{} effort", clipward_core::provider_catalog::effort_label(&s.ai_effort)));
+                let model = [Some(s.ai_model.clone()).filter(|m| !m.is_empty()), effort];
+                (s.ai_provider.clone(), model.into_iter().flatten().collect::<Vec<_>>().join(" · "))
+            })
             .unwrap_or_default();
         let (active, running) = {
             let jobs = self.jobs.read(cx);

@@ -1,4 +1,5 @@
 //! Times one real render_clip: `cargo run --release -p clip_engine --example render_bench -- <src> <transcript.json> <out.mp4> [9:16|16:9] [tight|natural]`
+//! Env: BENCH_START, BENCH_STYLE, BENCH_LINK, BENCH_LOGOS, BENCH_LONGFORM, BENCH_X264, BENCH_ARGS; BENCH_N + BENCH_C render N clips.
 use clip_engine::render::process::{LineSink, MediaOutput, MediaRunner, SystemRunner};
 use clip_engine::render::service::{RenderRequest, Renderer};
 use clip_engine::types::{EngineConfig, TranscriptSegment};
@@ -111,6 +112,7 @@ async fn main() {
         aspect_ratio: aspect,
         layout_vision: false,
         pacing,
+        longform: std::env::var("BENCH_LONGFORM").is_ok(),
         ..Default::default()
     };
     if let Ok(n) = std::env::var("BENCH_N") {

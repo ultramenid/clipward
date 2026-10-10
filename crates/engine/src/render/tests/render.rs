@@ -427,6 +427,7 @@ fn failed_export_is_removed_before_fallback() {
             start_time_ms: 0,
             duration_ms: 10_000,
             filter_complex: "graph",
+            audio_graph: None,
             audio_label: None,
             extra_inputs: &[],
             fps: "30",
@@ -472,6 +473,7 @@ fn failed_hardware_encode_retries_in_software() {
         start_time_ms: 0,
         duration_ms: 10_000,
         filter_complex: "[0:v]null[out]",
+        audio_graph: None,
         audio_label: None,
         extra_inputs: &[],
         fps: "30",
@@ -609,6 +611,19 @@ fn large_filter_graph_does_not_retry_render_failures() {
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 1);
     assert!(!Path::new(&seen[0]).exists());
+}
+
+#[test]
+fn every_large_filter_graph_gets_its_own_script() {
+    let (video, audio) = (big_graph(), "anull,".repeat(2000));
+    let (v, a) = (video.clone(), audio.clone());
+    let runner = FakeRunner::new(move |_, args| {
+        assert_eq!((args[0].as_str(), args[2].as_str()), ("-/filter_complex", "-/filter_complex"));
+        assert_eq!((std::fs::read_to_string(&args[1]).unwrap(), std::fs::read_to_string(&args[3]).unwrap()), (v.clone(), a.clone()));
+        ok(b"")
+    });
+    let args = ["-filter_complex".to_string(), video, "-filter_complex".to_string(), audio];
+    block_on(renderer(runner).run_cmd(&args, &CancellationToken::new())).unwrap();
 }
 
 #[test]

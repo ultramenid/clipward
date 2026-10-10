@@ -66,9 +66,11 @@ impl YuNet {
         let pad_w = ((width - 1) / DIVISOR + 1) * DIVISOR;
         let pad_h = ((height - 1) / DIVISOR + 1) * DIVISOR;
         let key = (model.to_path_buf(), pad_w, pad_h);
-        let cached = plan_cache().lock().ok().and_then(|c| c.get(&key).cloned());
-        let plan = match cached {
-            Some(plan) => plan,
+        // Held while building, so clips starting together build each plan once.
+        // ponytail: one lock for every size; per-size locks if sizes ever load together.
+        let mut cache = plan_cache().lock().unwrap_or_else(|e| e.into_inner());
+        let plan = match cache.get(&key) {
+            Some(plan) => plan.clone(),
             None => {
                 // The exported graph pins a 640x640 input in its shape annotations;
                 // OpenCV reshapes freely, so drop them and infer from our input fact.
@@ -81,11 +83,8 @@ impl YuNet {
                     .and_then(|m| m.into_optimized())
                     .and_then(|m| m.into_runnable())
                     .map_err(model_error)?;
-                // A concurrent load may have won the race; share its plan.
-                match plan_cache().lock() {
-                    Ok(mut cache) => cache.entry(key).or_insert(plan).clone(),
-                    Err(_) => plan,
-                }
+                cache.insert(key, plan.clone());
+                plan
             }
         };
         Ok(Self { plan, input_w: width, input_h: height, pad_w, pad_h, score_threshold, nms_threshold, top_k })

@@ -9,11 +9,17 @@ use crate::planner;
 use crate::render::project::Project;
 use crate::render::{self, RenderRequest, Renderer};
 use crate::transcribe;
-use crate::types::{ClipJobRequest, ClipPlanSegment, DownloadResult, EngineConfig, Progress, ProgressFn, Stage};
+use crate::types::{
+    ClipJobRequest, ClipPlanSegment, DownloadResult, EarlyAudio, EngineConfig, Progress, ProgressFn, Stage,
+};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
+use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 /// Name of the manifest the app reads back (the Electron engine called it job_output.json).
@@ -70,6 +76,7 @@ impl Job {
     }
 
     async fn run(&mut self) -> Result<Value> {
+        transcribe::preload_model(&self.cfg.whisper_model_path);
         self.report(Stage::Pending, 0.0, "Starting pipeline...", 0, 0);
         std::fs::create_dir_all(&self.cfg.work_dir)?;
         std::fs::create_dir_all(&self.cfg.output_dir)?;
@@ -80,13 +87,27 @@ impl Job {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
 
-        // 1. Download
+        // 1. Download, as its own task. A YouTube source hands its audio over first:
+        // transcription and planning run on it while the video keeps downloading, and
+        // only layout and rendering wait for the video.
         self.report(Stage::Downloading, 5.0, "Downloading video...", 0, 0);
-        let t = Instant::now();
-        let source = download::download(&self.req.video_url, &self.cfg, None, &self.progress, &self.cancel).await?;
-        self.stages.insert("download", t.elapsed().as_secs_f64());
-        let meta = source.metadata.clone();
-        let video_duration = meta.duration_seconds;
+        let mut video = Video::start(&self.req.video_url, &self.cfg, &self.progress, &self.cancel);
+        let result = self.process(&mut video, job_id).await;
+        // A failed run can leave the download running: stop it before the work dir goes.
+        video.stop().await;
+        result
+    }
+
+    async fn process(&mut self, video: &mut Video, job_id: String) -> Result<Value> {
+        // The audio's duration stands in for the video's until the video arrives.
+        let (media, mut video_duration) = match video.early_audio().await {
+            Some(audio) => (audio.path, audio.duration_seconds),
+            None => {
+                let source = video.finish(Stage::Downloading, 15.0).await?;
+                (source.path.clone(), source.metadata.duration_seconds)
+            }
+        };
+        let stop = video.cancel.clone();
         let manual_clips = self.req.manual_clips.clone();
         if manual_clips.is_some() {
             // The typed ranges are explicit, and no AI provider takes part in a manual run.
@@ -111,7 +132,7 @@ impl Job {
             (None, None, None) => None,
             (None, start, end) => Some((start.unwrap_or(0.0), end.unwrap_or(f64::INFINITY))),
         };
-        let transcript = transcribe::transcribe(&source.path, &self.cfg, range, &self.progress, &self.cancel).await?;
+        let transcript = video.beside(transcribe::transcribe(&media, &self.cfg, range, &self.progress, &stop)).await?;
         self.stages.insert("transcription", t.elapsed().as_secs_f64());
         let captions_available = !transcript.segments.is_empty();
         let transcription_status = if captions_available { "available" } else { "no_speech" };
@@ -134,8 +155,17 @@ impl Job {
         let mut plan = match &manual_clips {
             Some(clips) => manual::build_plan(clips, video_duration)?,
             None => {
-                planner::plan_clips(&transcript, &self.req, &self.cfg, &source.path, video_duration, &self.progress, &self.cancel)
-                    .await?
+                // Without speech the planner reads frames, so it needs the video itself.
+                let media = if transcript.segments.is_empty() {
+                    let source = video.finish(Stage::Transcribing, 15.0).await?;
+                    video_duration = source.metadata.duration_seconds;
+                    source.path.clone()
+                } else {
+                    media
+                };
+                let plan =
+                    planner::plan_clips(&transcript, &self.req, &self.cfg, &media, video_duration, &self.progress, &stop);
+                video.beside(plan).await?
             }
         };
         self.stages.insert("planning", t.elapsed().as_secs_f64());
@@ -158,6 +188,13 @@ impl Job {
             }),
         )?;
         self.check_cancel()?;
+
+        // Layout and rendering need the video.
+        let waiting = if manual_clips.is_some() { Stage::Transcribing } else { Stage::Planning };
+        let source = video.finish(waiting, 50.0).await?.clone();
+        self.stages.insert("download", video.download_seconds);
+        let meta = source.metadata.clone();
+        let video_duration = meta.duration_seconds;
 
         // 4. Render (parallel; one failed clip does not sink the job)
         let total = plan.clips.len() as u32;
@@ -347,6 +384,121 @@ impl Job {
         }
         self.report(Stage::Rendering, 100.0, "Processing complete!", total, total);
         Ok(output)
+    }
+}
+
+/// Which of the download's progress updates reach the UI.
+#[derive(Clone, Copy)]
+enum Shown {
+    All,
+    /// None while transcription and planning run on the early audio.
+    Hidden,
+    /// Under the job's stage and percent while it waits for the video.
+    Waiting(Stage, f64),
+}
+
+/// The source download, run as its own task so the job can go on with early audio.
+struct Video {
+    task: Option<JoinHandle<Result<(DownloadResult, f64)>>>,
+    audio: Option<oneshot::Receiver<EarlyAudio>>,
+    done: Option<DownloadResult>,
+    download_seconds: f64,
+    /// Stops the download and the work beside it; cancelled when either fails.
+    cancel: CancellationToken,
+    shown: Arc<Mutex<Shown>>,
+    progress: ProgressFn,
+}
+
+impl Video {
+    fn start(url: &str, cfg: &EngineConfig, progress: &ProgressFn, cancel: &CancellationToken) -> Self {
+        let cancel = cancel.child_token();
+        let shown = Arc::new(Mutex::new(Shown::All));
+        let (audio_tx, audio) = oneshot::channel();
+        let (url, cfg, token, sink, state) = (url.to_string(), cfg.clone(), cancel.clone(), progress.clone(), shown.clone());
+        let filtered: ProgressFn = Arc::new(move |p: Progress| {
+            let shown = *state.lock().unwrap_or_else(PoisonError::into_inner);
+            match shown {
+                Shown::All => sink(p),
+                Shown::Hidden => {}
+                Shown::Waiting(stage, percent) => sink(Progress { stage, percent, ..p }),
+            }
+        });
+        let task = tokio::spawn(async move {
+            let t = Instant::now();
+            let source = download::download(&url, &cfg, None, &filtered, &token, Some(audio_tx)).await?;
+            Ok((source, t.elapsed().as_secs_f64()))
+        });
+        Video { task: Some(task), audio: Some(audio), done: None, download_seconds: 0.0, cancel, shown, progress: progress.clone() }
+    }
+
+    fn shown(&self) -> std::sync::MutexGuard<'_, Shown> {
+        self.shown.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The audio, when it arrives before the video.
+    async fn early_audio(&mut self) -> Option<EarlyAudio> {
+        let audio = self.audio.take()?.await.ok()?;
+        *self.shown() = Shown::Hidden;
+        Some(audio)
+    }
+
+    fn joined(&mut self, joined: std::result::Result<Result<(DownloadResult, f64)>, tokio::task::JoinError>) -> Result<()> {
+        match joined.unwrap_or_else(|_| Err(EngineError::msg("video download failed"))) {
+            Ok((source, seconds)) => {
+                self.done = Some(source);
+                self.download_seconds = seconds;
+                Ok(())
+            }
+            Err(e) => {
+                self.cancel.cancel();
+                Err(e)
+            }
+        }
+    }
+
+    /// Waits for the video. After early audio, the download's progress shows meanwhile
+    /// under the job's current `stage` and `percent`.
+    async fn finish(&mut self, stage: Stage, percent: f64) -> Result<&DownloadResult> {
+        if let Some(task) = self.task.take() {
+            if !task.is_finished() && matches!(*self.shown(), Shown::Hidden) {
+                *self.shown() = Shown::Waiting(stage, percent);
+                let step = "Finishing video download...".into();
+                (self.progress)(Progress { stage, percent, step, clips_done: 0, clips_total: 0 });
+            }
+            let joined = task.await;
+            self.joined(joined)?;
+        }
+        self.done.as_ref().ok_or_else(|| EngineError::msg("video download failed"))
+    }
+
+    /// Runs `work` beside the download: a failed download stops `work`, and a failed
+    /// `work` stops the download.
+    async fn beside<T>(&mut self, work: impl Future<Output = Result<T>>) -> Result<T> {
+        let Some(mut task) = self.task.take() else {
+            return work.await;
+        };
+        tokio::pin!(work);
+        tokio::select! {
+            result = &mut work => {
+                if result.is_err() {
+                    self.cancel.cancel();
+                }
+                self.task = Some(task);
+                result
+            }
+            joined = &mut task => {
+                self.joined(joined)?;
+                work.await
+            }
+        }
+    }
+
+    /// Stops a download that is still running and waits for its cleanup.
+    async fn stop(&mut self) {
+        if let Some(task) = self.task.take() {
+            self.cancel.cancel();
+            let _ = task.await;
+        }
     }
 }
 
@@ -863,6 +1015,64 @@ mod tests {
         let progress: ProgressFn = std::sync::Arc::new(|_| {});
         let err = run_job(req, cfg, progress, CancellationToken::new()).await.unwrap_err();
         assert_eq!(describe_failure(&err).0, "None of your clip times are inside this video.");
+    }
+
+    /// Transcription starts on the early audio while the video downloads, and its failure
+    /// stops the download at once (a fake yt-dlp whose video run would take 30 s).
+    /// Skipped without a public DNS answer for YouTube, which the source check needs.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_transcription_stops_the_video_download() {
+        use std::os::unix::fs::PermissionsExt;
+        if crate::net::resolve_public_destination("https://www.youtube.com/").await.is_err() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let info = json!({"title": "t", "duration": 60, "format_id": "137+251", "formats": [
+            {"format_id": "137", "protocol": "https", "vcodec": "avc1", "url": "https://v.example/1"},
+            {"format_id": "251", "protocol": "https", "vcodec": "none", "ext": "webm", "url": "https://v.example/2"}]});
+        std::fs::write(bin.join("info.json"), info.to_string()).unwrap();
+        for (name, body) in [
+            (
+                "yt-dlp",
+                "for a in \"$@\"; do [ \"$a\" = -J ] && exec cat \"$(dirname \"$0\")/info.json\"; done\n\
+                 case \"$*\" in *'--fixup never'*) printf x > source.f251.webm; exit 0;; esac\nexec sleep 30\n",
+            ),
+            ("ffprobe", "echo '{\"streams\": [{\"codec_type\": \"audio\"}], \"format\": {\"duration\": \"60\"}}'\n"),
+            // Remuxes the early audio (a copy), then fails the transcription's decode.
+            (
+                "ffmpeg",
+                "case \"$*\" in *'-c copy'*) ;; *) exit 1;; esac\n\
+                 while [ $# -gt 1 ]; do [ \"$1\" = -i ] && in=$2; shift; done\ncp \"$in\" \"$1\"\n",
+            ),
+        ] {
+            std::fs::write(bin.join(name), format!("#!/bin/sh\n{body}")).unwrap();
+            std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let cfg = EngineConfig {
+            ffmpeg: bin.join("ffmpeg"),
+            ffprobe: bin.join("ffprobe"),
+            ytdlp: Some(bin.join("yt-dlp")),
+            assets_dir: dir.path().join("assets"),
+            whisper_model_path: dir.path().join("missing.bin"),
+            ai: Default::default(),
+            custom_vocabulary: vec![],
+            work_dir: dir.path().join("work"),
+            output_dir: dir.path().join("run"),
+        };
+        let req = manual_request(Path::new("https://www.youtube.com/watch?v=abc"), json!(null));
+        let stages = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = stages.clone();
+        let progress: ProgressFn = std::sync::Arc::new(move |p: Progress| seen.lock().unwrap().push(p.stage));
+        let started = std::time::Instant::now();
+        let err = run_job(req, cfg, progress, CancellationToken::new()).await.unwrap_err();
+        assert_eq!(describe_failure(&err).0, "Clipward could not prepare this video's audio for transcription.");
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "the video download was not stopped");
+        assert!(stages.lock().unwrap().contains(&Stage::Transcribing));
+        let left: Vec<_> = std::fs::read_dir(dir.path().join("work")).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert!(left.is_empty(), "{left:?}");
     }
 
     /// The app shell spawns run_job on a multi-threaded runtime, so its future must be Send.
