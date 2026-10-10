@@ -13,6 +13,17 @@ pub fn tour(workspace: Entity<Workspace>, window: &mut Window, cx: &mut App) {
         return;
     };
     let _ = std::fs::create_dir_all(&dir);
+    // Show the sidebar's update row, which a dev build never gets from GitHub.
+    crate::models::Updater::global(cx).update(cx, |u, _| {
+        u.state = crate::models::UpdateState::Available(clipward_core::updater::Update {
+            version: "9.9.9".into(),
+            page_url: String::new(),
+            asset_name: String::new(),
+            asset_url: String::new(),
+            checksums_url: String::new(),
+            size: 0,
+        })
+    });
     let handle = window.window_handle();
     cx.spawn(async move |cx| {
         for (page, name) in [

@@ -3,7 +3,7 @@
 //!
 //! The window has a transparent title bar, so both top strips drag the window and
 //! the sidebar's strip holds the macOS traffic lights.
-use crate::models::{Jobs, Settings, SettingsChanged, Updater};
+use crate::models::{Jobs, Settings, SettingsChanged, UpdateState, Updater};
 use crate::theme::{self, ActiveTokens, Tokens};
 use crate::ui::{self, Tone, TypeScale, Truncate, u};
 use clipward_core::jobs::JobSnapshot;
@@ -269,6 +269,7 @@ impl Workspace {
                     .border_t_1()
                     .border_color(t.stroke)
                     .p(u(8.))
+                    .children(self.update_status(rail, t, cx))
                     .child(self.setup_status(rail, t, cx)),
             )
     }
@@ -351,6 +352,42 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// A new version, above the setup status so a setup problem can't hide it.
+    /// One click installs and restarts, like Settings → Help & about.
+    fn update_status(&self, rail: bool, t: &Tokens, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let updater = Updater::global(cx);
+        let (label, detail, clickable) = match &updater.read(cx).state {
+            UpdateState::Available(update) => (format!("Update to v{}", update.version), "Installs and restarts".into(), true),
+            UpdateState::Failed { update: Some(update), .. } => {
+                (format!("Update to v{}", update.version), "Failed, click to retry".into(), true)
+            }
+            UpdateState::Downloading { received, total, .. } => (
+                "Downloading update".into(),
+                format!("{}%", (*received * 100).checked_div(*total).unwrap_or(0).min(100)),
+                false,
+            ),
+            UpdateState::Installing(_) => ("Restarting…".into(), String::new(), false),
+            _ => return None,
+        };
+        Some(
+            footer_row("update-status", rail, t)
+                .mb(u(2.))
+                .text_color(t.ink)
+                .when(clickable, |row| row.on_click(move |_, _, cx| updater.update(cx, |u, cx| u.install(cx))))
+                .child(div().size(u(16.)).flex().items_center().justify_center().child(ui::status_dot(Tone::Accent, !clickable, t)))
+                .when(!rail, |row| {
+                    row.child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .min_w_0()
+                            .child(div().text_body().line_height(u(16.)).one_line().child(label))
+                            .child(div().text_meta().text_color(t.ink_tertiary).one_line().child(detail)),
+                    )
+                }),
+        )
+    }
+
     fn setup_status(&self, rail: bool, t: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
         let setup = self.settings.read(cx).setup();
         let (tone, label) = if !setup.provider_ready || !setup.whisper_ready {
@@ -366,22 +403,10 @@ impl Workspace {
             (Tone::Danger, "System check failed")
         } else if setup.tools_ok.is_none() {
             (Tone::Idle, "Checking system…")
-        } else if Updater::global(cx).read(cx).available().is_some() {
-            (Tone::Accent, "Update available")
         } else {
             (Tone::Success, "Ready to clip")
         };
-        div()
-            .id("setup-status")
-            .flex()
-            .w_full()
-            .min_w_0()
-            .items_center()
-            .gap(u(10.))
-            .rounded(u(6.))
-            .cursor_pointer()
-            .hover(|row| row.bg(t.tint(0.1)).text_color(t.ink))
-            .map(|row| if rail { row.h(u(32.)).justify_center() } else { row.px(u(8.)).py(u(6.)) })
+        footer_row("setup-status", rail, t)
             .text_color(if setup.ready { t.ink_secondary } else { t.ink.opacity(0.8) })
             .on_click(cx.listener(|this, _, window, cx| this.navigate(Page::Settings, window, cx)))
             .child(
@@ -528,4 +553,19 @@ impl Render for Workspace {
                     .child(div().flex_1().min_h_0().child(self.content.clone())),
             )
     }
+}
+
+/// A clickable row in the sidebar footer; icon-only in the rail.
+fn footer_row(id: &'static str, rail: bool, t: &Tokens) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .w_full()
+        .min_w_0()
+        .items_center()
+        .gap(u(10.))
+        .rounded(u(6.))
+        .cursor_pointer()
+        .hover(|row| row.bg(t.tint(0.1)).text_color(t.ink))
+        .map(|row| if rail { row.h(u(32.)).justify_center() } else { row.px(u(8.)).py(u(6.)) })
 }
