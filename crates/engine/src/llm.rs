@@ -316,7 +316,7 @@ pub async fn chat(
                 ("Authorization", format!("Bearer {key}")),
                 (
                     "HTTP-Referer",
-                    "https://github.com/clipward/clipward".to_string(),
+                    "https://github.com/ultramenid/clipward".to_string(),
                 ),
                 ("X-Title", "Clipward AI Clipping Agent".to_string()),
             ];

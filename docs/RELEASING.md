@@ -35,4 +35,4 @@ For local checks without a release build, `scripts/bundle-macos.sh --debug` bund
 
 On clean Windows and Linux machines, unpack the archive, launch `clipward`, and run the same checks (local clip, provider clip, Library, export, editor playback with sound). The Windows build is unsigned, so SmartScreen warns on first launch; add Authenticode signing before a wide release.
 
-Auto-update is not wired yet: the app has no updater.
+Auto-update: the app reads `releases/latest` from GitHub (published releases only, so drafts are never offered), downloads its platform's package, checks it against `SHA256SUMS.txt` (the release workflow writes it; a release without it is not offered), and swaps it in (`crates/core/src/updater.rs`). Keep the package names from `scripts/bundle*.sh`: the updater finds its package by the name's ending (`_aarch64.dmg`, `_windows_x64.zip`, `_linux_x64.tar.gz`), and the archives must keep the `Clipward.app` / `Clipward/` top level. Packages are still unsigned; the updater doesn't need signing because a file the app downloads itself is not quarantined.

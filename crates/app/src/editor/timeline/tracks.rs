@@ -243,6 +243,22 @@ impl Tracks {
         cx.notify();
     }
 
+    /// The zoom buttons: zoom by `factor` about the playhead, so the spot being edited
+    /// stays put (about the view's middle when the playhead is off screen).
+    pub fn zoom_by(&mut self, factor: f64, cx: &mut Context<Self>) {
+        let zoom = self.zoom(cx);
+        let scroll_x = self.scroll_x();
+        let playhead = view::x_at(self.editor.read(cx).time(cx), zoom) - scroll_x;
+        let anchor = if (0.0..=self.view_width).contains(&playhead) { playhead } else { self.view_width / 2. };
+        let Some((zoom, scroll)) = view::zoom_about(zoom, factor, ZOOM_MIN, ZOOM_MAX, anchor, scroll_x) else {
+            return;
+        };
+        self.editor.update(cx, |e, cx| e.set_zoom(zoom, cx));
+        // Applied with the new width on the next layout, which clamps it.
+        self.scroll.set_offset(point(px(-(scroll * self.scale as f64) as f32), px(0.)));
+        cx.notify();
+    }
+
     // ---- drags ----------------------------------------------------------------------
 
     /// A press on `target`; returns a listener for it.
@@ -721,7 +737,11 @@ impl Render for Tracks {
                 });
             },
         )
+        // Pinned: without an inset an absolute child of this block sits below the
+        // scroller, out of the window, and hover, ⌘-scroll and pinch never hit it.
         .absolute()
+        .top_0()
+        .left_0()
         .size_full();
 
         div()

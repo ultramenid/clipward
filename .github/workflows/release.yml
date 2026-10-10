@@ -111,6 +111,9 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      # The in-app updater installs a package only if its hash is listed here.
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS.txt
       - name: Draft the release
         env:
           GH_TOKEN: ${{ github.token }}

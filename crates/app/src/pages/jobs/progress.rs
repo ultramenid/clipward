@@ -111,6 +111,8 @@ pub(super) struct ProgressCore {
     jobs: Entity<Jobs>,
     revision: Option<u64>,
     ring: Tween,
+    /// A short window: a smaller ring and tighter spacing (set by the page).
+    pub compact: bool,
     pub measured: Measured,
     _subscription: Subscription,
     _clock: Task<()>,
@@ -151,6 +153,7 @@ impl ProgressCore {
             jobs,
             revision,
             ring: Tween::new(percent),
+            compact: false,
             measured: Measured::default(),
             _subscription: subscription,
             _clock: clock,
@@ -164,12 +167,13 @@ impl ProgressCore {
         let stage = logic::stage_label(&job.status);
         let (from, to, key) = (self.ring.from, self.ring.to, self.ring.key);
         let t2 = *t;
+        let (diameter, gap) = if self.compact { (120., 8.) } else { (160., 16.) };
         let ring = div().with_animation(
             ("ring", key),
             Animation::new(TRANSITION).with_easing(ease_out()),
             move |d, delta| {
                 let value = from + (to - from) * delta as f64;
-                d.child(ring(value, 160., 6., &t2, |d| {
+                d.child(ring(value, diameter, 6., &t2, |d| {
                     d.child(
                         div()
                             .flex()
@@ -205,7 +209,7 @@ impl ProgressCore {
             .child(ring)
             .child(
                 div()
-                    .mt(u(16.))
+                    .mt(u(gap))
                     .h(u(20.))
                     .max_w_full()
                     .text_center()
@@ -216,7 +220,7 @@ impl ProgressCore {
             )
             .child(
                 div()
-                    .mt(u(12.))
+                    .mt(u(gap * 0.75))
                     .flex()
                     .flex_wrap()
                     .items_center()

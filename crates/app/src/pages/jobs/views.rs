@@ -173,14 +173,23 @@ impl JobsPage {
         let core_size = core.read(cx).measured.clone();
         let stepper_size = stepper.read(cx).measured.clone();
         let playing = arcade.read(cx).playing();
+        // A short window gets a tighter page, so it fits without scrolling.
+        let compact = f32::from(window.viewport_size().height) < 720.;
+        if core.read(cx).compact != compact {
+            core.update(cx, |core, cx| {
+                core.compact = compact;
+                cx.notify();
+            });
+        }
+        let s = |full: f32| u(if compact { full / 2. } else { full });
         let card = ui::card(t)
-            .mt(u(20.))
+            .mt(s(20.))
             .overflow_hidden()
             .px(u(20.))
-            .pb(u(20.))
-            .pt(u(24.))
+            .pb(s(20.))
+            .pt(s(24.))
             .child(core_size.view(&core))
-            .child(div().mt(u(24.)).child(stepper_size.view(&stepper)));
+            .child(div().mt(s(24.)).child(stepper_size.view(&stepper)));
         div()
             .flex()
             .flex_col()
@@ -188,6 +197,7 @@ impl JobsPage {
             .children(self.focused_callout(t, cx))
             .child(
                 ui::page(ui::PAGE_FOCUS)
+                    .when(compact, |page| page.pt(u(16.)).pb(u(16.)))
                     .child(div().mb(u(8.)).child(self.back_link(t, cx)))
                     .child(
                         div()
@@ -216,18 +226,19 @@ impl JobsPage {
                     .child(card)
                     .child(
                         div()
-                            .mt(u(16.))
+                            .mt(s(16.))
                             .flex()
                             .items_center()
                             .justify_between()
                             .gap(u(16.))
                             .px(u(4.))
                             // max-w-[60ch] of the caption face.
-                            .child(div().max_w(u(432.)).text_caption().text_color(t.ink_secondary).child(if queued {
+                            .when(compact, |row| row.justify_end())
+                            .when(!compact, |row| row.child(div().max_w(u(432.)).text_caption().text_color(t.ink_secondary).child(if queued {
                                 "Starts automatically when a running job finishes."
                             } else {
                                 "Long videos can take a while. Keep using Clipward or queue more videos; progress shows in the sidebar."
-                            }))
+                            })))
                             .child(
                                 Btn::new("cancel-focused")
                                     .label(if queued { "Remove from queue" } else { "Cancel" })
@@ -237,12 +248,11 @@ impl JobsPage {
             )
             // Full-bleed band along the bottom, under the page column. Drawn from the
             // cache: only its own frames redraw it.
-            .child(div().mt_auto().w_full().child(if playing {
+            // It takes only the room left (up to 224), so a short window doesn't scroll.
+            .child(div().mt_auto().w_full().flex_1().flex_basis(px(0.)).min_h_0().max_h(u(224.)).child(if playing {
                 arcade.into_any_element()
             } else {
-                arcade
-                    .cached(StyleRefinement::default().w_full().h(u(224.)).flex_shrink_0())
-                    .into_any_element()
+                arcade.cached(StyleRefinement::default().size_full()).into_any_element()
             }))
             .into_any_element()
     }

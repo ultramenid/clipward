@@ -1,7 +1,7 @@
 //! Small pieces the Settings page, ProviderSetup and WhisperModels share:
 //! option tiles, eyebrows, labelled fields, the refresh button and select items.
 use crate::theme::Tokens;
-use crate::ui::{TypeScale, u};
+use crate::ui::{Btn, TypeScale, u};
 use gpui_kit::component::searchable_list::SearchableListItem;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -180,4 +180,13 @@ impl SearchableListItem for Choice {
                 )
             })
     }
+}
+
+/// "More options": shows or hides the settings most people never need.
+pub fn more_toggle(id: &'static str, open: bool) -> Btn {
+    Btn::new(id)
+        .ghost()
+        .small()
+        .label(if open { "Fewer options" } else { "More options" })
+        .trailing_icon(if open { "chevron-up" } else { "chevron-down" })
 }

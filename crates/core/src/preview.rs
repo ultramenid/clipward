@@ -596,11 +596,11 @@ pub async fn filmstrip(
             .ok_or("This clip's source video is no longer available.")?,
     };
     let height = clip_engine::render::project::FILMSTRIP_HEIGHT;
-    let cache = run.join(format!(
-        "{}.strip{height}-{block}.jpg",
-        file.unwrap_or(clip_engine::pipeline::SOURCE_STEM)
-    ));
+    let stem = file.unwrap_or(clip_engine::pipeline::SOURCE_STEM);
+    // `f`: frames at whole seconds; the unmarked strips before it ran half a second ahead.
+    let cache = run.join(format!("{stem}.strip{height}f-{block}.jpg"));
     if !cache.is_file() {
+        let _ = std::fs::remove_file(run.join(format!("{stem}.strip{height}-{block}.jpg")));
         let temp = run.join(format!(".strip-{}.jpg", uuid::Uuid::new_v4()));
         let made = clip_engine::render::project::filmstrip(
             &resolve_binary(paths, Tool::Ffmpeg),
@@ -763,7 +763,7 @@ mod tests {
             let strip = filmstrip(&paths, &lib, &dir, Some("added.mp4"), 1)
                 .await
                 .unwrap();
-            assert_eq!(strip.file_name().unwrap(), "added.mp4.strip180-1.jpg");
+            assert_eq!(strip.file_name().unwrap(), "added.mp4.strip180f-1.jpg");
             let bytes = std::fs::read(&strip).unwrap();
             // JPEG SOF0: 60 frames of 320x180 side by side.
             let sof = bytes.windows(2).position(|w| w == [0xFF, 0xC0]).unwrap();

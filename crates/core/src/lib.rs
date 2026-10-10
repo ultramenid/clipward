@@ -36,6 +36,7 @@ pub mod sources;
 pub mod timeline;
 pub mod timeline_view;
 pub mod tools;
+pub mod updater;
 pub mod validation;
 pub mod video_source;
 pub mod whisper;

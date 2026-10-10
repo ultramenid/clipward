@@ -264,12 +264,23 @@ impl Arcade {
                                 }
                                 let scale = f32::from(window.rem_size()) / 16.0;
                                 let def = &GAMES[i];
+                                // Whole device pixels per cell, or the matrix aliases into uneven stripes.
+                                let sf = window.scale_factor();
                                 let pitch = match def.fit {
-                                    Some((cols, rows)) => (f32::from(bounds.size.width) / cols as f32)
-                                        .min(f32::from(bounds.size.height) / rows as f32),
-                                    None => def.pitch * if playing { 1.5 } else { 1.0 } * scale,
-                                };
+                                    Some((cols, rows)) => {
+                                        let across = f32::from(bounds.size.width) / cols as f32;
+                                        let down = f32::from(bounds.size.height) / rows as f32;
+                                        (if playing { across.min(down) } else { across } * sf).floor()
+                                    }
+                                    None => (def.pitch * if playing { 1.5 } else { 1.0 } * scale * sf).round(),
+                                }
+                                .max(2.0)
+                                    / sf;
                                 let (cols, rows) = Board::grid(bounds, pitch);
+                                // Too little room left for a game to show.
+                                if f32::from(bounds.size.height) < 48. || cols < 1 || rows < 1 {
+                                    return;
+                                }
                                 let mut boards = boards.borrow_mut();
                                 if boards.grids[i] != Some((cols, rows, playing)) {
                                     boards.grids[i] = Some((cols, rows, playing));
@@ -310,9 +321,7 @@ impl Arcade {
         div()
             .id("arcade")
             .relative()
-            .h(u(224.))
-            .w_full()
-            .flex_shrink_0()
+            .size_full()
             .font_family(crate::MONO_FONT)
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                 this.hovered = *hovered;
@@ -556,9 +565,7 @@ impl Render for Arcade {
             window.request_animation_frame();
             // Keeps its place in the page while the board fills the window.
             return div()
-                .h(u(224.))
-                .w_full()
-                .flex_shrink_0()
+                .size_full()
                 .child(self.full_screen(window, &t, cx))
                 .into_any_element();
         }

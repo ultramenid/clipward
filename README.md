@@ -15,7 +15,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
-  <a href="https://github.com/clipward/clipward/releases"><img src="https://img.shields.io/github/v/release/clipward/clipward?label=download" alt="Latest release" /></a>
+  <a href="https://github.com/ultramenid/clipward/releases"><img src="https://img.shields.io/github/v/release/ultramenid/clipward?label=download" alt="Latest release" /></a>
   <a href="https://www.clipward.ai/discord"><img src="https://img.shields.io/badge/Discord-builders-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
 </p>
 
@@ -50,7 +50,7 @@ In **Create → Format → Video speed**, choose **1×** (normal), **1.1×**, **
 
 ## Download
 
-Signed macOS builds for Apple silicon and Intel will appear on [Releases](https://github.com/clipward/clipward/releases) after release testing. Those builds bundle FFmpeg and yt-dlp. Until then, use the development setup below. Windows source builds are experimental and are not part of the supported release workflow.
+Get the latest version from [Releases](https://github.com/ultramenid/clipward/releases): a DMG for Apple silicon Macs, a zip for Windows (x64) and a tarball for Linux (x64). Each bundles FFmpeg and yt-dlp. The builds aren't code-signed yet, so macOS and Windows warn on first launch; the release page has the steps to open them. After that, Clipward updates itself: it checks when it opens, and **Settings → Help & about → Update and restart** installs the new version.
 
 On first launch, the setup card on Create asks for two things:
 
@@ -86,7 +86,7 @@ Clipward is a Rust app: a [GPUI](https://www.gpui.rs) desktop shell over a clipp
 Clipward uses FFmpeg and yt-dlp from `engine-bin/` when that folder exists, and otherwise from your `PATH`. Provider keys are only needed for live jobs, not for tests.
 
 ```bash
-git clone https://github.com/clipward/clipward
+git clone https://github.com/ultramenid/clipward
 cd clipward
 cargo run -p clipward_app
 ```

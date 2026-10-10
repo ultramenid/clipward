@@ -275,14 +275,14 @@ impl CreatePage {
         let status = job_form::status_line(check, blocked, ui::MOD_KEY);
         let next = check.next().filter(|_| check.step != WizardStep::Review);
         let generate = self.on_click(cx, |this, _, cx| this.submit(cx));
-        div()
+        // Styled like the step card above it, so the two read as one panel.
+        ui::card(&t)
+            .mb(u(16.))
             .flex()
             .items_center()
             .gap(u(12.))
-            .py(u(12.))
-            .border_t_1()
-            .border_color(t.stroke)
-            .bg(t.bg.opacity(t.glass_strip))
+            .px(u(12.))
+            .py(u(10.))
             .child(match check.back() {
                 Some(back) => Btn::new("back")
                     .ghost()

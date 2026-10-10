@@ -33,4 +33,4 @@ Keep the `resources` folder next to `clipward`. Needs a desktop with Vulkan grap
 ### Known limits
 
 - Recording a voiceover in the editor works on macOS only for now.
-- There's no auto-update yet: download new versions from this page.
+- Clipward updates itself from here on: it checks when it opens, and **Settings → Help & about → Update and restart** installs the new version (no install warning this time). If that fails, download the new version from its release page.

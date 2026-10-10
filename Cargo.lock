@@ -1036,7 +1036,7 @@ dependencies = [
 
 [[package]]
 name = "clip_engine"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ab_glyph",
  "base64 0.22.1",
@@ -1067,7 +1067,7 @@ dependencies = [
 
 [[package]]
 name = "clipward_app"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "block2 0.6.2",
  "clipward_core",
@@ -1090,7 +1090,7 @@ dependencies = [
 
 [[package]]
 name = "clipward_core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "clip_engine",

@@ -3,7 +3,7 @@
 //!
 //! The window has a transparent title bar, so both top strips drag the window and
 //! the sidebar's strip holds the macOS traffic lights.
-use crate::models::{Jobs, Settings, SettingsChanged};
+use crate::models::{Jobs, Settings, SettingsChanged, Updater};
 use crate::theme::{self, ActiveTokens, Tokens};
 use crate::ui::{self, Tone, TypeScale, Truncate, u};
 use clipward_core::jobs::JobSnapshot;
@@ -86,6 +86,7 @@ impl Workspace {
         let subscriptions = vec![
             cx.observe(&settings, |_, _, cx| cx.notify()),
             cx.observe(&jobs, |_, _, cx| cx.notify()),
+            cx.observe(&Updater::global(cx), |_, _, cx| cx.notify()),
             cx.subscribe_in(&settings, window, |_, settings, _: &SettingsChanged, window, cx| {
                 apply_appearance(&settings, window, cx);
             }),
@@ -365,6 +366,8 @@ impl Workspace {
             (Tone::Danger, "System check failed")
         } else if setup.tools_ok.is_none() {
             (Tone::Idle, "Checking system…")
+        } else if Updater::global(cx).read(cx).available().is_some() {
+            (Tone::Accent, "Update available")
         } else {
             (Tone::Success, "Ready to clip")
         };

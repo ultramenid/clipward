@@ -33,9 +33,10 @@ impl Board<'_> {
         let (cols, rows) = Self::grid(bounds, pitch);
         let w = f32::from(bounds.size.width);
         let h = f32::from(bounds.size.height);
+        // Snapped to whole pixels so every cell renders the same size.
         (
-            f32::from(bounds.origin.x) + (w - cols as f32 * pitch) / 2.0,
-            f32::from(bounds.origin.y) + (h - rows as f32 * pitch) / 2.0,
+            (f32::from(bounds.origin.x) + (w - cols as f32 * pitch) / 2.0).round(),
+            (f32::from(bounds.origin.y) + (h - rows as f32 * pitch) / 2.0).round(),
         )
     }
 

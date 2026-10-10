@@ -64,7 +64,7 @@ pub struct GameDef {
     /// Grid pitch in CSS pixels.
     pub pitch: f32,
     /// A board of fixed size instead: the pitch stretches so this many cells
-    /// fill the space.
+    /// fill the space (full screen), or fill the width (the idle band).
     pub fit: Option<(i32, i32)>,
     /// Whether the unlit dot matrix shows behind the game.
     pub matrix: bool,
@@ -633,6 +633,8 @@ struct Pacman {
     /// Where tile (0, 0) sits on the board grid: the maze is centered.
     ox: f32,
     oy: f32,
+    /// Board rows; fewer than the maze's and the view pans to follow pac-man.
+    rows: i32,
     walls: Vec<[f32; 4]>,
     /// 1 for a dot, 2 for an energizer, by tile.
     dots: Vec<u8>,
@@ -667,7 +669,7 @@ impl Pacman {
     fn new(seed: u64) -> Self {
         let at = Mover { x: 0.0, y: 0.0, dir: LEFT };
         let ghost = Ghost { at, state: Haunt::House, scared: false, dots: 0 };
-        Self { ox: 0.0, oy: 0.0, walls: outline(), dots: Vec::new(), left: 0, eaten: 0, pac: at, want: None, chomp: 0.0, ghosts: [ghost; 4], phase: Phase::Ready(0.0), level: 1, clock: 0.0, fright: 0.0, combo: 0, fruit: 0.0, idle: 0.0, regroup: None, time: 0.0, score: 0, lives: 3, over: false, rng: Rng::new(seed) }
+        Self { ox: 0.0, oy: 0.0, rows: 0, walls: outline(), dots: Vec::new(), left: 0, eaten: 0, pac: at, want: None, chomp: 0.0, ghosts: [ghost; 4], phase: Phase::Ready(0.0), level: 1, clock: 0.0, fright: 0.0, combo: 0, fruit: 0.0, idle: 0.0, regroup: None, time: 0.0, score: 0, lives: 3, over: false, rng: Rng::new(seed) }
     }
 
     /// A full maze for the current level.
@@ -1039,6 +1041,7 @@ impl Game for Pacman {
     fn resize(&mut self, cols: i32, rows: i32) {
         self.ox = (cols - MAZE_W) as f32 / 2.0;
         self.oy = (rows - MAZE_H) as f32 / 2.0;
+        self.rows = rows;
         self.reset();
     }
     fn reset(&mut self) {
@@ -1094,7 +1097,13 @@ impl Game for Pacman {
         self.collide(controlled);
     }
     fn draw(&self, d: &mut dyn Draw) {
-        let (ox, oy) = (self.ox, self.oy);
+        let ox = self.ox;
+        // A board shorter than the maze shows the slice around pac-man, a tile of margin at the ends.
+        let oy = if self.rows < MAZE_H + 2 {
+            (self.rows as f32 / 2.0 - self.pac.y - 0.5).clamp((self.rows - MAZE_H - 1) as f32, 1.0)
+        } else {
+            self.oy
+        };
         // The maze flashes once it's cleared.
         let flash = matches!(self.phase, Phase::Cleared(t) if (t * 4.0) as i32 % 2 == 1);
         let line = if flash { 0.2 } else { 0.7 };

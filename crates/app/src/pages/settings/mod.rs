@@ -1,6 +1,7 @@
 //! Settings (SettingsPage.tsx): a section nav with scroll spy, readiness tiles,
-//! and the AI provider, Transcription, Vocabulary, Output, Appearance, System
-//! check and About panels. Changes save as they are made.
+//! and plain-language sections: AI, Speech to text (with custom words), Files,
+//! Look, and Help & about. Rarely needed controls fold under "More
+//! options". Changes save as they are made.
 mod appearance;
 mod color_picker;
 pub mod provider_setup;
@@ -10,7 +11,7 @@ mod widgets;
 pub use provider_setup::ProviderSetup;
 pub use whisper_models::WhisperModels;
 
-use crate::models::{Settings, SettingsChanged};
+use crate::models::{Jobs, Settings, SettingsChanged, UpdateState, Updater};
 use crate::theme::{ActiveTokens, Tokens};
 use crate::ui::{self, Btn, Hue, Tone, TypeScale, Truncate, u};
 use crate::{shell, state};
@@ -35,18 +36,16 @@ use std::time::{Duration, Instant};
 
 use widgets::{Choice, error_text, refresh_button, tile_columns};
 
-const SECTIONS: [(&str, &str); 7] = [
-    ("AI provider", "sparkles"),
-    ("Transcription", "audio-lines"),
-    ("Vocabulary", "book-a"),
-    ("Output", "folder-open"),
-    ("Appearance", "app-window"),
-    ("System check", "cpu"),
-    ("About", "info"),
+const SECTIONS: [(&str, &str); 5] = [
+    ("AI", "sparkles"),
+    ("Speech to text", "audio-lines"),
+    ("Files", "folder-open"),
+    ("Look", "app-window"),
+    ("Help & about", "info"),
 ];
 const AI: usize = 0;
 const TRANSCRIPTION: usize = 1;
-const SYSTEM: usize = 5;
+const SYSTEM: usize = 4;
 
 /// How far below the top of the scroll area a section counts as reached (CSS px).
 const ACTIVE_OFFSET: f32 = 48.;
@@ -95,6 +94,8 @@ pub struct SettingsPage {
     retention: Entity<RetentionSelect>,
     tools_expanded: bool,
     // Appearance (appearance.rs)
+    /// Colors and the rail, folded by default.
+    appearance_more: bool,
     appearance_draft: Option<Appearance>,
     appearance_saved_at: Option<Instant>,
     appearance_flush: Option<Task<()>>,
@@ -139,6 +140,8 @@ impl SettingsPage {
 
         let mut subscriptions = vec![
             cx.observe(&settings, |_, _, cx| cx.notify()),
+            cx.observe(&Updater::global(cx), |_, _, cx| cx.notify()),
+            cx.observe(&Jobs::global(cx), |_, _, cx| cx.notify()),
             cx.subscribe_in(&settings, window, |this, _, _: &SettingsChanged, window, cx| {
                 this.sync(window, cx);
             }),
@@ -185,6 +188,7 @@ impl SettingsPage {
             sources_error: None,
             retention,
             tools_expanded: false,
+            appearance_more: false,
             appearance_draft: None,
             appearance_saved_at: None,
             appearance_flush: None,
@@ -452,28 +456,28 @@ impl SettingsPage {
         let (tools_ok, tools_detail) = tools_summary(settings.tool_status.as_ref(), settings.checking_tools);
         let checks: [(&str, Option<bool>, String, usize, Tone); 3] = [
             (
-                "AI provider",
+                "AI",
                 Some(setup.provider_ready),
                 if setup.provider_ready {
                     catalog::provider_label(&s.ai_provider)
                 } else {
-                    "Pick a CLI, add a key or set up Local AI".into()
+                    "Choose an AI app or add a key".into()
                 },
                 AI,
                 Tone::Warning,
             ),
             (
-                "Whisper",
+                "Speech to text",
                 Some(setup.whisper_ready),
                 if setup.whisper_ready {
                     catalog::whisper_label(&s.whisper_model).to_string()
                 } else {
-                    "Download a model".into()
+                    "Download a speech model".into()
                 },
                 TRANSCRIPTION,
                 Tone::Warning,
             ),
-            ("Tools", tools_ok, tools_detail, SYSTEM, Tone::Danger),
+            ("App tools", tools_ok, tools_detail, SYSTEM, Tone::Danger),
         ];
         let blocking = checks.iter().filter(|c| c.1 == Some(false)).count();
         let t = *t;
@@ -499,7 +503,7 @@ impl SettingsPage {
                                 "Ready to clip".into()
                             }))
                             .child(div().mt(u(2.)).text_caption().text_color(t.ink_secondary).child(format!(
-                                "{APP_NAME} runs on this computer. Whisper transcribes offline; your CLI plan or API key picks the clips."
+                                "{APP_NAME} works on this computer. Speech is turned into text here; your AI picks the best moments."
                             ))),
                     ),
             )
@@ -538,14 +542,12 @@ impl SettingsPage {
         let settings = self.settings.read(cx);
         let setup = settings.setup();
         let (tools_ok, _) = tools_summary(settings.tool_status.as_ref(), settings.checking_tools);
-        let tones = [
+        let tones: [Option<Tone>; SECTIONS.len()] = [
             Some(if setup.provider_ready { Tone::Success } else { Tone::Warning }),
             Some(if setup.whisper_ready { Tone::Success } else { Tone::Warning }),
             None,
             None,
-            None,
             tools_ok.map(|ok| if ok { Tone::Success } else { Tone::Danger }),
-            None,
         ];
         let active = self.spy.borrow().active;
         let t = *t;
@@ -598,8 +600,8 @@ impl SettingsPage {
         ui::panel(t)
             .child(ui::panel_header(
                 Some(ui::icon_tile("book-a", Hue::Neutral, 24., t)),
-                "Custom vocabulary",
-                Some("Names, products and jargon Whisper should spell exactly, one per line. Put the campaign's brand and creator names here.".into()),
+                "Words to spell exactly",
+                Some("Names, brands and terms to get right in captions, one per line.".into()),
                 (terms > 0).then(|| {
                     ui::badge(format!("{terms} term{}", if terms == 1 { "" } else { "s" }), Hue::Neutral, t).into_any_element()
                 }),
@@ -610,7 +612,7 @@ impl SettingsPage {
                     .mt(u(16.))
                     .child(Textarea::new(&self.vocabulary).text_body())
                     .child(div().mt(u(8.)).text_caption().text_color(t.ink_secondary).child(
-                        "Up to five words per term. Applies to new transcriptions; generated metadata uses it right away.",
+                        "Up to five words each. Applies to videos you add from now on.",
                     )),
             )
             .into_any_element()
@@ -633,8 +635,8 @@ impl SettingsPage {
         ui::panel(&t)
             .child(ui::panel_header(
                 Some(ui::icon_tile("folder-open", Hue::Neutral, 24., &t)),
-                "Output",
-                Some("Every run gets its own folder of clips, transcript and plan.".into()),
+                "Where clips are saved",
+                Some("Each video gets its own folder inside this one.".into()),
                 None,
                 &t,
             ))
@@ -673,12 +675,12 @@ impl SettingsPage {
                     .flex_col()
                     .gap(u(8.))
                     .child(ui::setting_row(
-                        "Keep source videos",
-                        Some("Opening a clip in the editor needs the video it was cut from. Your own files are never copied or deleted.".into()),
+                        "Keep original videos",
+                        Some("Needed to edit clips later. Your own files are never moved or deleted.".into()),
                         div().w(u(224.)).flex_shrink_0().child(
                             Select::new(&self.retention)
                                 .with_size(Size::Small)
-                                .accessibility_label("Keep source videos")
+                                .accessibility_label("Keep original videos")
                                 .text_caption()
                                 .disabled(self.sources_busy),
                         ),
@@ -686,7 +688,7 @@ impl SettingsPage {
                         &t,
                     ))
                     .child(ui::setting_row(
-                        "Kept source videos",
+                        "Space used by originals",
                         Some(usage_text.into()),
                         Btn::new("delete-sources")
                             .small()
@@ -714,10 +716,10 @@ impl SettingsPage {
         ui::panel(&t)
             .child(ui::panel_header(
                 Some(ui::icon_tile("cpu", if checked && missing > 0 { Hue::Danger } else { Hue::Neutral }, 24., &t)),
-                "System check",
-                Some("Tools Clipward needs to download, transcribe and cut video.".into()),
+                "App tools",
+                Some("What Clipward uses to download, transcribe and cut video.".into()),
                 Some(
-                    refresh_button("recheck", "Re-check", checking, false, &t)
+                    refresh_button("recheck", "Check again", checking, false, &t)
                         .when(!checking, |b| {
                             b.on_click(cx.listener(|this, _, _, cx| this.settings.update(cx, |s, cx| s.check_tools(cx))))
                         })
@@ -744,7 +746,7 @@ impl SettingsPage {
                                         .child(if missing > 0 {
                                             format!("{missing} required tool{} missing", if missing == 1 { "" } else { "s" })
                                         } else {
-                                            format!("Everything Clipward needs is installed ({found} tools)")
+                                            format!("Everything Clipward needs is ready ({found} tools)")
                                         }),
                                 )
                                 .when(missing == 0, |row| {
@@ -829,6 +831,138 @@ impl SettingsPage {
                     &t,
                 )))
             })
+            .into_any_element()
+    }
+
+    /// Updates: check, then download, install and restart in one click.
+    fn updates_panel(&self, t: &Tokens, cx: &mut Context<Self>) -> AnyElement {
+        let t = *t;
+        let updater = Updater::global(cx);
+        let state = updater.read(cx).state.clone();
+        let installable = Updater::installable();
+        // A restart would stop running and queued jobs.
+        let jobs_busy = !Jobs::global(cx).read(cx).active().is_empty();
+        let check = {
+            let updater = updater.clone();
+            Btn::new("check-updates")
+                .small()
+                .icon("refresh-cw")
+                .label("Check for updates")
+                .loading(matches!(state, UpdateState::Checking))
+                .on_click(move |_, _, cx| updater.update(cx, |u, cx| u.check(cx)))
+        };
+        let caption = |text: String, color: Hsla| div().text_caption().text_color(color).child(text);
+        let (line, action): (AnyElement, Option<AnyElement>) = match &state {
+            UpdateState::Idle | UpdateState::Checking => (
+                caption(format!("You have version {}.", env!("CARGO_PKG_VERSION")), t.ink_secondary).into_any_element(),
+                Some(check.into_any_element()),
+            ),
+            UpdateState::Latest => (
+                caption("You have the latest version.".into(), t.ink_secondary).into_any_element(),
+                Some(check.into_any_element()),
+            ),
+            UpdateState::Available(update) | UpdateState::Failed { update: Some(update), .. } => {
+                let page = update.page_url.clone();
+                let failed = match &state {
+                    UpdateState::Failed { message, .. } => Some(message.clone()),
+                    _ => None,
+                };
+                let line = div()
+                    .flex()
+                    .flex_col()
+                    .gap(u(2.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap(u(6.))
+                            .text_caption()
+                            .text_color(t.ink)
+                            .child(format!("Version {} is available.", update.version))
+                            .child(
+                                div()
+                                    .id("whats-new")
+                                    .text_color(t.accent_fg)
+                                    .underline()
+                                    .cursor_pointer()
+                                    .on_click({
+                                        let page = page.clone();
+                                        move |_, _, cx| {
+                                            let _ = shell::open_url(&page, cx);
+                                        }
+                                    })
+                                    .child("What's new"),
+                            ),
+                    )
+                    .when_some(failed, |d, message| d.child(caption(message, t.danger)))
+                    .when(installable && jobs_busy, |d| {
+                        d.child(caption("Finish or cancel your jobs first; updating restarts Clipward.".into(), t.ink_secondary))
+                    });
+                let action = if installable {
+                    let updater = updater.clone();
+                    Btn::new("install-update")
+                        .small()
+                        .primary()
+                        .icon("download")
+                        .label("Update and restart")
+                        .disabled(jobs_busy)
+                        .on_click(move |_, _, cx| updater.update(cx, |u, cx| u.install(cx)))
+                } else {
+                    // A development build: get the package by hand.
+                    Btn::new("install-update").small().primary().icon("download").label("Download").on_click(
+                        move |_, _, cx| {
+                            let _ = shell::open_url(&page, cx);
+                        },
+                    )
+                };
+                (line.into_any_element(), Some(action.into_any_element()))
+            }
+            UpdateState::Downloading { update, received, total } => {
+                let percent = if *total > 0 { *received as f64 / *total as f64 * 100.0 } else { 0.0 };
+                (
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(u(6.))
+                        .child(caption(
+                            format!(
+                                "Downloading version {}… {} of {}",
+                                update.version,
+                                clipward_core::format::format_bytes(*received),
+                                clipward_core::format::format_bytes(*total)
+                            ),
+                            t.ink_secondary,
+                        ))
+                        .child(ui::progress_bar(percent, 4., &t))
+                        .into_any_element(),
+                    None,
+                )
+            }
+            UpdateState::Installing(update) => (
+                caption(format!("Installed version {}. Restarting…", update.version), t.ink_secondary).into_any_element(),
+                None,
+            ),
+            UpdateState::Failed { message, update: None } => {
+                (caption(message.clone(), t.danger).into_any_element(), Some(check.into_any_element()))
+            }
+        };
+        ui::panel(&t)
+            .child(ui::panel_header(
+                Some(ui::icon_tile("download", Hue::Neutral, 24., &t)),
+                "Updates",
+                Some("New versions install in one click. Your clips and settings stay.".into()),
+                None,
+                &t,
+            ))
+            .child(
+                div()
+                    .mt(u(12.))
+                    .flex()
+                    .items_center()
+                    .gap(u(12.))
+                    .child(div().flex_1().min_w_0().child(line))
+                    .children(action),
+            )
             .into_any_element()
     }
 
@@ -927,33 +1061,41 @@ impl Render for SettingsPage {
             .gap(u(16.))
             .on_children_prepainted(self.spy_sections(cx))
             .child(self.readiness(columns, &t, cx))
+            // One child per entry in SECTIONS after the readiness panel: the scroll spy counts them.
             .child(
                 ui::panel(&t)
                     .child(ui::panel_header(
                         Some(ui::icon_tile("sparkles", Hue::Accent, 24., &t)),
-                        "AI provider",
-                        Some("Reads the transcript and picks the clips that fit your brief. Use a CLI you're already logged in to, or your own API key.".into()),
+                        "AI that picks your clips",
+                        Some("It reads what's said in the video and picks the best moments. Use an AI app you're signed in to, or add a key.".into()),
                         None,
                         &t,
                     ))
                     .child(div().mt(u(16.)).child(self.provider.clone())),
             )
             .child(
-                ui::panel(&t)
-                    .child(ui::panel_header(
-                        Some(ui::icon_tile("audio-lines", Hue::Neutral, 24., &t)),
-                        "Transcription",
-                        Some("Whisper runs on this computer with whisper.cpp; audio never leaves it. Larger models are more accurate and slower.".into()),
-                        None,
-                        &t,
-                    ))
-                    .child(div().mt(u(16.)).child(self.whisper.clone())),
+                section()
+                    .child(
+                        ui::panel(&t)
+                            .child(ui::panel_header(
+                                Some(ui::icon_tile("audio-lines", Hue::Neutral, 24., &t)),
+                                "Speech to text",
+                                Some("Turns what's said into text, right on this computer; audio never leaves it. Bigger models are more accurate but slower.".into()),
+                                None,
+                                &t,
+                            ))
+                            .child(div().mt(u(16.)).child(self.whisper.clone())),
+                    )
+                    .child(self.vocabulary_panel(&s.custom_vocabulary, &t)),
             )
-            .child(self.vocabulary_panel(&s.custom_vocabulary, &t))
             .child(self.output_panel(&s, &t, cx))
             .child(self.appearance_panel(window, &t, cx))
-            .child(self.system_panel(&t, cx))
-            .child(self.about_panel(&t));
+            .child(
+                section()
+                    .child(self.updates_panel(&t, cx))
+                    .child(self.system_panel(&t, cx))
+                    .child(self.about_panel(&t)),
+            );
 
         div()
             .id("settings-scroll")
@@ -986,6 +1128,11 @@ impl Render for SettingsPage {
                     ),
             )
     }
+}
+
+/// Panels that share one entry in the section nav.
+fn section() -> Div {
+    div().flex().flex_col().gap(u(16.))
 }
 
 /// A Badge with a leading icon.

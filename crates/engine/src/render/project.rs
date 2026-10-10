@@ -1570,7 +1570,13 @@ pub async fn filmstrip(ffmpeg: &Path, file: &Path, block: u32, out: &Path, cance
     args.extend(MEDIA_INPUT_OPTIONS.iter().map(|v| v.to_string()));
     args.extend(["-t".into(), FILMSTRIP_BLOCK_S.to_string(), "-i".into(), file.to_string_lossy().into_owned()]);
     args.extend(["-an", "-sn", "-vf"].map(String::from));
-    args.push(format!("fps=1,scale=-2:{FILMSTRIP_HEIGHT},tile={FILMSTRIP_BLOCK_S}x1"));
+    // The first frame of each second, so frame k is second k. `fps=1` takes the frame
+    // nearest k + 0.5, which put every thumbnail half a second ahead of the preview.
+    // The first frame always counts, and a frame just after it (when seeking lands a
+    // hair before 0) does not.
+    args.push(format!(
+        "select='eq(n,0)+gt(floor(t),floor(prev_t))*gte(t,0.5)',scale=-2:{FILMSTRIP_HEIGHT},tile={FILMSTRIP_BLOCK_S}x1"
+    ));
     args.extend(["-frames:v", "1", "-q:v", "6"].map(String::from));
     args.push(out.to_string_lossy().into_owned());
     let done = run_bounded(ffmpeg, &args, MEDIA_TIMEOUT, MAX_TOOL_OUTPUT_BYTES, cancel).await?;

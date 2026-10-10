@@ -35,6 +35,11 @@ impl Timeline {
     /// The height the timeline takes: the ruler, every track and the main track at the
     /// editor's track height (nothing until the clip loads). A parent caching this view
     /// lays it out at this height.
+    /// Zoom by `factor` about the playhead (the toolbar's zoom buttons).
+    pub fn zoom_by(&self, factor: f64, cx: &mut App) {
+        self.tracks.update(cx, |tracks, cx| tracks.zoom_by(factor, cx));
+    }
+
     pub fn height(&self, cx: &App) -> Rems {
         u(self.tracks.read(cx).height() as f32)
     }

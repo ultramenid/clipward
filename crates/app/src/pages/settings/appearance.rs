@@ -4,6 +4,7 @@
 //! and re-themes the window. Slider and picker drags update their value on every
 //! move but save at most every 100 ms (and on release), so dragging stays smooth.
 use super::SettingsPage;
+use super::widgets::more_toggle;
 use crate::theme::Tokens;
 use crate::ui::{self, Btn, Hue, TypeScale, u};
 use clipward_core::appearance::{
@@ -428,53 +429,28 @@ impl SettingsPage {
         ui::panel(t)
             .child(ui::panel_header(
                 Some(ui::icon_tile("app-window", Hue::Neutral, 24., t)),
-                "Appearance",
-                Some("How Clipward looks on this computer. Changes show as you make them.".into()),
+                "Look",
+                Some("How Clipward looks on this computer.".into()),
                 Some(
                     Btn::new("reset-appearance")
                         .small()
                         .ghost()
                         .icon("rotate-ccw")
-                        .label("Reset appearance")
+                        .label("Reset")
                         .on_click(cx.listener(|this, _, _, cx| this.reset_appearance(cx)))
                         .into_any_element(),
                 ),
                 t,
             ))
-            .child(group(
-                "Theme",
-                Some("Dark and light share the same tint, so the color settings below apply to both."),
-                vec![
-                    row("Theme", "System follows the OS appearance.".into(), theme.into_any_element()),
-                    row(
-                        "Accent color",
-                        "Primary buttons, chosen options, progress and focus rings.".into(),
-                        self.accent_picker(&a, light, t, cx),
-                    ),
-                ],
-            ))
-            .child(group(
-                "Color",
-                Some("Hue and saturation tint every surface. Lightness only moves the dark theme."),
-                vec![
-                    row("Hue", "Base hue for tinted surfaces.".into(), self.slider(SliderKind::Hue, false, &a, t)),
-                    row(
-                        "Saturation",
-                        "How strongly the hue tints the interface. Zero keeps it neutral.".into(),
-                        self.slider(SliderKind::Saturation, false, &a, t),
-                    ),
-                    row(
-                        "Dark-mode lightness",
-                        if light {
-                            "This only affects dark mode. Your dark-mode value is preserved."
-                        } else {
-                            "Base brightness of the dark theme. Lower values are darker; zero is true black."
-                        }
-                        .into(),
-                        self.slider(SliderKind::DarkLightness, light, &a, t),
-                    ),
-                ],
-            ))
+            .child(div().mt(u(16.)).flex().flex_col().gap(u(6.)).children([
+                row("Theme", "System matches your computer.".into(), theme.into_any_element()),
+                row("Accent color", "Buttons, selections and progress.".into(), self.accent_picker(&a, light, t, cx)),
+                row(
+                    "Text size",
+                    format!("Make everything bigger or smaller. You can also use {mod_key}= and {mod_key}-."),
+                    self.slider(SliderKind::UiScale, false, &a, t),
+                ),
+            ]))
             .child(group(
                 "Translucency",
                 Some(translucency_note),
@@ -512,6 +488,36 @@ impl SettingsPage {
                     ),
                 ],
             ))
+            .child(
+                div().mt(u(12.)).flex().child(more_toggle("appearance-more", self.appearance_more).on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.appearance_more = !this.appearance_more;
+                        cx.notify();
+                    },
+                ))),
+            )
+            .when(self.appearance_more, |panel| panel.child(group(
+                "Color",
+                Some("Hue and saturation tint every surface. Lightness only moves the dark theme."),
+                vec![
+                    row("Hue", "Base hue for tinted surfaces.".into(), self.slider(SliderKind::Hue, false, &a, t)),
+                    row(
+                        "Saturation",
+                        "How strongly the hue tints the interface. Zero keeps it neutral.".into(),
+                        self.slider(SliderKind::Saturation, false, &a, t),
+                    ),
+                    row(
+                        "Dark-mode lightness",
+                        if light {
+                            "This only affects dark mode. Your dark-mode value is preserved."
+                        } else {
+                            "Base brightness of the dark theme. Lower values are darker; zero is true black."
+                        }
+                        .into(),
+                        self.slider(SliderKind::DarkLightness, light, &a, t),
+                    ),
+                ],
+            ))
             .child(group(
                 "Layout",
                 None,
@@ -524,13 +530,8 @@ impl SettingsPage {
                         ui::switch("collapsed-rail", a.collapsed_rail, false, toggle(|a, on| a.collapsed_rail = on), t)
                             .into_any_element(),
                     ),
-                    row(
-                        "Interface scale",
-                        format!("Zoom the whole interface. You can also use {mod_key}=, {mod_key}- and {mod_key}0."),
-                        self.slider(SliderKind::UiScale, false, &a, t),
-                    ),
                 ],
-            ))
+            )))
             .into_any_element()
     }
 }

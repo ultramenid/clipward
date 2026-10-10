@@ -806,9 +806,9 @@ impl Render for ProviderSetup {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(eyebrow("Use a CLI you're logged in to", &t))
+                    .child(eyebrow("Use an AI app you're signed in to", &t))
                     .child(
-                        refresh_button("detect-clis", "Detect again", self.detecting, true, &t)
+                        refresh_button("detect-clis", "Check again", self.detecting, true, &t)
                             .when(!self.detecting, |b| b.on_click(cx.listener(|this, _, _, cx| this.redetect(cx)))),
                     ),
             )
@@ -818,7 +818,7 @@ impl Render for ProviderSetup {
                     .text_caption()
                     .text_color(t.ink_secondary)
                     .child(format!(
-                        "No supported CLI found. Install and log in to one of: {}. Or use an API key or a local model below.",
+                        "No AI app found. Install and sign in to one of: {}. Or add a key below.",
                         names.join(", ")
                     ))
                     .into_any_element()
@@ -866,7 +866,7 @@ impl Render for ProviderSetup {
             });
 
         let api_section = div()
-            .child(eyebrow("Or bring your own API key", &t).mb(u(8.)))
+            .child(eyebrow("Or add a key from an AI service", &t).mb(u(8.)))
             .child(div().grid().grid_cols(3).gap(u(8.)).children(API_PROVIDERS.iter().enumerate().map(|(i, provider)| {
                 let selected = s.ai_provider == provider.id;
                 let id = provider.id.to_string();
@@ -900,7 +900,7 @@ impl Render for ProviderSetup {
             });
 
         let local_section = div()
-            .child(eyebrow("Or run a model on your own computer", &t).mb(u(8.)))
+            .child(eyebrow("Or run AI on this computer", &t).mb(u(8.)))
             .child(
                 div().grid().grid_cols(if columns == 3 { 3 } else { 1 }).gap(u(8.)).child(
                     option_tile("local", local, &t)

@@ -1,5 +1,5 @@
-//! App-wide state the views share: settings with setup readiness, and the
-//! session's jobs. Ports `use-settings-store.ts` and `use-job-store.ts`.
+//! App-wide state the views share: settings with setup readiness, the
+//! session's jobs, and app updates. Ports `use-settings-store.ts` and `use-job-store.ts`.
 //!
 //! Settings calls are synchronous (a cached struct and a small JSON write), so
 //! they run on the UI thread in order; the TS store's save queue isn't needed.
@@ -11,6 +11,7 @@ use clipward_core::jobs::JobSnapshot;
 use clipward_core::settings::{EditableSettings, PublicSettings};
 use clipward_core::job_list::JobList;
 use clipward_core::readiness;
+use clipward_core::updater::{self, Update};
 use clipward_core::whisper::WhisperModelStatus;
 use gpui_kit::{App, AppContext, Context, Entity, EventEmitter, Global, Task};
 
@@ -240,9 +241,128 @@ impl Jobs {
     }
 }
 
+/// Where an app update stands (`clipward_core::updater`).
+#[derive(Clone, Debug, Default)]
+pub enum UpdateState {
+    #[default]
+    Idle,
+    Checking,
+    Latest,
+    Available(Update),
+    Downloading { update: Update, received: u64, total: u64 },
+    /// Installed; the app is about to restart.
+    Installing(Update),
+    Failed { message: String, update: Option<Update> },
+}
+
+/// Checks GitHub for a newer release at launch and installs it on request.
+#[derive(Default)]
+pub struct Updater {
+    pub state: UpdateState,
+    task: Option<Task<()>>,
+}
+
+impl Updater {
+    pub fn global(cx: &App) -> Entity<Self> {
+        cx.global::<GlobalModels>().updater.clone()
+    }
+
+    /// Whether this copy can update itself (an installed app, not a dev build).
+    pub fn installable() -> bool {
+        updater::install_target().is_some()
+    }
+
+    pub fn available(&self) -> Option<&Update> {
+        match &self.state {
+            UpdateState::Available(update) | UpdateState::Failed { update: Some(update), .. } => Some(update),
+            _ => None,
+        }
+    }
+
+    pub fn busy(&self) -> bool {
+        matches!(self.state, UpdateState::Checking | UpdateState::Downloading { .. } | UpdateState::Installing(_))
+    }
+
+    pub fn check(&mut self, cx: &mut Context<Self>) {
+        if self.busy() {
+            return;
+        }
+        self.state = UpdateState::Checking;
+        cx.notify();
+        let check = state::run(cx, updater::check(env!("CARGO_PKG_VERSION")));
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let result = check.await;
+            let _ = this.update(cx, |this, cx| {
+                this.state = match result {
+                    Ok(Some(update)) => UpdateState::Available(update),
+                    Ok(None) => UpdateState::Latest,
+                    Err(message) => UpdateState::Failed { message, update: None },
+                };
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Download, verify and swap in the update, then restart into it.
+    pub fn install(&mut self, cx: &mut Context<Self>) {
+        let Some(update) = self.available().cloned() else { return };
+        self.state = UpdateState::Downloading { update: update.clone(), received: 0, total: update.size };
+        cx.notify();
+        let dir = state::core(cx).paths.user_data.join("updates");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(u64, u64)>();
+        let job = {
+            let update = update.clone();
+            state::run(cx, async move {
+                let package = updater::download(&update, &dir, move |got, total| {
+                    let _ = tx.send((got, total));
+                })
+                .await?;
+                tokio::task::spawn_blocking(move || updater::install(&package))
+                    .await
+                    .map_err(|_| "The update couldn't be installed.".to_string())?
+            })
+        };
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let progress = this.clone();
+            let feed = cx.spawn(async move |cx| {
+                while let Some((received, total)) = rx.recv().await {
+                    let _ = progress.update(cx, |this, cx| {
+                        if let UpdateState::Downloading { update, .. } = &this.state {
+                            this.state = UpdateState::Downloading { update: update.clone(), received, total };
+                            cx.notify();
+                        }
+                    });
+                }
+            });
+            let result = job.await;
+            drop(feed);
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(launch) => {
+                    if updater::relaunch(&launch).is_ok() {
+                        this.state = UpdateState::Installing(update);
+                        cx.quit();
+                    } else {
+                        // Installed, just not restarted.
+                        this.state = UpdateState::Failed {
+                            message: format!("Updated to {}. Quit and reopen Clipward to use it.", update.version),
+                            update: None,
+                        };
+                    }
+                    cx.notify();
+                }
+                Err(message) => {
+                    this.state = UpdateState::Failed { message, update: Some(update) };
+                    cx.notify();
+                }
+            });
+        }));
+    }
+}
+
 struct GlobalModels {
     settings: Entity<Settings>,
     jobs: Entity<Jobs>,
+    updater: Entity<Updater>,
 }
 
 impl Global for GlobalModels {}
@@ -261,5 +381,13 @@ pub fn init(job_updates: tokio::sync::mpsc::UnboundedReceiver<JobSnapshot>, cx: 
         }
     })
     .detach();
-    cx.set_global(GlobalModels { settings, jobs });
+    let updater = cx.new(|cx| {
+        let mut updater = Updater::default();
+        updater::cleanup(&state::core(cx).paths.user_data.join("updates"));
+        if Updater::installable() {
+            updater.check(cx);
+        }
+        updater
+    });
+    cx.set_global(GlobalModels { settings, jobs, updater });
 }

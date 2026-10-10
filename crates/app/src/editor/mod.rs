@@ -16,7 +16,7 @@ use gpui_kit::component::{input::{Redo, Undo}, tooltip::Tooltip};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use player::Player;
-use state::{EditorState, Playhead, SaveState, ZOOM_MAX, ZOOM_MIN};
+use state::{EditorState, Playhead, SaveState};
 
 pub mod player;
 pub mod state;
@@ -519,7 +519,6 @@ impl EditorPage {
         let loaded = e.project().is_some();
         let can_remove = e.can_remove();
         let playing = e.playhead.read(cx).playing;
-        let zoom = e.zoom.unwrap_or(60.);
         let recording = self.take.is_some();
         let tool = |id: &'static str, icon: &'static str, label: &'static str, tip: &'static str| {
             ui::Btn::new(id).ghost().small().icon(icon).label(label).tooltip(tip)
@@ -586,18 +585,14 @@ impl EditorPage {
                     .ghost()
                     .icon("zoom-out")
                     .tooltip("Zoom out")
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.editor.update(cx, |e, cx| e.set_zoom((zoom / 1.5).max(ZOOM_MIN), cx))
-                    })),
+                    .on_click(cx.listener(|this, _, _, cx| this.timeline.update(cx, |tl, cx| tl.zoom_by(1. / 1.5, cx)))),
             )
             .child(
                 ui::Btn::new("editor-zoom-in")
                     .ghost()
                     .icon("zoom-in")
                     .tooltip("Zoom in")
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.editor.update(cx, |e, cx| e.set_zoom((zoom * 1.5).min(ZOOM_MAX), cx))
-                    })),
+                    .on_click(cx.listener(|this, _, _, cx| this.timeline.update(cx, |tl, cx| tl.zoom_by(1.5, cx)))),
             )
     }
 
