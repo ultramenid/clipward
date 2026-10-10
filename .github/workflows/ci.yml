@@ -126,6 +126,7 @@ jobs:
             target/bundle/*.zip
             target/bundle/*.tar.gz
           if-no-files-found: error
+          retention-days: 1
 
   release:
     needs: build
@@ -133,6 +134,7 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      actions: write
     steps:
       - uses: actions/checkout@v4
       - name: Tag matches the app version
@@ -157,3 +159,7 @@ jobs:
           sed "s/<version>/${TAG#v}/g" .github/release-notes.md > "$RUNNER_TEMP/notes.md"
           gh release create "$TAG" dist/* --draft --verify-tag --title "Clipward $TAG" \
             --notes-file "$RUNNER_TEMP/notes.md" --generate-notes
+      - name: Delete this run's artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" --paginate --jq '.artifacts[].id' | xargs -r -I{} gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/{}"
