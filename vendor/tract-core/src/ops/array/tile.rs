@@ -1,0 +1,182 @@
+use crate::internal::*;
+
+use super::MultiBroadcastTo;
+
+#[derive(Debug, Clone, new, Default, Hash, PartialEq, Eq)]
+pub struct Tile {
+    pub multipliers: TVec<TDim>,
+}
+
+impl Op for Tile {
+    fn name(&self) -> StaticName {
+        "Tile".into()
+    }
+
+    fn info(&self) -> TractResult<Vec<String>> {
+        Ok(vec![format!("multipliers: {:?}", self.multipliers)])
+    }
+
+    op_as_typed_op!();
+}
+
+impl EvalOp for Tile {
+    op_out_of_plan!();
+
+    fn eval(&self, ctx: &EvalContext, inputs: TVec<TValue>) -> TractResult<TVec<TValue>> {
+        let multipliers: TVec<usize> = self
+            .multipliers
+            .iter()
+            .map(|m| m.eval(ctx.symbols).to_usize())
+            .collect::<Result<_, _>>()?;
+        Ok(tvec!(tile(&inputs[0], &multipliers)?))
+    }
+}
+
+impl TypedOp for Tile {
+    as_op!();
+
+    fn set_symbols(
+        &self,
+        _source: &TypedModel,
+        node: &TypedNode,
+        target: &mut TypedModel,
+        mapping: &HashMap<OutletId, OutletId>,
+        subs: &HashMap<Symbol, TDim>,
+    ) -> TractResult<TVec<OutletId>> {
+        let multipliers =
+            self.multipliers.iter().map(|m| m.substitute_all(subs)).collect::<TractResult<_>>()?;
+        target.wire_node(&node.name, Self { multipliers }, &[mapping[&node.inputs[0]]])
+    }
+
+    fn declutter(
+        &self,
+        model: &TypedModel,
+        node: &TypedNode,
+    ) -> TractResult<Option<TypedModelPatch>> {
+        let input_fact = model.outlet_fact(node.inputs[0])?;
+        if input_fact
+            .shape
+            .iter()
+            .zip(self.multipliers.iter())
+            .all(|(i, m)| i.is_one() || m.is_one())
+        {
+            let output_fact = self.output_facts(&[input_fact])?.remove(0);
+            TypedModelPatch::replace_single_op(
+                model,
+                node,
+                &node.inputs[0..1],
+                MultiBroadcastTo { shape: output_fact.shape },
+            )
+            .map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn output_facts(&self, inputs: &[&TypedFact]) -> TractResult<TVec<TypedFact>> {
+        let shape = inputs[0]
+            .shape
+            .iter()
+            .zip(self.multipliers.iter())
+            .map(|(a, b)| a.clone() * b)
+            .collect::<TVec<_>>();
+        Ok(tvec!(inputs[0].datum_type.fact(shape)))
+    }
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct DynTile {
+    pub multiplier_placeholders: TVec<TDim>,
+}
+
+impl DynTile {
+    pub fn new(scope: &SymbolScope, rank: usize) -> DynTile {
+        let multiplier_placeholders =
+            (0..rank).map(|_| scope.new_with_prefix("_tile_mult_").to_dim()).collect();
+        DynTile { multiplier_placeholders }
+    }
+}
+
+impl Op for DynTile {
+    fn name(&self) -> StaticName {
+        "DynTile".into()
+    }
+
+    op_as_typed_op!();
+}
+
+impl EvalOp for DynTile {
+    op_out_of_plan!();
+
+    fn eval(&self, ctx: &EvalContext, inputs: TVec<TValue>) -> TractResult<TVec<TValue>> {
+        let multipliers = inputs[1].cast_to::<TDim>()?;
+        let multipliers: TVec<usize> = multipliers
+            .try_as_plain_ram()?
+            .as_slice::<TDim>()?
+            .iter()
+            .map(|m| Ok(m.eval_to_i64(ctx.symbols)? as usize))
+            .collect::<TractResult<_>>()?;
+        Ok(tvec!(tile(&inputs[0], &multipliers)?))
+    }
+}
+
+impl TypedOp for DynTile {
+    as_op!();
+
+    fn declutter(
+        &self,
+        model: &TypedModel,
+        node: &TypedNode,
+    ) -> TractResult<Option<TypedModelPatch>> {
+        if let Some(mult) = &model.outlet_fact(node.inputs[1])?.konst {
+            let multipliers = mult
+                .cast_to::<TDim>()?
+                .try_as_plain_ram()?
+                .as_slice::<TDim>()?
+                .iter()
+                .cloned()
+                .collect();
+            return TypedModelPatch::replace_single_op(
+                model,
+                node,
+                &node.inputs,
+                Tile { multipliers },
+            )
+            .map(Some);
+        }
+        Ok(None)
+    }
+
+    fn output_facts(&self, inputs: &[&TypedFact]) -> TractResult<TVec<TypedFact>> {
+        let multipliers = if let Some(k) = &inputs[1].konst {
+            k.cast_to::<TDim>()?.try_as_plain_ram()?.as_slice::<TDim>()?.iter().cloned().collect()
+        } else {
+            self.multiplier_placeholders.clone()
+        };
+        let shape =
+            inputs[0].shape.iter().zip(multipliers).map(|(a, b)| b * a).collect::<TVec<_>>();
+        Ok(tvec!(inputs[0].datum_type.fact(shape)))
+    }
+}
+
+/// Tile one axis at a time: a tiled axis repeats whole blocks of the tensor, so
+/// each repeat is one assignment into a slice of the growing output.
+fn tile(data: &TValue, multipliers: &[usize]) -> TractResult<TValue> {
+    ensure!(multipliers.len() == data.rank(), "Tiling {data:?} by {multipliers:?}");
+    let mut current = None;
+    for (axis, &m) in multipliers.iter().enumerate() {
+        let source: &Tensor = current.as_ref().unwrap_or(data);
+        if m == 1 {
+            continue;
+        }
+        let dim = source.shape()[axis];
+        let mut shape: TVec<usize> = source.shape().into();
+        shape[axis] = dim * m;
+        let mut output = Tensor::zero_dt(source.datum_type(), &shape)?;
+        for repeat in 0..m {
+            output.assign_slice(repeat * dim..(repeat + 1) * dim, source, .., axis)?;
+        }
+        current = Some(output);
+    }
+    Ok(current.map(|t| t.into_tvalue()).unwrap_or_else(|| data.clone()))
+}

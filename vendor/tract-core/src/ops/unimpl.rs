@@ -1,0 +1,30 @@
+use crate::internal::*;
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct UnimplementedOp {
+    outputs: usize,
+    name: String,
+    message: String,
+}
+
+impl UnimplementedOp {
+    pub fn new(outputs: usize, name: impl AsRef<str>, message: impl AsRef<str>) -> UnimplementedOp {
+        UnimplementedOp {
+            outputs,
+            name: name.as_ref().to_string(),
+            message: message.as_ref().to_string(),
+        }
+    }
+}
+
+impl Op for UnimplementedOp {
+    fn name(&self) -> StaticName {
+        format!("Unimplemented({})", self.name).into()
+    }
+
+    not_a_typed_op!();
+}
+
+impl EvalOp for UnimplementedOp {
+    not_out_of_plan!();
+}

@@ -1,0 +1,129 @@
+use crate::internal::*;
+
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+pub struct Const(Arc<Tensor>, Option<Box<dyn ExoticFact>>);
+
+impl Const {
+    pub fn new(tensor: Arc<Tensor>) -> TractResult<Const> {
+        Self::new_with_opt_exotic_fact(tensor, None)
+    }
+
+    pub fn new_with_exotic_fact(
+        tensor: Arc<Tensor>,
+        fact: Box<dyn ExoticFact>,
+    ) -> TractResult<Const> {
+        Self::new_with_opt_exotic_fact(tensor, Some(fact))
+    }
+
+    pub fn new_with_opt_exotic_fact(
+        tensor: Arc<Tensor>,
+        fact: Option<Box<dyn ExoticFact>>,
+    ) -> TractResult<Const> {
+        ensure!(fact.is_some() || tensor.is_plain(), "Exotic tensor requires an exotic_fact");
+        // A plain constant holds plain host bytes: storage that left them on a
+        // device brings them back rather than pinning the buffer for the life
+        // of the model.
+        let tensor = if fact.is_none() && !tensor.has_plain_ram_storage() {
+            Arc::new(Arc::unwrap_or_clone(tensor).into_plain_ram()?)
+        } else {
+            tensor
+        };
+        Ok(Const(tensor, fact))
+    }
+
+    pub fn val(&self) -> &Arc<Tensor> {
+        &self.0
+    }
+
+    pub fn exotic_fact(&self) -> Option<&dyn ExoticFact> {
+        self.1.as_deref()
+    }
+}
+
+impl Op for Const {
+    fn name(&self) -> StaticName {
+        "Const".into()
+    }
+
+    op_as_typed_op!();
+}
+
+impl EvalOp for Const {
+    op_out_of_plan!();
+
+    fn eval(&self, _ctx: &EvalContext, _inputs: TVec<TValue>) -> TractResult<TVec<TValue>> {
+        Ok(tvec![Arc::clone(&self.0).into_tvalue()])
+    }
+}
+
+impl TypedOp for Const {
+    as_op!();
+
+    fn output_facts(&self, _inputs: &[&TypedFact]) -> TractResult<TVec<TypedFact>> {
+        let fact = if self.1.is_some() {
+            // Exotic const tensors (e.g. device-backed) may have storage that
+            // cannot produce an ExoticFact (like DeviceTensor). Build the fact
+            // from dt/shape and attach the explicit exotic_fact from self.1.
+            let mut f = TypedFact::dt_shape(
+                self.0.datum_type(),
+                ShapeFact::from_dims(self.0.shape().iter().map(TDim::from)),
+            );
+            f.konst = Some(Arc::clone(&self.0));
+            f.exotic_fact.clone_from(&self.1);
+            f
+        } else {
+            // Plain tensor: TryFrom sets uniform, uniform_tdim, exotic_fact from storage.
+            TypedFact::try_from(&self.0)?
+        };
+        Ok(tvec!(fact))
+    }
+
+    fn cost(&self, _inputs: &[&TypedFact]) -> TractResult<TVec<(Cost, TDim)>> {
+        Ok(tvec!((Cost::Params(self.0.datum_type().unquantized()), self.0.len().into())))
+    }
+
+    fn set_symbols(
+        &self,
+        _source: &TypedModel,
+        node: &TypedNode,
+        target: &mut TypedModel,
+        _mapping: &HashMap<OutletId, OutletId>,
+        subs: &HashMap<Symbol, TDim>,
+    ) -> TractResult<TVec<OutletId>> {
+        let op = if self.0.datum_type() == TDim::datum_type() {
+            let mut tensor = self.0.clone().into_tensor();
+            for d in tensor.try_as_plain_ram_mut()?.as_slice_mut::<TDim>()? {
+                *d = d.substitute_all(subs)?;
+            }
+            Const(tensor.into_arc_tensor(), self.1.clone())
+        } else {
+            self.clone()
+        };
+        target.wire_node(&node.name, op, &[])
+    }
+
+    fn change_axes(
+        &self,
+        _model: &TypedModel,
+        _node: &TypedNode,
+        io: InOut,
+        change: &AxisOp,
+    ) -> TractResult<Option<AxisChangeConsequence>> {
+        anyhow::ensure!(io == InOut::Out(0));
+        let mut new_tensor = self.0.clone().into_tensor();
+        if change.change_tensor(&mut new_tensor, false).is_ok() {
+            let mut sub = Const(new_tensor.into_arc_tensor(), None);
+            if self.1.is_some() {
+                let my_fact = self.output_facts(&[])?;
+                let changed_fact = change.output_facts(&[&my_fact[0]])?;
+                sub.1 = changed_fact[0].exotic_fact.clone();
+            }
+            Ok(Some(AxisChangeConsequence {
+                substitute_op: Some(Box::new(sub)),
+                wire_changes: tvec!((io, change.clone())),
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+}

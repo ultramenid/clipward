@@ -1,0 +1,308 @@
+use super::*;
+use tract_data::internal::*;
+
+#[derive(Debug, Clone, new)]
+pub struct ScanOpParams {
+    pub skip: usize,
+    pub reset_every_turn: bool,
+    pub plan: Arc<TypedSimplePlan>,
+    pub input_mapping: Vec<InputMapping>,
+    pub output_mapping: Vec<OutputMapping<TDim>>,
+}
+
+#[derive(Debug, Clone, new)]
+pub struct OptScan(Arc<ScanOpParams>);
+
+impl std::ops::Deref for OptScan {
+    type Target = ScanOpParams;
+    fn deref(&self) -> &ScanOpParams {
+        &self.0
+    }
+}
+
+impl PartialEq for OptScan {
+    fn eq(&self, _other: &Self) -> bool {
+        false
+    }
+}
+impl Eq for OptScan {}
+
+impl OptScan {
+    pub fn iteration_count(&self, inputs: &[&TypedFact]) -> Option<TDim> {
+        super::iteration_count(&self.input_mapping, inputs)
+    }
+}
+
+impl Op for OptScan {
+    fn name(&self) -> StaticName {
+        "Scan".into()
+    }
+
+    fn info(&self) -> TractResult<Vec<String>> {
+        let mut lines = vec![];
+        for (ix, im) in self.input_mapping.iter().enumerate() {
+            lines.push(format!("Model input  #{ix}: {im:?}"));
+        }
+        for (ix, om) in self.output_mapping.iter().enumerate() {
+            lines.push(format!("Model output #{ix}: {om:?}"));
+        }
+        Ok(lines)
+    }
+
+    op_as_typed_op!();
+}
+
+impl EvalOp for OptScan {
+    not_out_of_plan!();
+
+    fn state(&self, _ctx: &EvalContext) -> TractResult<Option<Box<dyn OpState>>> {
+        Ok(Some(Box::new(State {
+            position: 0,
+            hidden_state: tvec!(),
+            model_state: self.plan.spawn()?,
+            op: Arc::clone(&self.0),
+        })))
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct State {
+    op: Arc<ScanOpParams>,
+    position: usize,
+    hidden_state: TVec<TValue>,
+    pub model_state: TypedSimpleState,
+}
+
+impl State {
+    pub fn iteration_count(&self, inputs: &TVec<TValue>) -> usize {
+        let (slot, info) = self
+            .op
+            .input_mapping
+            .iter()
+            .enumerate()
+            .find_map(|(ix, it)| it.as_scan().map(|scan| (ix, scan)))
+            .unwrap();
+        inputs[slot].shape()[info.axis].divceil(info.chunk.unsigned_abs())
+    }
+
+    pub(super) fn slice_input(
+        input: &Tensor,
+        axis: usize,
+        chunk_ix: usize,
+        chunk_dim: isize,
+    ) -> TractResult<Tensor> {
+        unsafe {
+            let full_len = input.shape()[axis];
+            let mut shape: TVec<usize> = input.shape().into();
+            shape[axis] = chunk_dim.unsigned_abs();
+            let mut t = Tensor::uninitialized_dt(input.datum_type(), &shape)?;
+            if chunk_dim < 0 {
+                let chunk_dim = (-chunk_dim) as usize;
+                for i in 0..chunk_dim {
+                    if chunk_dim * chunk_ix + i < full_len {
+                        let dst_ix = chunk_dim - i - 1;
+                        let src_ix = full_len - 1 - (chunk_ix * chunk_dim + i);
+                        t.assign_slice_unchecked(dst_ix..=dst_ix, input, src_ix..=src_ix, axis);
+                    }
+                }
+            } else if (chunk_ix + 1) * chunk_dim as usize > full_len {
+                let chunk_dim = chunk_dim as usize;
+                let remain = full_len - chunk_ix * chunk_dim;
+                let mut shape: TVec<usize> = input.shape().into();
+                shape[axis] = chunk_dim;
+                t.assign_slice_unchecked(..remain, input, chunk_ix * chunk_dim.., axis);
+            } else {
+                let start = chunk_dim as usize * chunk_ix;
+                let end = start + chunk_dim as usize;
+                t.assign_slice_unchecked(.., input, start..end, axis);
+            }
+            Ok(t)
+        }
+    }
+
+    pub(super) fn assign_output(
+        output: &mut Tensor,
+        axis: usize,
+        element_value: &Tensor,
+        i: usize,
+        backward: bool,
+    ) {
+        let full_len = output.shape()[axis];
+        let offset = if backward {
+            full_len - 1 - i * element_value.shape()[axis]
+        } else {
+            i * element_value.shape()[axis]
+        };
+        let count = element_value.shape()[axis].min(output.shape()[axis] - offset);
+        unsafe {
+            output.assign_slice_unchecked(offset..offset + count, element_value, ..count, axis)
+        };
+    }
+}
+
+impl OpState for State {
+    fn eval(
+        &mut self,
+        ctx: &EvalContext,
+        _op: &dyn Op,
+        inputs: TVec<TValue>,
+    ) -> TractResult<TVec<TValue>> {
+        let iters = self.iteration_count(&inputs);
+
+        let &mut State { ref op, ref mut hidden_state, ref mut position, ref mut model_state } =
+            self;
+
+        // initialize state at first pass, or when forced
+        if op.reset_every_turn {
+            hidden_state.clear()
+        }
+        if hidden_state.len() == 0 {
+            for (slot, input) in op.input_mapping.iter().enumerate() {
+                if input.is_state() {
+                    hidden_state.push(inputs[slot].clone());
+                }
+            }
+        }
+
+        // One full-coverage iteration yields each scan output as-is, so the body
+        // tensor is handed through instead of copied into a preallocation. Warm-up
+        // calls (position <= skip) leave outputs unassigned and need the general path.
+        let runs_now = *position + 1 > op.skip;
+        let mut single_shot: TVec<bool> = tvec!();
+        let mut outputs = tvec!();
+        for (ix, output) in op.output_mapping.iter().enumerate() {
+            let mut one_shot = false;
+            if let Some((slot, info)) = output.scan {
+                let fact = op.plan.model().output_fact(ix)?;
+                let mut shape: TVec<usize> = fact.shape.eval_to_usize(ctx.symbols)?.into_owned();
+                let scanning_dim = output
+                    .full_dim_hint
+                    .as_ref()
+                    .and_then(|d| d.as_usize())
+                    .unwrap_or(shape[info.axis] * iters);
+                one_shot = iters == 1 && runs_now && scanning_dim == shape[info.axis];
+                shape[info.axis] = scanning_dim;
+                let t = if one_shot {
+                    Tensor::default()
+                } else {
+                    unsafe { Tensor::uninitialized_dt(fact.datum_type, &shape)? }
+                };
+                outputs.push((slot, t));
+            }
+            single_shot.push(one_shot);
+            if let Some(slot) = output.last_value_slot {
+                outputs.push((slot, Tensor::default()));
+            }
+        }
+        outputs.sort_by_key(|a| a.0);
+        let mut outputs: TVec<Tensor> = outputs.into_iter().map(|(_slot, v)| v).collect();
+
+        // The body runs the SAME plan with the SAME shapes every iteration, so
+        // resolve its symbols once and keep them across iters (light per-iter
+        // reset), and reuse one drained input buffer. This avoids the per-timestep
+        // symbol re-resolution + reallocation a plain `model_state.run()` would do.
+        // Cleared up front since the body state persists across outer Scan calls.
+        model_state.clear_resolved_symbols();
+        let mut iter_inputs: TVec<TValue> = tvec!();
+        let mut symbols_resolved = false;
+
+        for i in 0..iters {
+            *position += 1;
+            if *position <= op.skip {
+                continue;
+            }
+            hidden_state.reverse();
+
+            iter_inputs.clear();
+            for (slot, m) in op.input_mapping.iter().enumerate() {
+                iter_inputs.push(match m {
+                    InputMapping::State => hidden_state.pop().unwrap(),
+                    InputMapping::Scan(info) => {
+                        let input = &inputs[slot];
+                        // A chunk covering the whole axis slices to the input
+                        // itself, forward or backward.
+                        if i == 0 && input.shape()[info.axis] == info.chunk.unsigned_abs() {
+                            input.clone()
+                        } else {
+                            Self::slice_input(input, info.axis, i, info.chunk)?.into_tvalue()
+                        }
+                    }
+                    InputMapping::Full => inputs[slot].clone(),
+                });
+            }
+            trace!("iter_inputs #{i}: {iter_inputs:?}");
+
+            // Lighter equivalent of `model_state.run(iter_inputs)`: resolve body
+            // symbols only on the first iteration, and reset between iters without
+            // discarding them.
+            model_state.set_inputs_drain(&mut iter_inputs).context("Setting body inputs")?;
+            if !symbols_resolved {
+                model_state.resolve_symbols_with_states()?;
+                symbols_resolved = true;
+            }
+            model_state.exec().with_context(|| "Evaluating inner body")?;
+            let iter_outputs = model_state.outputs()?;
+            model_state.reset_turn_keep_symbols();
+            trace!("iter_outputs #{i}: {iter_outputs:?}");
+
+            for (ix, (v, mapping)) in iter_outputs.into_iter().zip(&op.output_mapping).enumerate() {
+                if let Some((slot, info)) = mapping.scan {
+                    if single_shot[ix] && !mapping.state && mapping.last_value_slot.is_none() {
+                        outputs[slot] = v.into_tensor();
+                        continue;
+                    } else if single_shot[ix] {
+                        outputs[slot] = v.clone().into_tensor();
+                    } else {
+                        Self::assign_output(&mut outputs[slot], info.axis, &v, i, info.chunk < 0);
+                    }
+                }
+                if i == iters - 1
+                    && let Some(slot) = mapping.last_value_slot
+                {
+                    outputs[slot] = v.clone().into_tensor();
+                }
+                if mapping.state {
+                    hidden_state.push(v);
+                }
+            }
+        }
+
+        Ok(outputs.into_iter().map(|t| t.into_tvalue()).collect())
+    }
+
+    fn reset_lanes(&mut self, _lanes: &[LaneId]) -> TractResult<()> {
+        bail!("Scan is not lane-aware: its body is a nested state")
+    }
+}
+
+impl TypedOp for OptScan {
+    as_op!();
+
+    fn output_facts(&self, inputs: &[&TypedFact]) -> TractResult<TVec<TypedFact>> {
+        let mut outputs = tvec!();
+        let iters = super::iteration_count(&self.input_mapping, inputs).unwrap();
+        for (ix, output) in self.output_mapping.iter().enumerate() {
+            let fact = self.plan.model().output_fact(ix)?;
+            if let Some(slot) = output.last_value_slot {
+                outputs.push((slot, fact.datum_type.fact(fact.shape.clone())));
+            }
+            if let Some((slot, info)) = output.scan {
+                let mut shape = fact.shape.clone();
+                let scanning_dim =
+                    output.full_dim_hint.clone().unwrap_or(shape[info.axis].clone() * &iters);
+                shape.set(info.axis, scanning_dim);
+                outputs.push((slot, fact.datum_type.fact(shape)));
+            }
+        }
+        outputs.sort_by_key(|a| a.0);
+        let outputs: TVec<_> = outputs.into_iter().map(|(_slot, v)| v).collect();
+        Ok(outputs)
+    }
+
+    fn nested_model_multipliers(&self, inputs: &[&TypedFact]) -> Vec<(StaticName, TDim)> {
+        vec![(
+            "loop".into(),
+            super::iteration_count(&self.input_mapping, inputs).unwrap_or_else(|| 1.to_dim()),
+        )]
+    }
+}

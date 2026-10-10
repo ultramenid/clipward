@@ -1,0 +1,410 @@
+//! Ops
+use std::fmt;
+
+use downcast_rs::Downcast;
+
+use dyn_clone;
+use tract_data::dyn_eq::DynEq;
+
+#[macro_use]
+pub mod macros;
+#[macro_use]
+pub mod element_wise;
+#[macro_use]
+pub mod binary;
+
+pub mod array;
+pub mod cast;
+pub mod change_axes;
+pub mod cnn;
+pub mod downsample;
+pub mod dummy;
+pub mod einsum;
+pub mod fft;
+pub mod gru_cell;
+pub mod gru_seq;
+pub mod identity;
+pub mod konst;
+pub mod logic;
+pub mod lstm_cell;
+pub mod math;
+pub mod matmul;
+pub mod nn;
+pub mod quant;
+pub mod scan;
+pub mod source;
+pub mod submodel;
+pub mod unimpl;
+
+pub use downsample::Downsample;
+pub use memory::*;
+
+use crate::internal::*;
+use crate::optim::OptimizerSession;
+
+/// Level of precision to be expected in implementations comparisons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Validation {
+    /// Output is random
+    Random,
+    /// Implementation may induce rounding errors
+    Rounding,
+    /// Implementation must be accurate
+    Accurate,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
+pub enum Cost {
+    Div(DatumType),
+    FMA(DatumType),
+    Buffer(DatumType),
+    Params(DatumType),
+    Custom(bool, String),
+}
+
+impl Cost {
+    pub fn is_compute(&self) -> bool {
+        use Cost::*;
+        match self {
+            FMA(_) | Div(_) => true,
+            Buffer(_) | Params(_) => false,
+            Custom(compute, _) => *compute,
+        }
+    }
+}
+
+impl std::fmt::Debug for Cost {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use Cost::*;
+        match self {
+            Div(dt) => write!(f, "Div({dt:?})"),
+            FMA(dt) => write!(f, "FMA({dt:?})"),
+            Buffer(dt) => write!(f, "Buffer({dt:?})"),
+            Params(dt) => write!(f, "Params({dt:?})"),
+            Custom(_, name) => write!(f, "{name}"),
+        }
+    }
+}
+
+pub trait OpState: fmt::Debug + dyn_clone::DynClone + Downcast + Send {
+    fn load_from(
+        &mut self,
+        _: &mut TurnState,
+        _: &mut dyn Iterator<Item = TValue>,
+    ) -> TractResult<()> {
+        Ok(())
+    }
+
+    fn save_to(&self, _: &mut Vec<TValue>) -> TractResult<()> {
+        Ok(())
+    }
+
+    fn init_tensor_fact(&self) -> Option<(String, TypedFact)> {
+        None
+    }
+
+    /// Allocation-free predicate mirroring whether [`OpState::init_tensor_fact`]
+    /// returns `Some`. The per-run symbol-resolution path queries this once for
+    /// every stateful op on every `run`, so it must not call `init_tensor_fact`
+    /// (which clones a `String` and a `TypedFact`) merely to test for presence.
+    /// Any impl that overrides `init_tensor_fact` to return `Some` must override
+    /// this to return `true` (and delegate it wherever `init_tensor_fact` is
+    /// delegated), or its `resolve_symbols` will not run.
+    fn has_init_tensor_fact(&self) -> bool {
+        false
+    }
+
+    fn resolve_symbols(&mut self, _: &mut TurnState) -> TractResult<()> {
+        Ok(())
+    }
+
+    fn eval(
+        &mut self,
+        ctx: &EvalContext,
+        op: &dyn Op,
+        inputs: TVec<TValue>,
+    ) -> TractResult<TVec<TValue>>;
+
+    /// Discard what this state carries for `lanes`, so each can be handed to
+    /// another stream. Required, with no default: an op holding per-lane state
+    /// clears those lanes, one holding none says so with `Ok(())`, and one that
+    /// cannot serve several streams at once fails here -- which is where a laned
+    /// runtime finds out, since it resets every lane before the first turn.
+    fn reset_lanes(&mut self, lanes: &[LaneId]) -> TractResult<()>;
+}
+dyn_clone::clone_trait_object!(OpState);
+impl_downcast!(OpState);
+
+pub trait EvalOp {
+    /// Evaluate the op. `ctx` says where and when: the turn's symbols, the shared
+    /// resources a handler installed, and `(session, node_id)` so an op can key
+    /// whatever scratch it manages for itself. Ops carrying state that must
+    /// survive from one turn to the next build it in [`EvalOp::state`] instead,
+    /// and evaluate through [`OpState::eval`].
+    #[allow(unused_variables)]
+    fn eval(&self, ctx: &EvalContext, inputs: TVec<TValue>) -> TractResult<TVec<TValue>> {
+        bail!("{} has neither eval nor state", std::any::type_name::<Self>())
+    }
+
+    /// The input this op hands straight back as its output when it has nothing
+    /// to do, if any: what reads the output then reads the producer's memory, so
+    /// an allocator pooling node outputs has to keep that region alive as long
+    /// as this op's own output. A wrapper delegates to what it wraps.
+    fn forwards_input(&self) -> Option<usize> {
+        None
+    }
+
+    /// Evaluate with no plan around the node -- const folding, shape inference,
+    /// tests -- or `None` when there is no answer without one, because the op
+    /// reads the context or keeps state between turns. Required, with no default:
+    /// an op answering `Some` has produced the value from `inputs` alone, by
+    /// construction, so the claim and the act cannot disagree. Write it with
+    /// `op_out_of_plan!()` or `not_out_of_plan!()`.
+    fn eval_out_of_plan(&self, inputs: TVec<TValue>) -> TractResult<Option<TVec<TValue>>>;
+
+    /// Build this node's inter-turn state, or `None` when the op keeps nothing
+    /// between turns. This is what decides whether the plan holds an
+    /// [`OpState`] for the node; there is no separate predicate.
+    #[allow(unused_variables)]
+    fn state(&self, ctx: &EvalContext) -> TractResult<Option<Box<dyn OpState>>> {
+        Ok(None)
+    }
+
+    /// Release whatever the op manages for `session`, called for every node as a
+    /// state is dropped. Ops keeping scratch keyed by `(session, node_id)` must
+    /// implement it, or that scratch outlives the session that made it.
+    #[allow(unused_variables)]
+    fn drop_session(&self, session: SessionId, node_id: usize) {}
+}
+
+/// A base operation
+pub trait Op:
+    fmt::Debug + dyn_clone::DynClone + DynEq + Send + Sync + 'static + Downcast + EvalOp
+{
+    fn name(&self) -> StaticName;
+
+    /// The kind of accuracy check that should be performed on operation when
+    /// testing them.
+    fn validation(&self) -> Validation {
+        Validation::Accurate
+    }
+
+    /// Short (one-line) strings giving hints on internal implementation or
+    /// important configuration details to be displayed in dumps.
+    fn info(&self) -> TractResult<Vec<String>> {
+        Ok(vec![])
+    }
+
+    fn as_typed(&self) -> Option<&dyn TypedOp>;
+}
+
+impl_downcast!(Op);
+dyn_clone::clone_trait_object!(Op);
+dyn_eq::eq_trait_object!(Op);
+
+pub trait TypedOp:
+    Op + fmt::Debug + dyn_clone::DynClone + Send + Sync + 'static + Downcast + EvalOp
+{
+    /// Reinterpret the TypedOp as an Op.
+    fn as_op(&self) -> &dyn Op;
+
+    /// Reinterpret the TypedOp as an Op, mutably.
+    fn as_op_mut(&mut self) -> &mut dyn Op;
+
+    /// Deduce output facts from input facts.
+    fn output_facts(&self, inputs: &[&TypedFact]) -> TractResult<TVec<TypedFact>>;
+
+    #[allow(unused_variables)]
+    fn axes_mapping(
+        &self,
+        inputs: &[&TypedFact],
+        outputs: &[&TypedFact],
+    ) -> TractResult<AxesMapping> {
+        AxesMapping::disconnected(inputs, outputs)
+    }
+
+    /// Fuse op after codegen to deal with local optimisations.
+    fn fuse(&self, _model: &TypedModel, _node: &TypedNode) -> TractResult<Option<TypedModelPatch>> {
+        Ok(None)
+    }
+
+    /// Declutter the op to the tract_core operator set as much as possible.
+    #[allow(unused_variables)]
+    fn declutter_with_session(
+        &self,
+        session: &mut OptimizerSession,
+        model: &TypedModel,
+        node: &TypedNode,
+    ) -> TractResult<Option<TypedModelPatch>> {
+        self.declutter(model, node)
+    }
+
+    /// Declutter the op to the tract_core operator set as much as possible.
+    #[allow(unused_variables)]
+    fn declutter(
+        &self,
+        model: &TypedModel,
+        node: &TypedNode,
+    ) -> TractResult<Option<TypedModelPatch>> {
+        Ok(None)
+    }
+
+    /// Computes a cost hint of the operation.
+    ///
+    /// Each pair is a type of operation and a number per call on eval.
+    fn cost(&self, _inputs: &[&TypedFact]) -> TractResult<TVec<(Cost, TDim)>> {
+        Ok(tvec!())
+    }
+
+    /// Derive ROI (region of interest) expressions for this node's inputs.
+    /// Called by the PropagateRoi pass. Default returns None (no propagation).
+    /// Override to introduce ROIs or bubble them through.
+    #[allow(unused_variables)]
+    fn input_roi(
+        &self,
+        model: &TypedModel,
+        node: &TypedNode,
+    ) -> TractResult<Option<TVec<Option<TDim>>>> {
+        Ok(None)
+    }
+
+    #[allow(unused_variables)]
+    fn suggested_axis_changes(&self) -> TractResult<TVec<(InOut, AxisOp)>> {
+        Ok(tvec!())
+    }
+
+    #[allow(unused_variables)]
+    fn change_axes(
+        &self,
+        model: &TypedModel,
+        node: &TypedNode,
+        io: InOut,
+        change: &AxisOp,
+    ) -> TractResult<Option<AxisChangeConsequence>> {
+        Ok(None)
+    }
+
+    #[allow(unused_variables)]
+    #[allow(clippy::too_many_arguments)]
+    fn slice(
+        &self,
+        patch: &mut TypedModelPatch,
+        model: &TypedModel,
+        node: &TypedNode,
+        prefix: &str,
+        inputs: &[OutletId],
+        output_axis: usize,
+        start: &TDim,
+        end: &TDim,
+    ) -> TractResult<Option<TVec<OutletId>>> {
+        Ok(None)
+    }
+
+    /// Transforms the op in an equivalent one, operating on dt (i8 or u8).
+    ///
+    /// Returns None if the op can not be translated.
+    #[allow(unused_variables)]
+    fn quantize(
+        &self,
+        model: &TypedModel,
+        node: &TypedNode,
+        dt: DatumType,
+        scale: f32,
+        zero_point: i32,
+    ) -> TractResult<Option<Box<dyn TypedOp>>> {
+        Ok(None)
+    }
+
+    /// Transform the op by substituting one or more symbols with TDim
+    /// expressions (a concrete integer is `TDim::Val(v)`; an expression
+    /// can be any other TDim, including symbolic ones).
+    #[allow(unused_variables)]
+    fn set_symbols(
+        &self,
+        source: &TypedModel,
+        node: &TypedNode,
+        target: &mut TypedModel,
+        mapping: &HashMap<OutletId, OutletId>,
+        subs: &HashMap<Symbol, TDim>,
+    ) -> TractResult<TVec<OutletId>> {
+        let inputs = node.inputs.iter().map(|i| mapping[i]).collect::<TVec<_>>();
+        target.wire_node(&node.name, node.op.clone(), &inputs)
+    }
+
+    /// Translate the op into the most efficient form possible for execution.
+    ///
+    /// This transformation is supposed to be final, no more pass are expected
+    /// to be run on the codegen networks.
+    #[allow(unused_variables)]
+    fn codegen(
+        &self,
+        model: &TypedModel,
+        node: &TypedNode,
+    ) -> TractResult<Option<TypedModelPatch>> {
+        Ok(None)
+    }
+
+    /// Nested model multipliers, with label (for profiling).
+    #[allow(unused_variables)]
+    fn nested_model_multipliers(&self, inputs: &[&TypedFact]) -> Vec<(StaticName, TDim)> {
+        vec![]
+    }
+}
+
+impl_downcast!(TypedOp);
+dyn_clone::clone_trait_object!(TypedOp);
+dyn_eq::eq_trait_object!(TypedOp);
+
+impl<O: Op> From<O> for Box<dyn Op> {
+    fn from(it: O) -> Box<dyn Op> {
+        Box::new(it)
+    }
+}
+
+impl<O: TypedOp> From<O> for Box<dyn TypedOp> {
+    fn from(it: O) -> Box<dyn TypedOp> {
+        Box::new(it)
+    }
+}
+
+impl<'a> From<&'a Box<dyn TypedOp>> for Box<dyn TypedOp> {
+    fn from(it: &'a Box<dyn TypedOp>) -> Box<dyn TypedOp> {
+        it.clone()
+    }
+}
+
+impl AsRef<dyn Op> for dyn TypedOp {
+    fn as_ref(&self) -> &dyn Op {
+        self.as_op()
+    }
+}
+
+impl AsRef<dyn Op> for Box<dyn TypedOp> {
+    fn as_ref(&self) -> &dyn Op {
+        self.as_op()
+    }
+}
+
+impl AsMut<dyn Op> for dyn TypedOp {
+    fn as_mut(&mut self) -> &mut dyn Op {
+        self.as_op_mut()
+    }
+}
+
+impl AsMut<dyn Op> for Box<dyn TypedOp> {
+    fn as_mut(&mut self) -> &mut dyn Op {
+        self.as_op_mut()
+    }
+}
+
+impl std::fmt::Display for Box<dyn Op> {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        write!(fmt, "{}", self.name())
+    }
+}
+
+impl std::fmt::Display for Box<dyn TypedOp> {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        write!(fmt, "{}", self.name())
+    }
+}

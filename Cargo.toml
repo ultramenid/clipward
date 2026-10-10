@@ -16,3 +16,8 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # own crates still rebuild fast.
 [profile.dev.package."*"]
 opt-level = 3
+
+# tract-core 0.23.8 plus a vectorised 3x3 depthwise path for YuNet, with
+# bit-identical outputs. See vendor/tract-core/CLIPWARD_PATCH.md.
+[patch.crates-io]
+tract-core = { path = "vendor/tract-core" }
