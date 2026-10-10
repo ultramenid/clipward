@@ -1,10 +1,19 @@
 name: CI
 
+# Pushes to master and pull requests run the tests. A vX.Y.Z tag matching
+# crates/app/Cargo.toml runs the tests, then builds macOS (arm64), Windows and
+# Linux (x64) packages and attaches them to a draft GitHub release to review and
+# publish by hand (docs/RELEASING.md). A "Release X.Y.Z" commit pushed to
+# master is skipped there, so a release is one run: the tag's.
 on:
   push:
     branches: [master]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -19,6 +28,7 @@ env:
 jobs:
   test:
     name: test (${{ matrix.os }})
+    if: github.ref_type == 'tag' || !startsWith(github.event.head_commit.message, 'Release ')
     strategy:
       fail-fast: false
       matrix:
@@ -36,3 +46,114 @@ jobs:
         run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
       - run: cargo build --workspace --all-targets
       - run: cargo test --workspace
+
+  build:
+    name: build (${{ matrix.os }})
+    needs: test
+    if: github.ref_type == 'tag'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos, runner: macos-latest }
+          - { os: windows, runner: windows-latest }
+          - { os: linux, runner: ubuntu-24.04 }
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+
+      - name: Linux build dependencies
+        if: matrix.os == 'linux'
+        run: bash scripts/linux-deps.sh
+      - name: Point bindgen at LLVM (whisper-rs)
+        if: matrix.os == 'windows'
+        run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> "$GITHUB_ENV"
+
+      - name: Build FFmpeg (macOS)
+        if: matrix.os == 'macos'
+        run: |
+          brew install pkg-config libass
+          bash scripts/build-ffmpeg-mac.sh engine-bin
+      - name: Stage media tools
+        run: bash scripts/stage-tools.sh ${{ matrix.os }} engine-bin
+
+      - name: Import the signing certificate (macOS)
+        if: matrix.os == 'macos'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          # No certificate: bundle-macos.sh signs ad hoc (runs only on the Mac that built it).
+          [[ -n "$APPLE_CERTIFICATE" ]] || { echo "::warning::APPLE_CERTIFICATE unset: unsigned macOS build"; exit 0; }
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(openssl rand -hex 16)"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+          if [[ -n "$APPLE_API_KEY_P8" ]]; then
+            echo "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8"
+            echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+          fi
+
+      - name: Bundle (macOS)
+        if: matrix.os == 'macos'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: bash scripts/bundle-macos.sh --dmg
+      - name: Bundle (Windows, Linux)
+        if: matrix.os != 'macos'
+        run: |
+          cargo build --release -p clipward_app
+          bash scripts/bundle.sh ${{ matrix.os }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clipward-${{ matrix.os }}
+          path: |
+            target/bundle/*.dmg
+            target/bundle/*.zip
+            target/bundle/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches the app version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(grep -m1 '^version' crates/app/Cargo.toml | cut -d'"' -f2)"
+          [[ "$TAG" == "v$version" ]] || { echo "Tag $TAG does not match crates/app version $version" >&2; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      # The in-app updater installs a package only if its hash is listed here.
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS.txt
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        # Install steps (incl. getting past the unsigned-app warnings) above the changelog.
+        run: |
+          sed "s/<version>/${TAG#v}/g" .github/release-notes.md > "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" dist/* --draft --verify-tag --title "Clipward $TAG" \
+            --notes-file "$RUNNER_TEMP/notes.md" --generate-notes

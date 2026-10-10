@@ -26,7 +26,7 @@ For local checks without a release build, `scripts/bundle-macos.sh --debug` bund
 
 ## CI
 
-`.github/workflows/ci.yml` builds and tests the workspace on macOS, Windows and Linux for every pull request and push to `master`. Pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml`: it stages the tools, builds the macOS DMG (arm64), the Windows zip and the Linux tarball (x64), and attaches them to a **draft** GitHub release. macOS signing and notarization use these repository secrets when set: `APPLE_CERTIFICATE` (base64 .p12), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, and `APPLE_API_KEY`, `APPLE_API_ISSUER`, `APPLE_API_KEY_P8` (the .p8 contents). Without them the DMG is ad-hoc signed.
+`.github/workflows/ci.yml` is the only workflow. It builds and tests the workspace on macOS, Windows and Linux for every pull request and push to `master`, except a commit whose message starts with `Release ` (the release commit; its tag run tests it). Pushing a `vX.Y.Z` tag runs the tests, then stages the tools, builds the macOS DMG (arm64), the Windows zip and the Linux tarball (x64), and attaches them to a **draft** GitHub release. macOS signing and notarization use these repository secrets when set: `APPLE_CERTIFICATE` (base64 .p12), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, and `APPLE_API_KEY`, `APPLE_API_ISSUER`, `APPLE_API_KEY_P8` (the .p8 contents). Without them the DMG is ad-hoc signed.
 
 ## Publishing
 
