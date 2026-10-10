@@ -45,6 +45,10 @@ pub const AUDIO_PADDING_MS: i64 = 150;
 /// libx264 settings when VideoToolbox isn't used.
 pub const FFMPEG_PRESET: &str = "veryfast";
 pub const FFMPEG_CRF: i64 = 20;
+/// OpenH264 (no libx264 in the LGPL bundles): High profile, and a bitrate it never reaches so
+/// frames sit at the QP floor. QP 20 matches libx264 CRF 20 (VMAF, PSNR) at ~2x the size;
+/// its default rate control would go ~6x below that.
+pub const OPENH264_ARGS: &[&str] = &["-c:v", "libopenh264", "-profile:v", "high", "-b:v", "50M", "-qmin", "20"];
 
 pub const RENDER_FAILED: &str = "video render failed";
 pub const DISK_FULL: &str = "not enough disk space to save clips";
@@ -368,10 +372,12 @@ pub struct Renderer {
     pub analyzer: Option<AnalyzeFn>,
     /// Replaces the encoder arguments (tests; the app's lighter preview chunks).
     pub video_codec_override: Option<Vec<String>>,
-    /// Encode with VideoToolbox (the desktop macOS build) instead of libx264.
+    /// Encode with VideoToolbox (the desktop macOS build) instead of probing GPU encoders.
     pub videotoolbox: bool,
     /// Hardware encoder found by probing (without VideoToolbox); pre-fill with `Some(None)` to skip the probe.
     pub hw_encoder: tokio::sync::OnceCell<Option<HwEncoder>>,
+    /// Whether FFmpeg has libx264 (GPL builds; the bundles are LGPL), probed once; pre-fill to skip the probe.
+    pub x264: tokio::sync::OnceCell<bool>,
     pub audio_padding_ms: i64,
     /// Script-file directory for long filter graphs (system temp when None).
     pub temp_dir: Option<PathBuf>,
@@ -395,6 +401,7 @@ impl Renderer {
             video_codec_override: None,
             videotoolbox: cfg!(target_os = "macos"),
             hw_encoder: tokio::sync::OnceCell::new(),
+            x264: tokio::sync::OnceCell::new(),
             audio_padding_ms: AUDIO_PADDING_MS,
             temp_dir: None,
         }
@@ -1134,13 +1141,38 @@ impl Renderer {
     // FFmpeg
     // ------------------------------------------------------------------
 
-    /// Encoder arguments: VideoToolbox (LGPL build) on macOS, libx264 elsewhere.
+    /// Encoder arguments: VideoToolbox on macOS, software H.264 elsewhere.
     /// Keyframes every 2 s keep long clips seekable.
-    pub fn video_codec_args(&self, out_w: i64, out_h: i64, fps: &str) -> Vec<String> {
+    pub async fn video_codec_args(&self, out_w: i64, out_h: i64, fps: &str, cancel: &CancellationToken) -> Result<Vec<String>> {
         if let Some(args) = &self.video_codec_override {
-            return args.clone();
+            return Ok(args.clone());
         }
-        video_codec_args(self.videotoolbox, out_w, out_h, fps)
+        if self.videotoolbox {
+            return Ok(video_codec_args(true, out_w, out_h, fps));
+        }
+        self.software_codec_args(out_w, out_h, fps, cancel).await
+    }
+
+    /// Software H.264: libx264 where FFmpeg has it (GPL builds), else the LGPL bundles' own
+    /// encoder (`lgpl_software_codec_args`).
+    pub async fn software_codec_args(&self, out_w: i64, out_h: i64, fps: &str, cancel: &CancellationToken) -> Result<Vec<String>> {
+        let x264 = *self
+            .x264
+            .get_or_try_init(|| async {
+                let probe: Vec<String> = [
+                    "-hide_banner", "-nostdin", "-v", "error", "-f", "lavfi", "-i", "color=c=black:s=64x64:r=30",
+                    "-c:v", "libx264", "-preset", FFMPEG_PRESET, "-frames:v", "1", "-f", "null", "-",
+                ]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+                match self.runner.run(&self.ffmpeg, &probe, PROBE_TIMEOUT, MAX_TOOL_OUTPUT_BYTES, cancel).await {
+                    Err(EngineError::Cancelled) => Err(EngineError::Cancelled),
+                    out => Ok(out.is_ok_and(|o| o.success())),
+                }
+            })
+            .await?;
+        Ok(if x264 { video_codec_args(false, out_w, out_h, fps) } else { lgpl_software_codec_args(out_w, out_h, fps) })
     }
 
     /// The first hardware encoder that passes a test encode, probed once per renderer.
@@ -1158,7 +1190,7 @@ impl Renderer {
                         _ => tracing::debug!("Hardware encoder {encoder:?} unavailable"),
                     }
                 }
-                tracing::info!("No hardware video encoder; using libx264");
+                tracing::info!("No hardware video encoder; encoding in software");
                 Ok(None)
             })
             .await?;
@@ -1167,7 +1199,7 @@ impl Renderer {
 
     /// Run FFmpeg over the render window [start, start + duration) with a filter graph,
     /// then verify the export's timing. A failed export never stays on disk.
-    /// A failed hardware encode is retried once with libx264.
+    /// A failed hardware encode (GPU, or VideoToolbox) is retried once in software.
     pub async fn run_ffmpeg_complex(&self, job: &FfmpegJob<'_>, cancel: &CancellationToken) -> Result<()> {
         let (w, h) = job.output_size;
         let hw = if self.video_codec_override.is_some() || self.videotoolbox { None } else { self.hw_encoder(cancel).await? };
@@ -1177,13 +1209,16 @@ impl Renderer {
                 encoder.adapt_args(&mut args);
                 self.encode_and_validate(job, &args, cancel).await
             }
-            None => self.encode_and_validate(job, &build_ffmpeg_args(job, &self.video_codec_args(w, h, job.fps)), cancel).await,
+            None => self.encode_and_validate(job, &build_ffmpeg_args(job, &self.video_codec_args(w, h, job.fps, cancel).await?), cancel).await,
         };
-        if let (Some(encoder), Err(EngineError::Failed(detail))) = (hw, &result) {
+        let hardware = hw.is_some() || (self.videotoolbox && self.video_codec_override.is_none());
+        if let (true, Err(EngineError::Failed(detail))) = (hardware, &result) {
             if detail != DISK_FULL {
-                tracing::warn!("{encoder:?} encode failed; retrying with libx264: {detail}");
-                let args = build_ffmpeg_args(job, &video_codec_args(false, w, h, job.fps));
-                result = self.encode_and_validate(job, &args, cancel).await;
+                tracing::warn!("Hardware encode failed; retrying in software: {detail}");
+                result = match self.software_codec_args(w, h, job.fps, cancel).await {
+                    Ok(args) => self.encode_and_validate(job, &build_ffmpeg_args(job, &args), cancel).await,
+                    Err(e) => Err(e),
+                };
             }
         }
         if result.is_err() {
@@ -1500,6 +1535,20 @@ pub fn video_codec_args(videotoolbox: bool, out_w: i64, out_h: i64, fps: &str) -
         vec![s("-c:v"), s("libx264"), s("-preset"), s(FFMPEG_PRESET), s("-crf"), FFMPEG_CRF.to_string()]
     };
     args.extend(gop);
+    args
+}
+
+/// Software H.264 in the LGPL bundles, which have no libx264. macOS: Apple's own encoder
+/// through VideoToolbox, at the hardware settings. Elsewhere OpenH264 (BtbN's LGPL build).
+pub fn lgpl_software_codec_args(out_w: i64, out_h: i64, fps: &str) -> Vec<String> {
+    let s = |v: &str| v.to_string();
+    if cfg!(target_os = "macos") {
+        let mut args = video_codec_args(true, out_w, out_h, fps);
+        args.extend([s("-require_sw"), s("1")]);
+        return args;
+    }
+    let mut args = OPENH264_ARGS.iter().map(|v| s(v)).collect::<Vec<_>>();
+    args.extend(gop_args(fps));
     args
 }
 

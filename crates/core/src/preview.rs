@@ -7,6 +7,7 @@ use crate::paths::AppPaths;
 use crate::security::MediaRegistry;
 use crate::tools::{resolve_binary, Tool};
 use clip_engine::render::project::{Project, ProjectRender};
+use clip_engine::render::service::video_codec_args;
 use clip_engine::render::{scaled_duration_ms, Renderer};
 use clip_engine::EngineConfig;
 use serde_json::Value;
@@ -180,7 +181,7 @@ pub async fn chunk(
         // VideoToolbox encodes at a fixed bitrate sized for the export (8 Mbps at
         // 1080×1920); a preview has a quarter of those pixels, so a quarter looks the same.
         let (w, h) = preview_size(project);
-        let mut args = r.video_codec_args(w, h, &project.fps);
+        let mut args = video_codec_args(true, w, h, &project.fps);
         if let Some(i) = args.iter().position(|a| a == "-b:v") {
             args[i + 1] = PREVIEW_BITRATE.into();
         }

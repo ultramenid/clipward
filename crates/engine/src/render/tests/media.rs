@@ -704,3 +704,33 @@ fn logos_are_stamped_in_their_corners_and_the_originals_kept() {
     assert!(top_right < 200.0 && bottom_left < 200.0, "{top_right} {bottom_left}");
     assert!(logos.iter().all(|l| Path::new(&l.path).is_file()), "the user's logo files are never deleted");
 }
+
+#[test]
+fn renders_in_software_when_the_gpu_encoder_fails() {
+    // The bundles are LGPL (no libx264): the retry must use an encoder they have.
+    let tools = tools_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let path = source(&tools.0, tmp.path(), &Source::default());
+    let mut r = media_renderer(&tools.0, &tools.1, None);
+    r.video_codec_override = None;
+    r.x264 = tokio::sync::OnceCell::new();
+    r.hw_encoder = tokio::sync::OnceCell::new_with(Some(Some(crate::render::service::HwEncoder::Vaapi)));
+    let out = tmp.path().join("render.mp4");
+    let job = FfmpegJob {
+        input_path: &path,
+        more_sources: &[],
+        audio_inputs: &[],
+        output_path: &out,
+        start_time_ms: 0,
+        duration_ms: 2000,
+        filter_complex: "[0:v]null[out]",
+        audio_label: None,
+        extra_inputs: &[],
+        fps: "30",
+        output_size: (64, 64),
+        output_duration_ms: None,
+        progress_path: None,
+    };
+    block_on(r.run_ffmpeg_complex(&job, &CancellationToken::new())).unwrap();
+    assert_eq!(probe(&tools.1, &out)["streams"][0]["codec_name"], "h264");
+}

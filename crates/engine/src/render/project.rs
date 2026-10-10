@@ -1500,7 +1500,7 @@ impl Renderer {
         let scale = format!("scale='if(gte(iw,ih),trunc(min({edge},iw)/2)*2,-2)':'if(gte(iw,ih),-2,trunc(min({edge},ih)/2)*2)'");
         args.extend([s("-map"), s("0:v:0"), s("-map"), s(if silence.is_some() { "1:a:0" } else { "0:a:0" })]);
         args.extend([s("-vf"), format!("{scale},fps={fps},format=yuv420p,setsar=1")]);
-        args.extend(self.video_codec_args(1080, 1920, fps));
+        args.extend(self.video_codec_args(1080, 1920, fps, cancel).await?);
         args.extend(["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", "-shortest", "-movflags", "+faststart", "-f", "mp4"].map(String::from));
         args.push(dest.to_string_lossy().into_owned());
         let out = self.runner.run(&self.ffmpeg, &args, MEDIA_TIMEOUT, MAX_TOOL_OUTPUT_BYTES, cancel).await?;

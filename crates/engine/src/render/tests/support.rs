@@ -99,6 +99,7 @@ pub fn renderer(runner: Arc<dyn MediaRunner>) -> Renderer {
         video_codec_override: None,
         videotoolbox: false,
         hw_encoder: tokio::sync::OnceCell::new_with(Some(None)),
+        x264: tokio::sync::OnceCell::new_with(Some(true)),
         audio_padding_ms: 150,
         temp_dir: None,
     }

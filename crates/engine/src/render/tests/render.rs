@@ -10,8 +10,8 @@ use crate::render::clip_editor::{
 };
 use crate::render::layout_renderer::{build_layout_graph, GraphOptions};
 use crate::render::service::{
-    check_stream_timing, output_chapters, render_error, AudioPacketChecker, EditJob, FfmpegJob, HwEncoder, RenderRequest,
-    RenderResult, Renderer, DISK_FULL, VAAPI_DEVICE,
+    check_stream_timing, lgpl_software_codec_args, output_chapters, render_error, AudioPacketChecker, EditJob, FfmpegJob,
+    HwEncoder, RenderRequest, RenderResult, Renderer, DISK_FULL, VAAPI_DEVICE,
 };
 use crate::render::{scaled_duration_ms, validate_video_speed, AnalyzeFn};
 use crate::types::TranscriptSegment;
@@ -440,7 +440,7 @@ fn failed_export_is_removed_before_fallback() {
 }
 
 #[test]
-fn failed_hardware_encode_retries_with_libx264() {
+fn failed_hardware_encode_retries_in_software() {
     let s = |v: &str| v.to_string();
     let probe = HwEncoder::Vaapi.probe_args();
     assert_eq!(probe[..2], [s("-vaapi_device"), s(VAAPI_DEVICE)]);
@@ -450,18 +450,20 @@ fn failed_hardware_encode_retries_with_libx264() {
     let tmp = tempfile::tempdir().unwrap();
     let output = tmp.path().join("clip.mp4");
     let out2 = output.clone();
+    // An LGPL FFmpeg (the bundles): no libx264, and the GPU / VideoToolbox hardware fails.
     let runner = FakeRunner::new(move |program, args| {
         if program == Path::new("ffmpeg") {
-            if args.contains(&s("h264_vaapi")) {
-                return fail(b"Failed to initialise VAAPI connection");
+            if args.contains(&s("h264_vaapi")) || args.contains(&s("libx264")) {
+                return fail(b"Failed to initialise VAAPI connection / Unknown encoder 'libx264'");
+            }
+            if args.contains(&s("h264_videotoolbox")) && !args.contains(&s("-require_sw")) {
+                return fail(b"Error: cannot create compression session: -12908");
             }
             std::fs::write(&out2, b"media").unwrap();
             return ok(b"");
         }
         ok(br#"{"streams": [{"codec_type": "video", "start_time": "0.000000", "duration": "10.000000"}]}"#)
     });
-    let mut r = renderer(runner.clone());
-    r.hw_encoder = tokio::sync::OnceCell::new_with(Some(Some(HwEncoder::Vaapi)));
     let job = FfmpegJob {
         input_path: Path::new("source.mp4"),
         more_sources: &[],
@@ -477,13 +479,31 @@ fn failed_hardware_encode_retries_with_libx264() {
         output_duration_ms: None,
         progress_path: None,
     };
-    block_on(r.run_ffmpeg_complex(&job, &CancellationToken::new())).unwrap();
-    let encodes: Vec<Vec<String>> =
-        runner.calls().into_iter().filter(|(p, _)| p == Path::new("ffmpeg")).map(|(_, a)| a).collect();
-    assert_eq!(encodes.len(), 2);
-    assert!(encodes[0].contains(&s("[0:v]null,format=nv12,hwupload[out]")));
-    assert!(encodes[1].contains(&s("libx264")) && encodes[1].contains(&s("[0:v]null[out]")));
-    assert!(output.exists());
+    let software = lgpl_software_codec_args(1080, 1920, "30");
+    for gpu in [true, false] {
+        let mut r = renderer(runner.clone());
+        r.x264 = tokio::sync::OnceCell::new();
+        if gpu {
+            r.hw_encoder = tokio::sync::OnceCell::new_with(Some(Some(HwEncoder::Vaapi)));
+        } else {
+            r.videotoolbox = true;
+        }
+        let before = runner.calls().len();
+        block_on(r.run_ffmpeg_complex(&job, &CancellationToken::new())).unwrap();
+        let encodes: Vec<Vec<String>> =
+            runner.calls()[before..].iter().filter(|(p, _)| p == Path::new("ffmpeg")).map(|(_, a)| a.clone()).collect();
+        // Hardware, the libx264 probe, then the bundle's own software encoder.
+        assert_eq!(encodes.len(), 3, "{encodes:?}");
+        assert!(encodes[1].contains(&s("libx264")));
+        assert!(encodes[2].windows(software.len()).any(|w| w == software) && encodes[2].contains(&s("[0:v]null[out]")));
+        assert!(output.exists());
+    }
+
+    // A GPL FFmpeg keeps libx264 for the retry.
+    let mut r = renderer(runner.clone());
+    r.hw_encoder = tokio::sync::OnceCell::new_with(Some(Some(HwEncoder::Vaapi)));
+    assert!(block_on(r.run_ffmpeg_complex(&job, &CancellationToken::new())).is_err());
+    assert!(runner.calls().last().unwrap().1.contains(&s("libx264")) && !output.exists());
 }
 
 #[test]
