@@ -1478,23 +1478,27 @@ impl Renderer {
         }
         let s = |v: &str| v.to_string();
         let mut args: Vec<String> = ["-nostdin", "-nostats", "-y", "-protocol_whitelist", "file,pipe,fd"].map(String::from).to_vec();
-        let has_audio = if image {
+        // Seconds of silence for an input without sound: as long as its picture, since
+        // -shortest alone lets endless silence run seconds past it when encoding lags.
+        let silence = if image {
             // One picture, repeated at the project's frame rate.
             args.extend(["-format_whitelist", "image2", "-f", "image2", "-pattern_type", "none", "-loop", "1", "-framerate", fps].map(String::from));
             args.extend([s("-t"), format!("{}", IMAGE_MS / 1000)]);
-            false
+            Some(IMAGE_MS as f64 / 1000.0)
         } else {
             let probed = probe_untrusted(&self.ffprobe, file, cancel).await.map_err(|_| render_error("Clipward can't read that video"))?;
             args.extend([s("-format_whitelist"), s("mov,matroska,webm,avi"), s("-t"), format!("{}", MAX_MEDIA_MS / 1000)]);
-            probed["streams"].as_array().is_some_and(|all| all.iter().any(|st| st["codec_type"] == "audio"))
+            let has_audio = probed["streams"].as_array().is_some_and(|all| all.iter().any(|st| st["codec_type"] == "audio"));
+            let seconds = probed["format"]["duration"].as_str().and_then(|d| d.parse::<f64>().ok()).filter(|d| *d > 0.0);
+            (!has_audio).then(|| seconds.unwrap_or(f64::MAX).min(MAX_MEDIA_MS as f64 / 1000.0))
         };
         args.extend([s("-i"), file.to_string_lossy().into_owned()]);
-        if !has_audio {
-            args.extend(["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"].map(String::from));
+        if let Some(seconds) = silence {
+            args.extend([s("-f"), s("lavfi"), s("-i"), format!("anullsrc=r=48000:cl=stereo:d={seconds}")]);
         }
         let edge = MAX_MEDIA_EDGE;
         let scale = format!("scale='if(gte(iw,ih),trunc(min({edge},iw)/2)*2,-2)':'if(gte(iw,ih),-2,trunc(min({edge},ih)/2)*2)'");
-        args.extend([s("-map"), s("0:v:0"), s("-map"), s(if has_audio { "0:a:0" } else { "1:a:0" })]);
+        args.extend([s("-map"), s("0:v:0"), s("-map"), s(if silence.is_some() { "1:a:0" } else { "0:a:0" })]);
         args.extend([s("-vf"), format!("{scale},fps={fps},format=yuv420p,setsar=1")]);
         args.extend(self.video_codec_args(1080, 1920, fps));
         args.extend(["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", "-shortest", "-movflags", "+faststart", "-f", "mp4"].map(String::from));
