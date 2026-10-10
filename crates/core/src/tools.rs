@@ -142,11 +142,13 @@ pub async fn run_ok(mut command: tokio::process::Command, timeout: Duration) -> 
     output.status.success().then_some(output.stdout)
 }
 
-/// Whether `program flag` runs and exits successfully within five seconds.
+/// Whether `program flag` runs and exits successfully within 30 seconds. Generous
+/// because macOS scans a freshly installed tool on its first launch (seconds for
+/// yt-dlp's bundled Python); a tool that is merely slow must not show as missing.
 pub async fn check_runs(program: &Path, flag: &str) -> bool {
     let mut cmd = command(program);
     cmd.arg(flag);
-    run_ok(cmd, Duration::from_secs(5)).await.is_some()
+    run_ok(cmd, Duration::from_secs(30)).await.is_some()
 }
 
 static ASS_FILTER: LazyLock<Regex> =
