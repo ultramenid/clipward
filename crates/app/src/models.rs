@@ -241,6 +241,8 @@ impl Jobs {
     }
 }
 
+const UPDATE_RECHECK: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
+
 /// Where an app update stands (`clipward_core::updater`).
 #[derive(Clone, Debug, Default)]
 pub enum UpdateState {
@@ -386,6 +388,18 @@ pub fn init(job_updates: tokio::sync::mpsc::UnboundedReceiver<JobSnapshot>, cx: 
         updater::cleanup(&state::core(cx).paths.user_data.join("updates"));
         if Updater::installable() {
             updater.check(cx);
+            // An app left open for days still hears about new versions.
+            cx.spawn(async |this, cx| loop {
+                cx.background_executor().timer(UPDATE_RECHECK).await;
+                let Ok(()) = this.update(cx, |u, cx| {
+                    if !matches!(u.state, UpdateState::Available(_)) {
+                        u.check(cx)
+                    }
+                }) else {
+                    break;
+                };
+            })
+            .detach();
         }
         updater
     });

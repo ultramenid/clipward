@@ -173,6 +173,10 @@ fn main() {
         .with_assets(gpui_kit::assets::AllAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
+            // macOS apps keep running windowless by default, and nothing here reopens the
+            // window from the Dock: quit with it, as on Windows and Linux. Running jobs are
+            // stopped by the quit handler below.
+            cx.set_quit_mode(QuitMode::LastWindowClosed);
             cx.set_global(AppState { core: core.clone() });
             models::init(job_rx, cx);
             workspace::bind_keys(cx);
