@@ -347,7 +347,9 @@ impl SettingsPage {
     /// `position: sticky; top: 24px` for the nav: how far down its column it sits.
     fn nav_offset(&self, window: &Window) -> Pixels {
         let spy = self.spy.borrow();
-        let scroll_top = -self.scroll.offset().y;
+        // A wheel event moves the offset past the end until prepaint clamps it: clamp
+        // here too, or the nav jumps while scrolling against the bottom.
+        let scroll_top = (-self.scroll.offset().y).clamp(px(0.), self.scroll.max_offset().y);
         let wanted = scroll_top + px(STICKY_TOP * Self::rem_scale(window)) - spy.row_top;
         let room = (spy.row_height - spy.nav_height).max(px(0.));
         wanted.clamp(px(0.), room)
