@@ -1,6 +1,6 @@
 [package]
 name = "clipward_core"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 license = "MIT"
 description = "Clipward's app logic (settings, jobs, library, editor previews), shared by the desktop shells."
