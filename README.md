@@ -1,8 +1,6 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="resources/clipward-logo.svg" />
-    <img src="resources/clipward-logo-light.svg" alt="Clipward" height="56" />
-  </picture>
+  <img src="resources/clipward-logo-light.svg#gh-light-mode-only" alt="Clipward" height="56" />
+  <img src="resources/clipward-logo.svg#gh-dark-mode-only" alt="Clipward" height="56" />
 </p>
 
 <h3 align="center">Clips for content-reward campaigns, made on your own computer.</h3>
