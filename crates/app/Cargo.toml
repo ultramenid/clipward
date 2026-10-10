@@ -1,6 +1,6 @@
 [package]
 name = "clipward_app"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 license = "MIT"
 description = "Clipward's desktop app, drawn with GPUI."
