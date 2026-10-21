@@ -1,58 +1,32 @@
-name: CI
+name: Release
 
-# Pushes to master and pull requests run the tests. A vX.Y.Z tag matching
-# crates/app/Cargo.toml runs the tests, then builds macOS (arm64), Windows and
-# Linux (x64) packages and attaches them to a draft GitHub release to review and
-# publish by hand (docs/RELEASING.md). A "Release X.Y.Z" commit pushed to
-# master is skipped there, so a release is one run: the tag's.
+# Tests run locally (scripts/check.sh), not here. A vX.Y.Z tag matching
+# crates/app/Cargo.toml builds macOS (arm64), Windows and Linux (x64) packages
+# and attaches them to a draft GitHub release to review and publish by hand
+# (docs/RELEASING.md). A manual run builds the packages without releasing.
 on:
   push:
-    branches: [master]
     tags: ["v*"]
-  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: release-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
-  # No debug info: the Linux runner runs out of disk linking debug test binaries.
-  CARGO_PROFILE_DEV_DEBUG: 0
   CARGO_INCREMENTAL: 0
 
 jobs:
-  test:
-    name: test (${{ matrix.os }})
-    if: github.ref_type == 'tag' || !startsWith(github.event.head_commit.message, 'Release ')
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest, ubuntu-24.04]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: Linux build dependencies
-        if: runner.os == 'Linux'
-        run: bash scripts/linux-deps.sh
-      - name: Point bindgen at LLVM (whisper-rs)
-        if: runner.os == 'Windows'
-        run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
-      - run: cargo build --workspace --all-targets
-      - run: cargo test --workspace
-
   build:
     name: build (${{ matrix.os }})
-    needs: test
-    if: github.ref_type == 'tag'
+    # A clean build takes ~15 minutes; without this a hung step runs for 6 hours.
+    timeout-minutes: 60
     strategy:
-      fail-fast: false
+      # fail-fast (the default): one failed package means no release, so stop the rest.
       matrix:
         include:
           - { os: macos, runner: macos-latest }
@@ -64,6 +38,14 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+      # Before the build, so a mistyped tag fails in seconds rather than after it.
+      - name: Tag matches the app version
+        if: github.ref_type == 'tag'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(grep -m1 '^version' crates/app/Cargo.toml | cut -d'"' -f2)"
+          [[ "$TAG" == "v$version" ]] || { echo "Tag $TAG does not match crates/app version $version" >&2; exit 1; }
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
 
       - name: Linux build dependencies
@@ -137,12 +119,6 @@ jobs:
       actions: write
     steps:
       - uses: actions/checkout@v4
-      - name: Tag matches the app version
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          version="$(grep -m1 '^version' crates/app/Cargo.toml | cut -d'"' -f2)"
-          [[ "$TAG" == "v$version" ]] || { echo "Tag $TAG does not match crates/app version $version" >&2; exit 1; }
       - uses: actions/download-artifact@v4
         with:
           path: dist

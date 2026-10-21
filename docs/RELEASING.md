@@ -7,7 +7,7 @@ The desktop app (`crates/app`) is packaged by `scripts/bundle-macos.sh` as `Clip
 ## Build
 
 1. Confirm ownership and redistribution rights for Clipward source, fonts, logos, model assets and bundled tools. Complete `THIRD_PARTY_NOTICES.md` and review the dependency inventory (`Cargo.lock`).
-2. From a clean checkout, run `cargo test --workspace`, `cargo clippy --workspace --tests` and `cargo audit`. Install FFmpeg first so the engine's real-media tests run instead of skipping. Secret-scan the tree without printing secret values.
+2. From a clean checkout, run `scripts/check.sh`, `cargo clippy --workspace --tests` and `cargo audit`. Install FFmpeg first so the engine's real-media tests run instead of skipping. Secret-scan the tree without printing secret values.
 3. Stage the media tools in `engine-bin/`: an LGPL FFmpeg and ffprobe with libass and yt-dlp. On macOS, `scripts/build-ffmpeg-mac.sh` (it runs `scripts/stage-ffmpeg-libs-mac.sh` to bundle the caption libraries and their notices), then `scripts/stage-tools.sh macos` for yt-dlp. On Windows and Linux, `scripts/stage-tools.sh windows|linux` downloads the pinned BtbN static LGPL FFmpeg 8.1.3 (libass built in), its licence, the matching FFmpeg source and yt-dlp, all checked by SHA-256. Review `engine-bin/BUNDLED_LIBRARIES.txt`, `engine-bin/THIRD_PARTY_LICENSES/` and `engine-bin/FFMPEG-SOURCE.txt`.
 
 4. Build on each target Mac with `scripts/bundle-macos.sh --dmg`. It runs `cargo build --release -p clipward_app` and writes `target/bundle/Clipward.app` and `target/bundle/Clipward_<version>_<arch>.dmg`:
@@ -26,7 +26,7 @@ For local checks without a release build, `scripts/bundle-macos.sh --debug` bund
 
 ## CI
 
-`.github/workflows/ci.yml` is the only workflow. It builds and tests the workspace on macOS, Windows and Linux for every pull request and push to `master`, except a commit whose message starts with `Release ` (the release commit; its tag run tests it). Pushing a `vX.Y.Z` tag runs the tests, then stages the tools, builds the macOS DMG (arm64), the Windows zip and the Linux tarball (x64), and attaches them to a **draft** GitHub release. macOS signing and notarization use these repository secrets when set: `APPLE_CERTIFICATE` (base64 .p12), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, and `APPLE_API_KEY`, `APPLE_API_ISSUER`, `APPLE_API_KEY_P8` (the .p8 contents). Without them the DMG is ad-hoc signed.
+`.github/workflows/release.yml` is the only workflow, and it doesn't run tests: run `scripts/check.sh` (build every target, then `cargo test --workspace`) locally before pushing to `master` and before tagging. It covers your own OS only, so a Windows or Linux compile error first shows up in the tag's build. Pushing a `vX.Y.Z` tag stages the tools, builds the macOS DMG (arm64), the Windows zip and the Linux tarball (x64), and attaches them to a **draft** GitHub release. Running the workflow by hand (Actions → Release → Run workflow) builds the same packages as artifacts, kept one day, without a release. macOS signing and notarization use these repository secrets when set: `APPLE_CERTIFICATE` (base64 .p12), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, and `APPLE_API_KEY`, `APPLE_API_ISSUER`, `APPLE_API_KEY_P8` (the .p8 contents). Without them the DMG is ad-hoc signed.
 
 ## Publishing
 

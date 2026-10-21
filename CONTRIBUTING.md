@@ -13,6 +13,6 @@ Follow the [development instructions](README.md#develop): install the prerequisi
 - Update the README or architecture guide when setup, provider data flow, or supported behavior changes.
 - Add a regression test for a bug or a new boundary. Avoid tests that only repeat implementation details.
 
-Run `cargo test --workspace` and `cargo clippy --workspace --tests` before opening a pull request. Install FFmpeg so the engine's real-media tests run instead of skipping. Describe behavior, tests, and any user-visible screenshots or sample outputs in the PR.
+Run `scripts/check.sh` (GitHub doesn't run tests) and `cargo clippy --workspace --tests` before opening a pull request. Install FFmpeg so the engine's real-media tests run instead of skipping. Describe behavior, tests, and any user-visible screenshots or sample outputs in the PR.
 
 Use an imperative, scoped commit message such as `fix(clips): validate saved run output`. By contributing, you agree to follow the [code of conduct](CODE_OF_CONDUCT.md).

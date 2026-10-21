@@ -105,7 +105,7 @@ To check that FFmpeg has the caption filter: `ffmpeg -hide_banner -filters | gre
 | Command | What it does |
 | --- | --- |
 | `cargo run -p clipward_app` | Run the app |
-| `cargo test --workspace` | Run the tests. Engine tests that need FFmpeg skip when it isn't installed |
+| `scripts/check.sh` | Build every target and run the tests (GitHub only builds releases). Engine tests that need FFmpeg skip when it isn't installed |
 | `cargo clippy --workspace --tests` | Lint |
 | `scripts/bundle-macos.sh` | Build and bundle `Clipward.app` (see [the release guide](docs/RELEASING.md)) |
 
