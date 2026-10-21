@@ -188,6 +188,11 @@ impl Core {
             .await
     }
 
+    /// Re-read the model list from the Hugging Face repo.
+    pub async fn whisper_refresh(&self) -> CmdResult<Vec<WhisperModelStatus>> {
+        self.whisper.refresh().await
+    }
+
     pub fn whisper_cancel(&self, id: &str) {
         self.whisper.cancel(id);
     }

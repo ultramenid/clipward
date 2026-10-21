@@ -28,6 +28,8 @@ pub struct Settings {
     /// Supported CLIs and where each is installed; None until detected.
     pub clis: Option<Vec<DetectedCli>>,
     pub whisper_models: Vec<WhisperModelStatus>,
+    /// A catalog refresh from the Hugging Face repo is running.
+    pub checking_whisper: bool,
     tool_check: Option<Task<()>>,
 }
 
@@ -47,6 +49,7 @@ impl Settings {
             tool_error: None,
             clis: None,
             whisper_models: Vec::new(),
+            checking_whisper: false,
             tool_check: None,
         }
     }
@@ -71,6 +74,8 @@ impl Settings {
                 self.load_error = None;
                 self.clis = Some(core.ai_detect());
                 self.whisper_models = core.whisper_list();
+                // New or changed models in the repo show without a click; offline keeps the cache.
+                self.refresh_whisper_models(cx).detach();
                 cx.emit(SettingsChanged);
             }
             Err(message) => self.load_error = Some(message),
@@ -134,6 +139,24 @@ impl Settings {
     pub fn reload_whisper_models(&mut self, cx: &mut Context<Self>) {
         self.whisper_models = state::core(cx).whisper_list();
         cx.notify();
+    }
+
+    /// Re-read the model list from the Hugging Face repo.
+    pub fn refresh_whisper_models(&mut self, cx: &mut Context<Self>) -> Task<Result<(), String>> {
+        self.checking_whisper = true;
+        cx.notify();
+        let core = state::core(cx);
+        let refresh = state::run(cx, async move { core.whisper_refresh().await });
+        cx.spawn(async move |this, cx| {
+            let result = refresh.await;
+            let _ = this.update(cx, |this, cx| {
+                this.checking_whisper = false;
+                // A download in flight keeps its progress; the list itself comes fresh.
+                this.whisper_models = state::core(cx).whisper_list();
+                cx.notify();
+            });
+            result.map(|_| ())
+        })
     }
 
     pub fn set_whisper_status(&mut self, status: WhisperModelStatus, cx: &mut Context<Self>) {

@@ -356,7 +356,7 @@ impl SettingsStore {
             } else {
                 String::new()
             },
-            // A model dropped from the list falls back to the default instead of breaking settings.
+            // An id that is not a safe file name falls back to the default instead of breaking settings.
             whisper_model: if is_whisper_model_id(&settings.whisper_model) {
                 settings.whisper_model
             } else {
@@ -879,7 +879,7 @@ mod tests {
         settings.ai_provider = "cli:BAD".into();
         assert!(store.normalize(settings).is_err());
         let settings = AppSettings {
-            whisper_model: "gone".into(),
+            whisper_model: "../gone".into(),
             ..store.defaults.clone()
         };
         assert_eq!(

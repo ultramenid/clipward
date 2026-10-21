@@ -21,3 +21,6 @@ opt-level = 3
 # bit-identical outputs. See vendor/tract-core/CLIPWARD_PATCH.md.
 [patch.crates-io]
 tract-core = { path = "vendor/tract-core" }
+# whisper-rs-sys 0.15.0 rebuilt on the latest whisper.cpp release; crates.io lags
+# upstream. Refresh with scripts/update-whisper-cpp.sh. See vendor/whisper-rs-sys/CLIPWARD_PATCH.md.
+whisper-rs-sys = { path = "vendor/whisper-rs-sys" }

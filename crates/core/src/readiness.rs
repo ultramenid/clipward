@@ -170,7 +170,7 @@ mod tests {
     #[test]
     fn setup_state_needs_the_selected_whisper_model_and_every_required_tool() {
         let s = settings("anthropic");
-        let models = [WhisperModelStatus { id: "base".into(), downloaded: true, received_bytes: None, total_bytes: None }];
+        let models = [WhisperModelStatus { id: "base".into(), downloaded: true, received_bytes: None, total_bytes: None, size_bytes: None, update_available: false }];
         let tools = ToolStatus {
             smart_framing: true,
             ffmpeg: true,

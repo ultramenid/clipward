@@ -4,21 +4,25 @@
 //!
 //! `compact` (the Create page's setup card) shows only the selected model and no
 //! delete button.
+//!
+//! The curated models always show; the rest of the Hugging Face repo (refreshed at
+//! boot and by "Check for updates") shows under "Show all", or once downloaded.
 use crate::models::Settings;
 use crate::state;
 use crate::theme::ActiveTokens;
 use crate::ui::{self, Btn, TypeScale, Truncate, u};
-use clipward_core::provider_catalog::{WHISPER_MODELS, format_size_mb};
+use clipward_core::provider_catalog::{WHISPER_MODELS, format_size_mb, whisper_note};
 use clipward_core::whisper::WhisperModelStatus;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
-use super::widgets::{error_text, option_tile};
+use super::widgets::{error_text, option_tile, refresh_button};
 
 pub struct WhisperModels {
     compact: bool,
     settings: Entity<Settings>,
     error: Option<SharedString>,
+    show_all: bool,
     _observe: Subscription,
 }
 
@@ -26,15 +30,16 @@ impl WhisperModels {
     pub fn new(compact: bool, cx: &mut Context<Self>) -> Self {
         let settings = Settings::global(cx);
         let observe = cx.observe(&settings, |_, _, cx| cx.notify());
-        Self { compact, settings, error: None, _observe: observe }
+        Self { compact, settings, error: None, show_all: false, _observe: observe }
     }
 
-    fn download(&mut self, id: &'static str, cx: &mut Context<Self>) {
+    fn download(&mut self, id: SharedString, cx: &mut Context<Self>) {
         self.error = None;
         let core = state::core(cx);
+        let key = id.clone();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<WhisperModelStatus>();
         let download = state::run(cx, async move {
-            core.whisper_download(id, move |status| {
+            core.whisper_download(&key, move |status| {
                 let _ = tx.send(status.clone());
             })
             .await
@@ -43,7 +48,14 @@ impl WhisperModels {
         self.settings.update(cx, |settings, cx| {
             if !settings.whisper_models.iter().any(|m| m.id == id && m.received_bytes.is_some()) {
                 settings.set_whisper_status(
-                    WhisperModelStatus { id: id.into(), downloaded: false, received_bytes: Some(0), total_bytes: None },
+                    WhisperModelStatus {
+                        id: id.to_string(),
+                        downloaded: false,
+                        received_bytes: Some(0),
+                        total_bytes: None,
+                        size_bytes: None,
+                        update_available: false,
+                    },
                     cx,
                 );
             }
@@ -71,8 +83,22 @@ impl WhisperModels {
         .detach();
     }
 
-    fn select(&mut self, id: &'static str, cx: &mut Context<Self>) {
-        let saved = self.settings.update(cx, |s, cx| s.save(|e| e.whisper_model = id.into(), cx));
+    fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.error = None;
+        let refresh = self.settings.update(cx, |s, cx| s.refresh_whisper_models(cx));
+        cx.spawn(async move |this, cx| {
+            if let Err(message) = refresh.await {
+                let _ = this.update(cx, |this, cx| {
+                    this.error = Some(message.into());
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn select(&mut self, id: SharedString, cx: &mut Context<Self>) {
+        let saved = self.settings.update(cx, |s, cx| s.save(|e| e.whisper_model = id.to_string(), cx));
         if !saved {
             self.error = Some(self.save_error(cx, "Could not save"));
         }
@@ -95,14 +121,39 @@ impl Render for WhisperModels {
         let selected_id = settings.value.as_ref().map(|s| s.whisper_model.clone()).unwrap_or_default();
         let statuses = settings.whisper_models.clone();
         let compact = self.compact;
-        let rows = WHISPER_MODELS
-            .iter()
+        let checking = settings.checking_whisper;
+        let curated = |id: &str| WHISPER_MODELS.iter().find(|m| m.id == id);
+        let show_all = self.show_all;
+        // Curated first (even before the list loads), then the repo's others.
+        let mut ids: Vec<String> = WHISPER_MODELS.iter().map(|m| m.id.to_string()).collect();
+        ids.extend(statuses.iter().filter(|s| curated(&s.id).is_none()).map(|s| s.id.clone()));
+        let extra = ids.len() - WHISPER_MODELS.len();
+        let rows = ids
+            .into_iter()
+            .filter(|id| {
+                let status = statuses.iter().find(|s| &s.id == id);
+                if compact {
+                    *id == selected_id
+                } else {
+                    show_all
+                        || curated(id).is_some()
+                        || *id == selected_id
+                        || status.is_some_and(|s| s.downloaded || s.received_bytes.is_some())
+                }
+            })
             .enumerate()
-            .filter(|(_, model)| !compact || model.id == selected_id)
-            .map(|(ix, model)| {
-                let id = model.id;
+            .map(|(ix, id)| {
+                let info = curated(&id);
                 let status = statuses.iter().find(|s| s.id == id);
-                let selected = selected_id == id;
+                let label: SharedString = info.map_or_else(|| id.clone().into(), |m| m.label.into());
+                let note: SharedString = info.map_or_else(|| whisper_note(&id).into(), |m| m.note.into());
+                let size_mb = status
+                    .and_then(|s| s.size_bytes)
+                    .map(|b| b as f64 / 1e6)
+                    .or(info.map(|m| m.size_mb as f64))
+                    .unwrap_or(0.0);
+                let id: SharedString = id.into();
+                let selected = selected_id == id.as_ref();
                 let received = status.and_then(|s| s.received_bytes);
                 let percent = match (received, status.and_then(|s| s.total_bytes)) {
                     (Some(got), Some(total)) if total > 0 => got as f64 / total as f64 * 100.0,
@@ -114,7 +165,22 @@ impl Render for WhisperModels {
                         .small()
                         .icon("x")
                         .label("Cancel")
-                        .on_click(move |_, _, cx| state::core(cx).whisper_cancel(id))
+                        .on_click({
+                            let id = id.clone();
+                            move |_, _, cx| state::core(cx).whisper_cancel(&id)
+                        })
+                        .into_any_element()
+                } else if status.is_some_and(|s| s.update_available) {
+                    Btn::new(("whisper-update", ix))
+                        .variant(if selected { ui::Variant::Primary } else { ui::Variant::Secondary })
+                        .small()
+                        .icon("download")
+                        .label("Update")
+                        .tooltip("The repo has a newer file. Download it to replace this one.")
+                        .on_click(cx.listener({
+                            let id = id.clone();
+                            move |this, _, _, cx| this.download(id.clone(), cx)
+                        }))
                         .into_any_element()
                 } else if status.is_some_and(|s| s.downloaded) {
                     div()
@@ -128,13 +194,15 @@ impl Render for WhisperModels {
                                     .ghost()
                                     .small()
                                     .icon("trash")
-                                    .tooltip(format!("Delete {}", model.label))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if let Err(message) = state::core(cx).whisper_delete(id) {
+                                    .tooltip(format!("Delete {label}"))
+                                    .on_click(cx.listener({
+                                        let id = id.clone();
+                                        move |this, _, _, cx| {
+                                        if let Err(message) = state::core(cx).whisper_delete(&id) {
                                             this.error = Some(message.into());
                                         }
                                         this.settings.update(cx, |s, cx| s.reload_whisper_models(cx));
-                                    })),
+                                    }})),
                             )
                         })
                         .into_any_element()
@@ -144,7 +212,10 @@ impl Render for WhisperModels {
                         .small()
                         .icon("download")
                         .label("Download")
-                        .on_click(cx.listener(move |this, _, _, cx| this.download(id, cx)))
+                        .on_click(cx.listener({
+                            let id = id.clone();
+                            move |this, _, _, cx| this.download(id.clone(), cx)
+                        }))
                         .into_any_element()
                 };
                 option_tile(("whisper", ix), selected, &t)
@@ -164,7 +235,10 @@ impl Render for WhisperModels {
                                     .items_center()
                                     .gap(u(10.))
                                     .cursor_pointer()
-                                    .on_click(cx.listener(move |this, _, _, cx| this.select(id, cx)))
+                                    .on_click(cx.listener({
+                                        let id = id.clone();
+                                        move |this, _, _, cx| this.select(id.clone(), cx)
+                                    }))
                                     .child(radio_dot(selected, &t))
                                     .child(
                                         div()
@@ -176,12 +250,12 @@ impl Render for WhisperModels {
                                                     .gap(u(4.))
                                                     .text_label()
                                                     .text_color(t.ink)
-                                                    .child(model.label)
+                                                    .child(label.clone())
                                                     .child(
                                                         div()
                                                             .text_meta()
                                                             .text_color(t.ink_secondary)
-                                                            .child(format_size_mb(model.size_mb as f64)),
+                                                            .when(size_mb > 0.0, |d| d.child(format_size_mb(size_mb))),
                                                     ),
                                             )
                                             .child(
@@ -189,7 +263,7 @@ impl Render for WhisperModels {
                                                     .text_caption()
                                                     .text_color(t.ink_secondary)
                                                     .one_line()
-                                                    .child(model.note),
+                                                    .child(note),
                                             ),
                                     ),
                             )
@@ -215,7 +289,7 @@ impl Render for WhisperModels {
                                         .child(format!(
                                             "{} / {}",
                                             format_size_mb(got as f64 / 1e6),
-                                            format_size_mb(model.size_mb as f64)
+                                            format_size_mb(size_mb)
                                         )),
                                 ),
                         )
@@ -227,6 +301,34 @@ impl Render for WhisperModels {
             .flex_col()
             .gap(u(8.))
             .child(div().flex().flex_col().gap(u(6.)).children(rows))
+            .when(!compact, |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(u(8.))
+                        .child(
+                            refresh_button("whisper-refresh", "Check for updates", checking, false, &t)
+                                .when(!checking, |b| b.on_click(cx.listener(|this, _, _, cx| this.refresh(cx)))),
+                        )
+                        .when(extra > 0, |d| {
+                            d.child(
+                                Btn::new("whisper-show-all")
+                                    .ghost()
+                                    .small()
+                                    .label(if self.show_all {
+                                        "Show fewer".to_string()
+                                    } else {
+                                        format!("Show all repo models ({extra})")
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.show_all = !this.show_all;
+                                        cx.notify();
+                                    })),
+                            )
+                        }),
+                )
+            })
             .when_some(self.error.clone(), |d, message| d.child(error_text(message, &t)))
     }
 }

@@ -1,6 +1,7 @@
 //! Product constants the UI and the core share (ported from the old src/shared/*.ts).
 
-/// src/shared/whisper-models.ts
+/// The curated models, in the order Settings lists them; the rest of the repo
+/// shows under "Show all".
 pub const WHISPER_MODEL_IDS: &[&str] = &[
     "base",
     "small",
@@ -11,8 +12,13 @@ pub const WHISPER_MODEL_IDS: &[&str] = &[
 ];
 pub const DEFAULT_WHISPER_MODEL: &str = "large-v3-turbo-q5_0";
 
+/// A name that can be `ggml-{id}.bin` in the model folder and the Hugging Face repo.
+/// Any shape-safe id is accepted, since the repo can add models after a release.
 pub fn is_whisper_model_id(value: &str) -> bool {
-    WHISPER_MODEL_IDS.contains(&value)
+    (1..=64).contains(&value.len())
+        && !value.starts_with('.')
+        && !value.contains("..")
+        && value.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
 }
 
 /// src/shared/ai-providers.ts AI_CLIS: (id, label, binaries).
