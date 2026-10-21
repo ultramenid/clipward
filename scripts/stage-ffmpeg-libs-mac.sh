@@ -6,6 +6,8 @@ set -euo pipefail
 # dependencies are shipped as dylibs so the app works without Homebrew.
 output_dir="${1:-engine-bin}"
 queue=("$output_dir/ffmpeg" "$output_dir/ffprobe")
+# Where each queued file was copied from, to resolve its @rpath dependencies.
+origins=("" "")
 notices_dir="$output_dir/THIRD_PARTY_LICENSES"
 mkdir -p "$notices_dir"
 : > "$output_dir/BUNDLED_LIBRARIES.txt"
@@ -23,13 +25,17 @@ for ((index=0; index<${#queue[@]}; index++)); do
     [[ -n "$dependency" ]] || continue
     name="$(basename "$dependency")"
     bundled="$output_dir/$name"
+    # Some bottles (brotli) name sibling libraries @rpath/<lib>, found beside the loader.
+    source="$dependency"
+    [[ "$dependency" == @rpath/* ]] && source="$(dirname "${origins[$index]}")/$name"
     if [[ ! -f "$bundled" ]]; then
-      cp -L "$dependency" "$bundled"
+      cp -L "$source" "$bundled"
       chmod u+w "$bundled"
       install_name_tool -id "@loader_path/$name" "$bundled"
       queue+=("$bundled")
+      origins+=("$source")
 
-      formula_dir="$(dirname "$(dirname "$dependency")")"
+      formula_dir="$(dirname "$(dirname "$source")")"
       formula="$(basename "$formula_dir")"
       if [[ ! -d "$notices_dir/$formula" ]]; then
         mkdir -p "$notices_dir/$formula"
@@ -52,7 +58,7 @@ for ((index=0; index<${#queue[@]}; index++)); do
       fi
     fi
     install_name_tool -change "$dependency" "@loader_path/$name" "$target"
-  done < <(otool -L "$target" | awk 'NR > 1 { print $1 }' | grep -E '^/(opt/homebrew|usr/local)/' || true)
+  done < <(otool -L "$target" | awk 'NR > 1 { print $1 }' | grep -E '^(/(opt/homebrew|usr/local)/|@rpath/)' || true)
 done
 
 for target in "${queue[@]}"; do
