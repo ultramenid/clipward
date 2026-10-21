@@ -6,8 +6,6 @@ speed is the default; faster presets are 1.1×, 1.25×, 1.5×, 1.75× and 2×.
 Review shows the choice before generation, the running job shows its speed,
 and saved results identify faster exports. The draft retains it across navigation and “Clip another video”.
 
-![Video speed in the Create wizard](assets/video-speed.png)
-
 ## Timing and exports
 
 - One speed applies to every clip, for local files and downloaded videos,
