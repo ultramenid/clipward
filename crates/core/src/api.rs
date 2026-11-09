@@ -65,6 +65,8 @@ pub struct ToolStatus {
 
 /// Largest YouTube thumbnail accepted, bytes (hqdefault is about 30 KB).
 const MAX_THUMBNAIL_BYTES: usize = 2 * 1024 * 1024;
+/// Editor still frames kept on disk (`Core::frame_still`).
+const MAX_STILLS: usize = 200;
 
 /// YouTube video ids are 11 URL-safe base64 characters.
 fn is_youtube_id(id: &str) -> bool {
@@ -545,13 +547,41 @@ impl Core {
         video_path: &str,
         seek_seconds: Option<f64>,
     ) -> CmdResult<Option<PathBuf>> {
+        self.frame_image(video_path, seek_seconds, "thumbnails")
+            .await
+    }
+
+    /// The editor's still frame at `seek_seconds` (where the player can't decode the
+    /// video live): a thumbnail-like JPEG in a folder that keeps the newest `MAX_STILLS`.
+    pub async fn frame_still(
+        &self,
+        video_path: &str,
+        seek_seconds: f64,
+    ) -> CmdResult<Option<PathBuf>> {
+        let still = self
+            .frame_image(video_path, Some(seek_seconds), "stills")
+            .await?;
+        if let Some(dir) = still.as_deref().and_then(Path::parent) {
+            // shortcut: pruned stills stay granted in the media registry (it has no removal; ~100 bytes each), add one if that ever matters.
+            file_manager::prune_oldest(dir, MAX_STILLS);
+        }
+        Ok(still)
+    }
+
+    /// A cached JPEG frame of a library video in `folder` of user data, authorized to show.
+    async fn frame_image(
+        &self,
+        video_path: &str,
+        seek_seconds: Option<f64>,
+        folder: &str,
+    ) -> CmdResult<Option<PathBuf>> {
         let library = self.output_directory()?;
         let video = self.media.assert_media_path(video_path, &library)?;
         if seek_seconds.is_some_and(|s| !s.is_finite() || !(0.0..=6.0 * 60.0 * 60.0).contains(&s)) {
             return Err("Invalid thumbnail time".into());
         }
         let Some(thumbnail) =
-            file_manager::generate_thumbnail(&self.paths, &video, seek_seconds).await
+            file_manager::generate_thumbnail(&self.paths, &video, seek_seconds, folder).await
         else {
             return Ok(None);
         };

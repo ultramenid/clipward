@@ -173,6 +173,7 @@ pub fn editor_probe(cx: &mut App) -> bool {
         Some(match (kind, rest) {
             ("piece", i) => Selection::Piece(i.parse().ok()?),
             ("text", id) => Selection::Text(id.into()),
+            ("focus", id) => Selection::Focus(id.into()),
             ("sound", id) => Selection::Sound(id.into()),
             ("pip", id) => Selection::Pip(id.into()),
             ("overlay", "title") => Selection::Overlay(OverlayKey::Title),

@@ -30,6 +30,7 @@ use crate::layout::types::{Box as LBox, ClipLayoutPlan, ShotLayout, SCREEN, STAC
 use crate::types::{LogoOverlay, TranscriptSegment};
 use super::service::{sibling, Overlay};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 
@@ -64,8 +65,11 @@ pub const PIP_WIDTH_RANGE: (f64, f64) = (0.1, 1.0);
 pub const PIECE_SPEED_RANGE: (f64, f64) = (0.5, 4.0);
 pub const MAX_TRANSITION_MS: i64 = 2_000;
 pub const MAX_CROP_ZOOM: f64 = 5.0;
+/// A drawn focus window's shape range (w/h).
+pub const FOCUS_ASPECT_RANGE: (f64, f64) = (0.1, 10.0);
 pub const MAX_ITEM_VOLUME: f64 = 2.0;
 pub const MAX_TEXT_LAYERS: usize = 50;
+pub const MAX_FOCUS_LAYERS: usize = 50;
 pub const MAX_AUDIO_ITEMS: usize = 50;
 /// Auto-duck: music drops under speech (the main track and the source's own sound).
 const DUCK: &str = "sidechaincompress=threshold=0.03:ratio=6:attack=20:release=400";
@@ -83,6 +87,12 @@ pub struct Crop {
     pub x: f64,
     pub y: f64,
     pub zoom: f64,
+}
+
+impl Crop {
+    fn valid(&self) -> bool {
+        (0.0..=1.0).contains(&self.x) && (0.0..=1.0).contains(&self.y) && (1.0..=MAX_CROP_ZOOM).contains(&self.zoom)
+    }
 }
 
 fn one() -> f64 {
@@ -433,6 +443,40 @@ fn no_animation() -> String {
     "none".into()
 }
 
+/// A stretch of the edited timeline locked to a fixed crop of whatever the main track
+/// shows there (the Focus tool), whatever each piece's own framing.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FocusLayer {
+    pub id: String,
+    /// Edited time (before the clip's speed), ms.
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub crop: Crop,
+    /// The window's shape (w/h px) when the user drew it: it sits in its panel with
+    /// bars. None: its panel's shape, filling it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aspect: Option<f64>,
+}
+
+/// Timeline rows for (id, start, end) items: each goes in the first row where it
+/// overlaps nothing, in start order. Row by id.
+pub fn lanes_of<'a>(items: impl IntoIterator<Item = (&'a str, i64, i64)>) -> HashMap<String, usize> {
+    let mut sorted: Vec<_> = items.into_iter().collect();
+    sorted.sort_by_key(|&(_, start, _)| start);
+    let mut ends: Vec<i64> = Vec::new();
+    let mut lanes = HashMap::new();
+    for (id, start, end) in sorted {
+        let lane = ends.iter().position(|&e| e <= start).unwrap_or(ends.len());
+        if lane == ends.len() {
+            ends.push(end);
+        } else {
+            ends[lane] = end;
+        }
+        lanes.insert(id.to_string(), lane);
+    }
+    lanes
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     pub version: u32,
@@ -476,6 +520,10 @@ pub struct Project {
     /// is a solid colour.
     #[serde(default)]
     pub backdrop: Option<String>,
+    /// Focus stretches. Where several overlap they stack as full-width panels, top
+    /// timeline lane on top (`focus_at`).
+    #[serde(default)]
+    pub focus: Vec<FocusLayer>,
 }
 
 impl Project {
@@ -547,7 +595,31 @@ impl Project {
             media: Vec::new(),
             pip: Vec::new(),
             backdrop: None,
+            focus: Vec::new(),
         })
+    }
+
+    /// The focuses at edited time `t_ms`, top timeline lane first (`lanes_of` over every
+    /// focus, as the timeline draws them). Two or more stack as full-width panels, top to bottom.
+    pub fn focus_at(&self, t_ms: i64) -> Vec<&FocusLayer> {
+        let lanes = lanes_of(self.focus.iter().map(|f| (f.id.as_str(), f.start_ms, f.end_ms)));
+        let mut on: Vec<&FocusLayer> = self.focus.iter().filter(|f| (f.start_ms..f.end_ms).contains(&t_ms)).collect();
+        on.sort_by_key(|f| lanes[f.id.as_str()]);
+        on
+    }
+
+    /// The panels `n` stacked focuses fill: (top y, height) canvas px, full width, even
+    /// heights with the last panel taking the remainder.
+    pub fn focus_bands(&self, n: usize) -> Vec<(i64, i64)> {
+        let n = n as i64;
+        let band = (self.height / n.max(1) / 2 * 2).max(2);
+        (0..n).map(|j| (j * band, if j == n - 1 { self.height - band * (n - 1) } else { band })).collect()
+    }
+
+    /// The colour of the bars around a drawn focus window: the backdrop when it is a solid
+    /// "#rrggbb", else None for black (a blurred backdrop doesn't blur focus bars).
+    pub fn focus_bar_color(&self) -> Option<&str> {
+        self.backdrop.as_deref().filter(|c| is_backdrop_color(c))
     }
 
     /// Edited length before the whole clip's speed, ms.
@@ -569,8 +641,9 @@ impl Project {
         self.media.iter().find(|m| m.file == name)
     }
 
-    /// Pixel size of what a piece reads: its media file, or the source.
-    fn read_size(&self, item: &VideoItem) -> (u32, u32) {
+    /// Pixel size of what a piece reads: its media file, or the source (what its crop
+    /// windows and focus windows are measured in).
+    pub fn read_size(&self, item: &VideoItem) -> (u32, u32) {
         item.media.as_deref().and_then(|m| self.media_file(m)).map_or((self.source_width, self.source_height), |m| (m.width, m.height))
     }
 
@@ -609,7 +682,7 @@ impl Project {
                 && item.keyframes.windows(2).all(|w| w[0].t_ms < w[1].t_ms)
                 && item.keyframes.iter().all(|k| (0..=out.max(0)).contains(&k.t_ms) && (0.0..=1.0).contains(&k.x) && (0.0..=1.0).contains(&k.y) && (1.0..=MAX_CROP_ZOOM).contains(&k.zoom));
             let crop = keys && match (&item.crop, item.framing.as_str()) {
-                (Some(c), FRAMING_CROP) => (0.0..=1.0).contains(&c.x) && (0.0..=1.0).contains(&c.y) && (1.0..=MAX_CROP_ZOOM).contains(&c.zoom),
+                (Some(c), FRAMING_CROP) => c.valid(),
                 (None, FRAMING_CROP) => !item.keyframes.is_empty(),
                 (None, FRAMING_AUTO | FRAMING_FIT) | (Some(_), FRAMING_AUTO | FRAMING_FIT) => true,
                 // Split stacks the source's people; an added video has no face data.
@@ -670,6 +743,18 @@ impl Project {
                 return Err(render_error("A text layer has invalid settings"));
             }
         }
+        if self.focus.len() > MAX_FOCUS_LAYERS {
+            return Err(render_error("Too many focuses"));
+        }
+        let focus_ok = self.focus.iter().all(|f| {
+            f.start_ms >= 0
+                && f.end_ms > f.start_ms
+                && f.crop.valid()
+                && f.aspect.is_none_or(|a| (FOCUS_ASPECT_RANGE.0..=FOCUS_ASPECT_RANGE.1).contains(&a))
+        });
+        if !focus_ok {
+            return Err(render_error("A focus has invalid settings"));
+        }
         Ok(())
     }
 
@@ -695,13 +780,12 @@ impl Project {
     /// The source window (w, h, x, y) px a crop shows: the canvas's shape, the largest
     /// that fits divided by `zoom`, centred on the crop point and kept inside the frame.
     pub fn crop_rect(&self, crop: Crop) -> (i64, i64, i64, i64) {
-        self.crop_rect_in((self.source_width, self.source_height), crop)
+        self.crop_rect_in((self.source_width, self.source_height), self.width as f64 / self.height as f64, crop)
     }
 
-    /// `crop_rect` for a read `size` px (the source or an added video).
-    fn crop_rect_in(&self, size: (u32, u32), crop: Crop) -> (i64, i64, i64, i64) {
+    /// `crop_rect` for a read `size` px (the source or an added video), `aspect` (w/h) shaped.
+    fn crop_rect_in(&self, size: (u32, u32), aspect: f64, crop: Crop) -> (i64, i64, i64, i64) {
         let (sw, sh) = (size.0 as f64, size.1 as f64);
-        let aspect = self.width as f64 / self.height as f64;
         let (fit_w, fit_h) = if sw / sh > aspect { (sh * aspect, sh) } else { (sw, sw / aspect) };
         let zoom = crop.zoom.clamp(1.0, MAX_CROP_ZOOM);
         let even = |v: f64| ((v / 2.0).floor() as i64 * 2).max(2);
@@ -886,6 +970,35 @@ impl Project {
             }));
         }
         words.sort_by_key(|s| s.start_time_ms);
+        // A focus stretch shows a plain crop, as a crop piece does: whole-frame layout,
+        // no faces for captions to keep clear of. Nothing past the edit's end.
+        let duration = self.duration_ms();
+        for f in &self.focus {
+            let (fs, fe) = (f.start_ms, f.end_ms.min(duration));
+            if fe <= fs {
+                continue;
+            }
+            plan.face_samples.retain(|(t, _)| !(fs..fe).contains(t));
+            let mut shots = Vec::new();
+            for shot in std::mem::take(&mut plan.shots) {
+                if shot.end_ms <= fs || shot.start_ms >= fe {
+                    shots.push(shot);
+                    continue;
+                }
+                if shot.start_ms < fs {
+                    shots.push(ShotLayout { end_ms: fs, ..shot.clone() });
+                }
+                if shot.end_ms > fe {
+                    // The focus path stays relative to the shot's (new) start.
+                    let shift = fe - shot.start_ms;
+                    let focus_path = shot.focus_path.iter().map(|&(t, x, y)| (t - shift, x, y)).collect();
+                    shots.push(ShotLayout { start_ms: fe, focus_path, ..shot });
+                }
+            }
+            shots.push(ShotLayout { start_ms: fs, end_ms: fe, layout: SCREEN.into(), source: "style".into(), ..Default::default() });
+            shots.sort_by_key(|s| s.start_ms);
+            plan.shots = shots;
+        }
         (plan, words)
     }
 
@@ -912,42 +1025,89 @@ impl Project {
         )
     }
 
+    /// Filters from a read to the canvas: `focus` as full-width panels (`focus_bands`), top
+    /// to bottom. Each window is its panel's shape, or the drawn one fitted in with bars
+    /// (`focus_bar_color`). Labels are `[p{k}_focus…]`.
+    fn focus_panels(&self, size: (u32, u32), focus: &[&FocusLayer], k: &str) -> String {
+        let n = focus.len();
+        let bands = self.focus_bands(n);
+        let bar = self.focus_bar_color().map_or("black".into(), |c| format!("0x{}", &c[1..]));
+        let panel = |j: usize, f: &FocusLayer| {
+            let (w, h) = (self.width, bands[j].1);
+            let (cw, ch, x, y) = self.crop_rect_in(size, f.aspect.unwrap_or(w as f64 / h as f64), f.crop);
+            format!(
+                "crop={cw}:{ch}:{x}:{y},scale={w}:{h}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,\
+                 pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color={bar},setsar=1"
+            )
+        };
+        if let [f] = focus {
+            return panel(0, f);
+        }
+        let labels = |tag: &str| (0..focus.len()).map(|j| format!("[p{k}_focus{tag}{j}]")).collect::<String>();
+        let mut chain = format!("split={n}{}", labels("s"));
+        for (j, f) in focus.iter().enumerate() {
+            chain += &format!(";[p{k}_focuss{j}]{}[p{k}_focusq{j}]", panel(j, f));
+        }
+        format!("{chain};{}vstack=inputs={n}", labels("q"))
+    }
+
     /// One read of piece `i` (placed at `out_start`) over edited time [s, e): pushes the
     /// read and its filters, and returns its picture and (with source audio) sound labels.
+    /// `focus` crops it there instead of the piece's own framing (two or more: panels).
+    /// A read equal to one at index `share_from` or later reuses that input (decoded once).
     #[allow(clippy::too_many_arguments)]
     fn piece_read(
         &self,
         i: usize,
         out_start: i64,
         (s, e): (i64, i64),
+        focus: &[&FocusLayer],
         (source_audio, track_audio): (bool, bool),
         media_dir: &Path,
+        share_from: usize,
         reads: &mut Vec<(i64, i64)>,
         read_paths: &mut Vec<Option<PathBuf>>,
         parts: &mut Vec<String>,
     ) -> Result<Option<(String, Option<String>)>> {
-        let item = &self.video[i];
+        let focused;
+        let item = match focus {
+            [] => &self.video[i],
+            [f, ..] => {
+                focused = VideoItem { framing: FRAMING_CROP.into(), crop: Some(f.crop), keyframes: Vec::new(), ..self.video[i].clone() };
+                &focused
+            }
+        };
+        // Panels, or one drawn window fitted in with bars; else a plain canvas-shaped crop.
+        let stacked = focus.len() > 1 || focus.iter().any(|f| f.aspect.is_some());
         let out_len = item.out_ms();
         let (src_start, src_end) = (item.src_at(s - out_start), item.src_at(e - out_start));
         if src_end <= src_start {
             return Ok(None);
         }
-        let k = reads.len();
-        reads.push((src_start, src_end - src_start));
-        read_paths.push(item.media.as_ref().map(|m| media_dir.join(m)));
+        let (read, path) = ((src_start, src_end - src_start), item.media.as_ref().map(|m| media_dir.join(m)));
+        // `input` is the FFmpeg input; `k` names this read's labels (a shared input's are its own).
+        let (input, k) = match (share_from..reads.len()).find(|&j| reads[j] == read && read_paths[j] == path) {
+            Some(j) => (j, format!("{j}s{}", parts.len())),
+            None => {
+                reads.push(read);
+                read_paths.push(path);
+                (reads.len() - 1, (reads.len() - 1).to_string())
+            }
+        };
         // Added videos always carry sound (import_media); the source may not.
         let own_audio = item.media.is_some() || source_audio;
         // A crop piece reads its window, then fills the canvas with it. Keyframes move the
         // window: the read is scaled so the window is canvas-sized, then cut out per frame.
         let animated = item.framing == FRAMING_CROP && item.keyframes.len() > 1;
         let still = item.keyframes.first().map(|k| Crop { x: k.x, y: k.y, zoom: k.zoom });
-        let crop = (item.framing == FRAMING_CROP && !animated)
-            .then(|| self.crop_rect_in(self.read_size(item), still.or(item.crop).unwrap_or(Crop { x: 0.5, y: 0.5, zoom: 1.0 })));
+        let crop = (item.framing == FRAMING_CROP && !animated && !stacked).then(|| {
+            self.crop_rect_in(self.read_size(item), self.width as f64 / self.height as f64, still.or(item.crop).unwrap_or(Crop { x: 0.5, y: 0.5, zoom: 1.0 }))
+        });
         let mut plan = self.local_plan(item, src_start, src_end);
         if let Some((w, h, _, _)) = crop {
             (plan.source_width, plan.source_height) = (w as u32, h as u32);
         }
-        if animated {
+        if animated || stacked {
             (plan.source_width, plan.source_height) = (self.width as u32, self.height as u32);
         }
         let graph = build_layout_graph(
@@ -968,19 +1128,23 @@ impl Project {
         // build_layout_graph reads input 0 with fixed labels: give this read its own.
         let video_in = match crop {
             Some((w, h, x, y)) => {
-                parts.push(format!("[{k}:v]crop={w}:{h}:{x}:{y}[p{k}_crop]"));
+                parts.push(format!("[{input}:v]crop={w}:{h}:{x}:{y}[p{k}_crop]"));
                 format!("[p{k}_crop]")
             }
             None if animated => {
-                parts.push(format!("[{k}:v]{}[p{k}_crop]", self.moving_crop(item, (s - out_start) as f64 / 1000.0)));
+                parts.push(format!("[{input}:v]{}[p{k}_crop]", self.moving_crop(item, (s - out_start) as f64 / 1000.0)));
                 format!("[p{k}_crop]")
             }
-            None => format!("[{k}:v]"),
+            None if stacked => {
+                parts.push(format!("[{input}:v]{}[p{k}_crop]", self.focus_panels(self.read_size(item), focus, &k)));
+                format!("[p{k}_crop]")
+            }
+            None => format!("[{input}:v]"),
         };
         let graph = graph
             .replace('[', &format!("[p{k}_"))
             .replace(&format!("[p{k}_0:v]"), &video_in)
-            .replace(&format!("[p{k}_0:a:0]"), &format!("[{k}:a:0]"));
+            .replace(&format!("[p{k}_0:a:0]"), &format!("[{input}:a:0]"));
         parts.push(graph);
         // This piece's speed, then its dip-to-black fades (in edited time: the chain's
         // clock is moved to where this read starts in the piece, so a range that starts
@@ -1046,6 +1210,8 @@ impl Project {
         for &(i, start) in &placed {
             cuts.extend([start, start + self.video[i].out_ms()].into_iter().filter(|t| (from + 1..r1).contains(t)));
         }
+        // Each span between cuts is wholly inside or outside every focus stretch.
+        cuts.extend(self.focus.iter().flat_map(|f| [f.start_ms, f.end_ms]).filter(|t| (from + 1..r1).contains(t)));
         cuts.sort_unstable();
         cuts.dedup();
         let mut reads = Vec::new();
@@ -1055,17 +1221,23 @@ impl Project {
         let mut n = 0;
         // The main track has sound when the source or any added video does.
         let track_audio = source_audio || self.video.iter().any(|v| v.media.is_some());
+        // (start, first read) of the dissolve being blended: focus edges cut it into spans
+        // that each read the whole overlap, so they share its reads (only within it: a
+        // shared input buffers what one span decodes until the next plays).
+        let mut overlap_reads = (i64::MIN, 0);
         for w in cuts.windows(2) {
             let (s, e) = (w[0], w[1]);
             let active: Vec<(usize, i64)> =
                 placed.iter().copied().filter(|&(i, start)| start < e && start + self.video[i].out_ms() > s).collect();
-            let mut read = |i: usize, start: i64, span: (i64, i64)| {
-                self.piece_read(i, start, span, (source_audio, track_audio), media_dir, &mut reads, &mut read_paths, &mut parts)
+            let focus = self.focus_at(s);
+            let first_read = reads.len();
+            let mut read = |i: usize, start: i64, span: (i64, i64), share_from: usize| {
+                self.piece_read(i, start, span, &focus, (source_audio, track_audio), media_dir, share_from, &mut reads, &mut read_paths, &mut parts)
             };
             match active.as_slice() {
                 [] => continue,
                 &[(i, start)] => {
-                    let Some((v, a)) = read(i, start, (s, e))? else { continue };
+                    let Some((v, a)) = read(i, start, (s, e), usize::MAX)? else { continue };
                     outputs += &v;
                     outputs += a.as_deref().unwrap_or("");
                 }
@@ -1073,7 +1245,10 @@ impl Project {
                     // A blend: both pieces are read over the whole overlap, so the effect's
                     // progress is the export's however the range cuts it, then trimmed to it.
                     let (o0, o1) = (b_start, a_start + self.video[i].out_ms());
-                    let (Some((va, aa)), Some((vb, ab))) = (read(i, a_start, (o0, o1))?, read(j, b_start, (o0, o1))?) else {
+                    if overlap_reads.0 != o0 {
+                        overlap_reads = (o0, first_read);
+                    }
+                    let (Some((va, aa)), Some((vb, ab))) = (read(i, a_start, (o0, o1), overlap_reads.1)?, read(j, b_start, (o0, o1), overlap_reads.1)?) else {
                         return Err(render_error("A transition is too short"));
                     };
                     let d = (o1 - o0) as f64 / 1000.0;

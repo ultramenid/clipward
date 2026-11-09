@@ -2,13 +2,13 @@
 //!
 //! The main track plays its pieces back to back, CapCut style: drag a piece's edges to
 //! trim it, drag the piece to reorder, click the ruler or a piece to move the playhead.
-//! Above it sit the overlays, picture-in-picture, text and caption words; below, the
+//! Above it sit the overlays, picture-in-picture, text, caption words and focus; below, the
 //! sounds. A drag follows the pointer anywhere in the window until the button comes up.
 use super::media::{self, FileKey, Frames, StripKey, Wants};
 use crate::editor::state::{EditorState, Selection, ZOOM_MAX, ZOOM_MIN};
 use crate::theme::{ActiveTokens, Tokens};
 use crate::ui::{self, Truncate, TypeScale, u};
-use clipward_core::clip_engine::render::project::{AudioItem, OverlayBox, PipItem, Project, TextLayer, VideoItem};
+use clipward_core::clip_engine::render::project::{AudioItem, FocusLayer, OverlayBox, PipItem, Project, TextLayer, VideoItem};
 use clipward_core::format::{format_ruler, to_fixed};
 use clipward_core::overlays::OverlayKey;
 use clipward_core::timeline::{self, Edge, EditedWord, snap_to_frame, sound_length};
@@ -40,6 +40,7 @@ pub enum Target {
     Piece(usize),
     Trim(usize, Edge),
     Text(String, Option<Edge>),
+    Focus(String, Option<Edge>),
     Sound(String, Option<Edge>),
     Overlay(OverlayKey, Option<Edge>),
     /// A caption word by its place in the edited words.
@@ -53,6 +54,7 @@ enum Kind {
     Move { index: usize, video: Vec<VideoItem>, dx: f64 },
     Trim { index: usize, edge: Edge, video: Vec<VideoItem> },
     Text { layer: TextLayer, edge: Option<Edge> },
+    Focus { layer: FocusLayer, edge: Option<Edge> },
     Sound { item: AudioItem, edge: Option<Edge>, file_ms: i64 },
     Overlay { key: OverlayKey, box_: OverlayBox, edge: Option<Edge> },
     Word { word: EditedWord, index: usize, edge: Option<Edge> },
@@ -180,8 +182,9 @@ impl Tracks {
         self.layout = Some(view::track_layout(
             editor.overlays.len(),
             view::lane_rows(&timeline::pip_lanes(&project.pip)),
-            view::lane_rows(&timeline::text_lanes(&project.texts)),
+            view::lane_rows(&timeline::span_lanes(&project.texts)),
             !self.words.is_empty(),
+            view::lane_rows(&timeline::span_lanes(&project.focus)),
             editor.track_height as f64,
             view::lane_rows(&timeline::sound_lanes(&project.audio)),
         ));
@@ -277,6 +280,7 @@ impl Tracks {
             Target::Piece(index) => Some(Kind::Move { index, video: project.video.clone(), dx: 0. }),
             Target::Trim(index, edge) => Some(Kind::Trim { index, edge, video: project.video.clone() }),
             Target::Text(id, edge) => project.texts.iter().find(|t| t.id == id).map(|layer| Kind::Text { layer: layer.clone(), edge }),
+            Target::Focus(id, edge) => project.focus.iter().find(|f| f.id == id).map(|layer| Kind::Focus { layer: layer.clone(), edge }),
             Target::Sound(id, edge) => project.audio.iter().find(|a| a.id == id).map(|item| {
                 let file_ms = match &item.file {
                     None => editor.opened.as_ref().map_or(item.src_out_ms, |o| o.source_duration_ms),
@@ -414,8 +418,24 @@ impl Tracks {
                 self.editor.update(cx, |e, cx| {
                     e.edit_texts(
                         |texts| match edge {
-                            Some(edge) => timeline::trim_text(texts, &id, edge, at, total),
-                            None => timeline::move_text(texts, &id, at, total),
+                            Some(edge) => timeline::trim_span(texts, &id, edge, at, total),
+                            None => timeline::move_span(texts, &id, at, total),
+                        },
+                        false,
+                        cx,
+                    );
+                    e.seek_paused(at.min(total as f64), cx);
+                });
+            }
+            Kind::Focus { layer, edge } => {
+                let from = if *edge == Some(Edge::Out) { layer.end_ms } else { layer.start_ms };
+                let at = snap(from as f64 + ms);
+                let (id, edge) = (layer.id.clone(), *edge);
+                self.editor.update(cx, |e, cx| {
+                    e.edit_focus(
+                        |focus| match edge {
+                            Some(edge) => timeline::trim_span(focus, &id, edge, at, total),
+                            None => timeline::move_span(focus, &id, at, total),
                         },
                         false,
                         cx,
@@ -491,6 +511,9 @@ impl Tracks {
             Kind::Sound { item, .. } => release(Selection::Sound(item.id), time.min(total), cx),
             Kind::Text { layer, .. } => {
                 release(Selection::Text(layer.id), (layer.start_ms as f64).max(time.min((layer.end_ms - 1) as f64)), cx)
+            }
+            Kind::Focus { layer, .. } => {
+                release(Selection::Focus(layer.id), (layer.start_ms as f64).max(time.min((layer.end_ms - 1) as f64)), cx)
             }
             Kind::Trim { index, .. } | Kind::Move { index, .. } if !moved => {
                 editor.update(cx, |e, cx| {
@@ -639,6 +662,9 @@ impl Render for Tracks {
         if let Some(top) = layout.words {
             content = content.children(self.word_track(g, top, visible, &t, cx));
         }
+        if let Some(top) = layout.focus {
+            content = content.children(self.focus_track(g, top, total, project, editor, &t, cx));
+        }
         content = content.children(self.main_track(g, layout.main, project, editor, visible, &mut wants, &t, cx));
         if let Some(top) = layout.sounds {
             content = content.children(self.sound_track(g, top, project, editor, &mut wants, &t, cx));
@@ -662,6 +688,7 @@ impl Render for Tracks {
             Kind::Move { .. } => CursorStyle::ClosedHand,
             Kind::Seek | Kind::Trim { .. } => CursorStyle::ResizeLeftRight,
             Kind::Text { edge, .. }
+            | Kind::Focus { edge, .. }
             | Kind::Sound { edge, .. }
             | Kind::Overlay { edge, .. }
             | Kind::Word { edge, .. }
@@ -941,7 +968,7 @@ impl Tracks {
 
     #[allow(clippy::too_many_arguments)]
     fn text_track(&self, g: Geo, top: f64, total: f64, project: &Project, editor: &EditorState, t: &Tokens, cx: &Context<Self>) -> Vec<AnyElement> {
-        let lanes = timeline::text_lanes(&project.texts);
+        let lanes = timeline::span_lanes(&project.texts);
         let mut items: Vec<(bool, AnyElement)> = project
             .texts
             .iter()
@@ -967,6 +994,41 @@ impl Tracks {
                 .child(label(text))
                 .child(edge(Edge::In, 6., t.warning.opacity(0.7), self.press(Target::Text(layer.id.clone(), Some(Edge::In)), cx)))
                 .child(edge(Edge::Out, 6., t.warning.opacity(0.7), self.press(Target::Text(layer.id.clone(), Some(Edge::Out)), cx)))
+                .into_any_element();
+                (selected, element)
+            })
+            .collect();
+        on_top(&mut items)
+    }
+
+    /// Focus stretches: drag one, or its edges, to change when the crop holds.
+    #[allow(clippy::too_many_arguments)]
+    fn focus_track(&self, g: Geo, top: f64, total: f64, project: &Project, editor: &EditorState, t: &Tokens, cx: &Context<Self>) -> Vec<AnyElement> {
+        let lanes = timeline::span_lanes(&project.focus);
+        let mut items: Vec<(bool, AnyElement)> = project
+            .focus
+            .iter()
+            .map(|layer| {
+                let selected = editor.selection == Some(Selection::Focus(layer.id.clone()));
+                let start = (layer.start_ms as f64).min(total);
+                let end = (layer.end_ms as f64).min(total);
+                let lane = lanes.get(&layer.id).copied().unwrap_or(0) as f64;
+                let element = lane_box(
+                    ElementId::Name(format!("focus-{}", layer.id).into()),
+                    g.x(start),
+                    g.px(top + lane * view::LANE_ROW),
+                    g.px((g.len(end - start) - 1.).max(4.)),
+                    view::LANE_H as f32,
+                    t.success,
+                    0.2,
+                    selected,
+                    t,
+                )
+                .on_mouse_down(MouseButton::Left, self.press(Target::Focus(layer.id.clone(), None), cx))
+                .child(ui::icon("focus").size(u(12.)).flex_shrink_0())
+                .child(label(format!("Focus {}×", to_fixed(layer.crop.zoom, 1))))
+                .child(edge(Edge::In, 6., t.success.opacity(0.7), self.press(Target::Focus(layer.id.clone(), Some(Edge::In)), cx)))
+                .child(edge(Edge::Out, 6., t.success.opacity(0.7), self.press(Target::Focus(layer.id.clone(), Some(Edge::Out)), cx)))
                 .into_any_element();
                 (selected, element)
             })

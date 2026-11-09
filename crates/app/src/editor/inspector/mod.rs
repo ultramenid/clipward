@@ -2,7 +2,7 @@
 //! SoundPanels, ColorPanel and the piece inspector in EditorPage.tsx). See docs/GPUI_PORT.md.
 //!
 //! Panel order as the React `<aside>`: Campaign brief, the inspector for the selection
-//! (text, overlay, PiP, sound or piece; hidden on read-only clips), Overlays, Captions.
+//! (text, focus, overlay, PiP, sound or piece; hidden on read-only clips), Overlays, Captions.
 //! It follows the playhead only through what it shows from it (a crop piece's zoom and
 //! keyframe at the playhead); the caption words follow it in their own cached view
 //! (`captions::WordList`), so the panel doesn't re-render every frame while playing.
@@ -504,6 +504,7 @@ impl Render for Inspector {
 
         let inspector = match selection.filter(|_| editable && has_project) {
             Some(Selection::Text(id)) => self.text_inspector(&id, window, cx),
+            Some(Selection::Focus(id)) => self.focus_inspector(&id, window, cx),
             Some(Selection::Overlay(key)) => self.overlay_inspector(key, window, cx),
             Some(Selection::Pip(id)) => self.pip_inspector(&id, window, cx),
             Some(Selection::Sound(id)) => self.sound_inspector(&id, window, cx),

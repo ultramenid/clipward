@@ -17,7 +17,9 @@ use crate::state;
 use crate::theme::ActiveTokens;
 use crate::ui::{self, TypeScale, u};
 use crate::video::MediaPlayer;
-use clipward_core::clip_engine::render::project::{PIP_WIDTH_RANGE, Project, TEXT_SIZE_RANGE, VideoItem};
+use clipward_core::clip_engine::render::project::{
+    Crop, FOCUS_ASPECT_RANGE, FocusLayer, MAX_CROP_ZOOM, PIP_WIDTH_RANGE, Project, TEXT_SIZE_RANGE, VideoItem,
+};
 use clipward_core::overlays::OverlayKey;
 use clipward_core::preview::{CHUNK_MS, SUPERSEDED};
 use clipward_core::timeline::{self, Placement};
@@ -41,7 +43,18 @@ enum Target {
     Text(String),
     Overlay(OverlayKey),
     Crop(usize),
+    Focus(String),
+    /// One side of a focus frame, with the frame (x, y, w, h picture fractions) at the start.
+    FocusSide(String, Side, (f64, f64, f64, f64)),
     Pip(String),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Side {
+    Left,
+    Right,
+    Top,
+    Bottom,
 }
 
 #[derive(Clone, Debug)]
@@ -99,6 +112,12 @@ pub struct Player {
     area: Rc<Cell<Bounds<Pixels>>>,
     frame: Rc<Cell<Bounds<Pixels>>>,
     drag: Option<Drag>,
+    /// ffmpeg stills for the instant preview when its player shows nothing (it can't
+    /// decode every source, VP9 for one): the last made (file, source ms, image or None
+    /// when ffmpeg failed), the one being made, and the one wanted after it.
+    still_frame: Option<(PathBuf, i64, Option<PathBuf>)>,
+    still_making: Option<(PathBuf, i64)>,
+    still_wanted: Option<(PathBuf, i64)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -141,8 +160,40 @@ impl Player {
             area: Rc::new(Cell::new(Bounds::default())),
             frame: Rc::new(Cell::new(Bounds::default())),
             drag: None,
+            still_frame: None,
+            still_making: None,
+            still_wanted: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Want `video`'s frame at `ms` from ffmpeg (cached on disk). One is made at a time,
+    /// then the latest wanted, so a hover across the timeline doesn't queue up a pile.
+    fn want_still(&mut self, video: PathBuf, ms: i64, cx: &mut Context<Self>) {
+        let key = Some((video, ms));
+        let made = self.still_frame.as_ref().map(|(v, m, _)| (v.clone(), *m));
+        self.still_wanted = if made == key || self.still_making == key { None } else { key };
+        if self.still_making.is_none() {
+            self.next_still(cx);
+        }
+    }
+
+    fn next_still(&mut self, cx: &mut Context<Self>) {
+        let Some((video, ms)) = self.still_wanted.take() else { return };
+        self.still_making = Some((video.clone(), ms));
+        let core = state::core(cx);
+        let path = video.to_string_lossy().into_owned();
+        let job = state::run(cx, async move { core.frame_still(&path, ms as f64 / 1000.).await });
+        cx.spawn(async move |this, cx| {
+            let result = job.await;
+            let _ = this.update(cx, |this, cx| {
+                this.still_making = None;
+                this.still_frame = Some((video, ms, result.ok().flatten()));
+                cx.notify();
+                this.next_still(cx);
+            });
+        })
+        .detach();
     }
 
     /// The edit changed: chunks of the old one no longer apply.
@@ -523,7 +574,12 @@ impl Player {
                     let size = (timeline::js_round(base * factor) as i64).clamp(TEXT_SIZE_RANGE.0, TEXT_SIZE_RANGE.1);
                     e.edit_texts(|texts| texts.iter().cloned().map(|mut t| { if &t.id == id { t.size = size; } t }).collect(), false, cx);
                 }
-                Target::Crop(_) => {}
+                Target::Focus(id) => {
+                    // A bigger frame is less zoom.
+                    let zoom = (timeline::js_round(base / factor * 100.) / 100.).clamp(1., MAX_CROP_ZOOM);
+                    e.edit_focus_layer(id, |f| f.crop.zoom = zoom, false, cx);
+                }
+                Target::Crop(_) | Target::FocusSide(..) => {}
             });
             return;
         }
@@ -559,6 +615,46 @@ impl Player {
                     cx,
                 );
             }
+            Target::Focus(id) => {
+                // The frame follows the pointer over the whole picture, kept inside it.
+                let Some(project) = e.project() else { return };
+                let (Some(p), Some(f)) = (timeline::placement_at(&project.video, time), project.focus.iter().find(|f| &f.id == id)) else { return };
+                let (rw, rh) = project.read_size(p.item);
+                let pic = fit(frame, rw as f32 / rh.max(1) as f32).size;
+                let r = focus_rect(project, p.item, f, time as i64);
+                // max/min, not clamp: a window a hair over the whole picture inverts the bounds.
+                let x = clamp((drag.x + (dx / f32::from(pic.width).max(1.)) as f64).max(r.w / 2.).min(1. - r.w / 2.));
+                let y = clamp((drag.y + (dy / f32::from(pic.height).max(1.)) as f64).max(r.h / 2.).min(1. - r.h / 2.));
+                e.edit_focus_layer(id, |f| { f.crop.x = x; f.crop.y = y; }, false, cx);
+            }
+            Target::FocusSide(id, side, (rx, ry, rw, rh)) => {
+                // That side follows the pointer; the window's shape and zoom follow from it.
+                let Some(project) = e.project() else { return };
+                let Some(p) = timeline::placement_at(&project.video, time) else { return };
+                let (sw, sh) = project.read_size(p.item);
+                let (sw, sh) = (sw as f64, sh as f64);
+                let pic = fit(frame, (sw / sh.max(1.)) as f32).size;
+                let (fx, fy) = ((dx / f32::from(pic.width).max(1.)) as f64, (dy / f32::from(pic.height).max(1.)) as f64);
+                let (mut x0, mut y0, mut x1, mut y1) = (*rx, *ry, rx + rw, ry + rh);
+                // min/max, not clamp: a window under 0.02 across at an edge inverts the bounds.
+                match side {
+                    Side::Left => x0 = (x0 + fx).min(x1 - 0.02).max(0.),
+                    Side::Right => x1 = (x1 + fx).max(x0 + 0.02).min(1.),
+                    Side::Top => y0 = (y0 + fy).min(y1 - 0.02).max(0.),
+                    Side::Bottom => y1 = (y1 + fy).max(y0 + 0.02).min(1.),
+                }
+                let (w, h) = ((x1 - x0) * sw, (y1 - y0) * sh);
+                let aspect = w / h.max(1.);
+                // The largest window of this shape, over this one.
+                let zoom = if sw / sh > aspect { sh / h.max(1.) } else { sw / w.max(1.) };
+                if !(FOCUS_ASPECT_RANGE.0..=FOCUS_ASPECT_RANGE.1).contains(&aspect) || zoom > MAX_CROP_ZOOM {
+                    return;
+                }
+                let round = |v: f64, k: f64| timeline::js_round(v * k) / k;
+                let crop = Crop { x: round((x0 + x1) / 2., 1000.), y: round((y0 + y1) / 2., 1000.), zoom: round(zoom, 1000.).max(1.) };
+                let aspect = round(aspect, 1000.);
+                e.edit_focus_layer(id, |f| { f.crop = crop; f.aspect = Some(aspect); }, false, cx);
+            }
             Target::Overlay(key) => {
                 let (x, y) = (clamp(drag.x + (dx / w) as f64), clamp(drag.y + (dy / h) as f64));
                 e.place_overlay(*key, |b| { b.x = x; b.y = y; }, false, cx);
@@ -586,12 +682,31 @@ impl Player {
 
 /// The crop window of a piece, as fractions of its picture.
 fn crop_rect(project: &Project, item: &VideoItem, crop: clipward_core::clip_engine::render::project::Crop) -> timeline::Rect {
-    let read = item
-        .media
-        .as_ref()
-        .and_then(|m| project.media.iter().find(|f| &f.file == m))
-        .map_or((project.source_width as f64, project.source_height as f64), |f| (f.width as f64, f.height as f64));
-    timeline::crop_window(read, (project.width as f64, project.height as f64), crop)
+    let (sw, sh) = project.read_size(item);
+    timeline::crop_window((sw as f64, sh as f64), (project.width as f64, project.height as f64), crop)
+}
+
+/// Where window `r` of a picture (shape `aspect`, w/h) sits, fitted and centred, in a
+/// `w`×`h` panel: (left, top, w, h).
+fn fit_window(r: timeline::Rect, aspect: f64, w: f32, h: f32) -> (f32, f32, f32, f32) {
+    let shape = (r.w * aspect / r.h) as f32;
+    let (dw, dh) = if shape > w / h { (w, w / shape) } else { (h * shape, h) };
+    ((w - dw) / 2., (h - dh) / 2., dw, dh)
+}
+
+/// A focus's window on a piece's picture at `t_ms`: its drawn shape, else its panel's
+/// there (`focus_bands`, as the render).
+fn focus_rect(project: &Project, item: &VideoItem, focus: &FocusLayer, t_ms: i64) -> timeline::Rect {
+    let on = project.focus_at(t_ms);
+    let band = on.iter().position(|f| f.id == focus.id).map_or(project.height, |j| project.focus_bands(on.len())[j].1);
+    let aspect = focus.aspect.unwrap_or(project.width as f64 / band.max(1) as f64);
+    let (sw, sh) = project.read_size(item);
+    timeline::crop_window((sw as f64, sh as f64), (aspect, 1.), focus.crop)
+}
+
+/// The panel (index into `bands`, from `Project::focus_bands`) at canvas y `y`.
+fn panel_at(bands: &[(i64, i64)], y: f64) -> usize {
+    bands.iter().position(|&(top, h)| y < (top + h) as f64).unwrap_or(bands.len().saturating_sub(1))
 }
 
 /// The largest `aspect` box inside `area`, centred.
@@ -655,7 +770,19 @@ impl Render for Player {
         let index = ((time / span).floor() as usize).min(((total / span).ceil() as usize).max(1) - 1);
         let active = index % 2;
         let slot_paths = [0, 1].map(|s| self.usable(if s == active { index } else { index + 1 }, whole));
-        let exact_path = if scrubbing { None } else { slot_paths[active].clone() };
+        let placement = timeline::placement_at(&project.video, time);
+        // Focuses over the playhead frame whatever piece is there (overlapping ones as
+        // panels). Selected and paused, one shows the whole picture instead, with its window
+        // as a frame to drag; not while hovering or scrubbing the timeline, which previews
+        // the result.
+        let on = project.focus_at(time as i64);
+        let focus = on.iter().copied().find(|f| selection == Some(Selection::Focus(f.id.clone()))).or(on.first().copied());
+        let framing = editable
+            && !playing
+            && (self.drag.is_some() || !scrubbing)
+            && placement.is_some()
+            && focus.is_some_and(|f| selection == Some(Selection::Focus(f.id.clone())));
+        let exact_path = if scrubbing || framing { None } else { slot_paths[active].clone() };
         let exact = exact_path.is_some()
             && self.slots[active].path() == exact_path.as_deref()
             && self.slots[active].has_frame();
@@ -688,7 +815,6 @@ impl Render for Player {
             });
         }
 
-        let placement = timeline::placement_at(&project.video, time);
         let piece_media = placement.as_ref().and_then(|p| p.item.media.as_ref()).and_then(|m| project.media.iter().find(|f| &f.file == m));
         // An image piece: drawn as a still, its time driven by the wall clock.
         let still = piece_media.is_some_and(|m| m.image);
@@ -710,6 +836,15 @@ impl Render for Player {
         if busy {
             window.request_animation_frame();
         }
+        // Paused on the instant preview with nothing from its player: an ffmpeg still of
+        // the moment instead (the last one, of this file, until it comes).
+        let still_video = (!exact && !still && !playing && !self.approx.has_frame())
+            .then(|| placement.as_ref().and_then(|p| p.item.media.as_ref()).map(|m| PathBuf::from(&output_dir).join(m)).or_else(|| source.clone()))
+            .flatten();
+        if let (Some(video), Some(at)) = (&still_video, timeline::source_time_at(&project.video, time)) {
+            self.want_still(video.clone(), at / 100 * 100, cx);
+        }
+        let still_image = self.still_frame.as_ref().filter(|(v, _, _)| still_video.as_ref() == Some(v)).and_then(|(_, _, s)| s.clone());
 
         // ---- the frame -------------------------------------------------------------
         let frame = self.frame.get();
@@ -717,12 +852,12 @@ impl Render for Player {
         let scale = f32::from(fsize.width) / project.width.max(1) as f32;
         let canvas_px = |v: f64| px(v as f32 * scale);
         let vertical = project.height > project.width;
-        let crop_piece = placement.as_ref().filter(|p| p.item.framing == "crop");
+        let crop_piece = placement.as_ref().filter(|p| !framing && (focus.is_some() || p.item.framing == "crop"));
         let crop = crop_piece.map(|p| {
-            let now = timeline::crop_at(p.item, time - p.start as f64);
+            let now = focus.map_or_else(|| timeline::crop_at(p.item, time - p.start as f64), |f| f.crop);
             (now, crop_rect(&project, p.item, now))
         });
-        let cover = vertical && placement.as_ref().is_some_and(|p| p.item.framing == "auto") && piece_media.is_none();
+        let cover = focus.is_none() && vertical && placement.as_ref().is_some_and(|p| p.item.framing == "auto") && piece_media.is_none();
         let dark = timeline::dip_at(&project.video, time);
         let look = placement.as_ref().and_then(|p| p.item.color);
         let entity = cx.entity();
@@ -739,16 +874,66 @@ impl Render for Player {
                 None => el.absolute().size_full(),
             }
         };
-        let fit_mode = if crop.is_some() { ObjectFit::Fill } else if cover { ObjectFit::Cover } else { ObjectFit::Contain };
+        let fit_mode = || if crop.is_some() { ObjectFit::Fill } else if cover { ObjectFit::Cover } else { ObjectFit::Contain };
+        // The instant picture: an image piece, the player's frame, or an ffmpeg still.
+        let content = |fit: &dyn Fn() -> ObjectFit| -> Option<AnyElement> {
+            if still {
+                let media = placement.as_ref().and_then(|p| p.item.media.as_ref())?;
+                Some(img(PathBuf::from(&output_dir).join(media)).size_full().object_fit(fit()).into_any_element())
+            } else if self.approx.has_frame() {
+                self.approx.surface(fit()).map(|s| s.size_full().into_any_element())
+            } else {
+                still_image.clone().map(|jpg| img(jpg).size_full().object_fit(fit()).into_any_element())
+            }
+        };
+        // Under focuses, as the render: a full-width panel each (`focus_bands`), top lane
+        // first, its window fitted in with bars.
+        let bands = project.focus_bands(on.len());
+        let band_scale = f32::from(fsize.height) / project.height.max(1) as f32;
+        let bars = project.focus_bar_color().and_then(crate::theme::hex).unwrap_or(black());
 
         let mut layers: Vec<AnyElement> = Vec::new();
         if !exact {
-            if still {
-                if let Some(media) = placement.as_ref().and_then(|p| p.item.media.as_ref()) {
-                    layers.push(picture(div()).child(img(PathBuf::from(&output_dir).join(media)).size_full().object_fit(fit_mode)).into_any_element());
+            match placement.as_ref().filter(|_| !framing && !on.is_empty()) {
+                Some(p) => {
+                    let (sw, sh) = project.read_size(p.item);
+                    let fw = f32::from(fsize.width);
+                    for (f, &(top, h)) in on.iter().zip(&bands) {
+                        let r = focus_rect(&project, p.item, f, time as i64);
+                        let (top, band) = (top as f32 * band_scale, h as f32 * band_scale);
+                        let (dx, dy, dw, dh) = fit_window(r, sw as f64 / sh.max(1) as f64, fw, band);
+                        let (pw, ph) = (dw / r.w as f32, dh / r.h as f32);
+                        let Some(el) = content(&|| ObjectFit::Fill) else { break };
+                        layers.push(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .top(px(top))
+                                .w(px(fw))
+                                .h(px(band))
+                                .overflow_hidden()
+                                .bg(bars)
+                                .child(
+                                    // The window, then the picture placed so only it shows.
+                                    div().absolute().left(px(dx)).top(px(dy)).w(px(dw)).h(px(dh)).overflow_hidden().child(
+                                        div()
+                                            .absolute()
+                                            .left(px(-r.x as f32 * pw))
+                                            .top(px(-r.y as f32 * ph))
+                                            .w(px(pw))
+                                            .h(px(ph))
+                                            .child(el),
+                                    ),
+                                )
+                                .into_any_element(),
+                        );
+                    }
                 }
-            } else if let Some(surface) = self.approx.surface(fit_mode) {
-                layers.push(picture(div()).child(surface.size_full()).into_any_element());
+                None => {
+                    if let Some(el) = content(&fit_mode) {
+                        layers.push(picture(div()).child(el).into_any_element());
+                    }
+                }
             }
             // The look's warmth as a tint (GPUI can't filter a video surface; the exact
             // preview, a moment later, has the real colour).
@@ -769,9 +954,17 @@ impl Render for Player {
         if !exact && dark > 0. {
             layers.push(div().absolute().size_full().bg(black().opacity(dark as f32)).into_any_element());
         }
-        // Drag the picture to move the crop.
+        // Drag the picture to move the crop; on focuses, pressing selects the panel under the
+        // pointer and drags its frame, from the centre the move keeps it to.
         if let (Some(p), Some((now, _)), true) = (crop_piece, crop, editable) {
-            let index = p.index;
+            let targets: Vec<_> = on
+                .iter()
+                .map(|f| {
+                    let r = focus_rect(&project, p.item, f, time as i64);
+                    (f.id.clone(), r.x + r.w / 2., r.y + r.h / 2.)
+                })
+                .collect();
+            let (index, height) = (p.index, project.height);
             layers.push(
                 div()
                     .id("crop-drag")
@@ -779,8 +972,20 @@ impl Render for Player {
                     .size_full()
                     .cursor_grab()
                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, _, cx| {
-                        this.editor.update(cx, |ed, cx| ed.select(Some(Selection::Piece(index)), cx));
-                        this.start_drag(Target::Crop(index), now.x, now.y, e.position, cx);
+                        let frame = this.frame.get();
+                        let y = f32::from(e.position.y - frame.origin.y) / f32::from(frame.size.height).max(1.) * height as f32;
+                        let (select, target, x, y) = match targets.get(panel_at(&bands, y as f64)) {
+                            Some((id, x, y)) => (Selection::Focus(id.clone()), Target::Focus(id.clone()), *x, *y),
+                            None => (Selection::Piece(index), Target::Crop(index), now.x, now.y),
+                        };
+                        let pause = matches!(target, Target::Focus(_));
+                        this.editor.update(cx, |ed, cx| {
+                            ed.select(Some(select), cx);
+                            if pause {
+                                ed.set_playing(false, cx);
+                            }
+                        });
+                        this.start_drag(target, x, y, e.position, cx);
                     }))
                     .into_any_element(),
             );
@@ -903,7 +1108,49 @@ impl Render for Player {
                 });
             layers.push(anchored(x, y, fsize).child(el).into_any_element());
         }
-        if !exact {
+        // The selected focus's frame on the whole picture: drag it to move, a side to
+        // reshape it, its corner to zoom.
+        if let (true, Some(p), Some(f)) = (framing, placement.as_ref(), focus) {
+            let (rw, rh) = project.read_size(p.item);
+            let pic = fit(Bounds { origin: point(px(0.), px(0.)), size: fsize }, rw as f32 / rh.max(1) as f32);
+            let r = focus_rect(&project, p.item, f, time as i64);
+            let rect = (r.x, r.y, r.w, r.h);
+            let (pw, ph) = (f32::from(pic.size.width), f32::from(pic.size.height));
+            let (left, top) = (f32::from(pic.origin.x) + r.x as f32 * pw, f32::from(pic.origin.y) + r.y as f32 * ph);
+            let (w, h) = (r.w as f32 * pw, r.h as f32 * ph);
+            let (fw, fh) = (f32::from(fsize.width).max(1.), f32::from(fsize.height).max(1.));
+            let centre = (((left + w / 2.) / fw) as f64, ((top + h / 2.) / fh) as f64);
+            let (mx, my, zoom) = (r.x + r.w / 2., r.y + r.h / 2., f.crop.zoom);
+            let (id, id2) = (f.id.clone(), f.id.clone());
+            layers.push(
+                div()
+                    .id("focus-frame")
+                    .absolute()
+                    .left(px(left))
+                    .top(px(top))
+                    .w(px(w))
+                    .h(px(h))
+                    .border_2()
+                    .border_color(t.success)
+                    .cursor_move()
+                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                        this.start_drag(Target::Focus(id.clone()), mx, my, e.position, cx);
+                    }))
+                    .children([Side::Left, Side::Right, Side::Top, Side::Bottom].map(|side| {
+                        let id = f.id.clone();
+                        side_handle(side, cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.start_drag(Target::FocusSide(id.clone(), side, rect), 0., 0., e.position, cx);
+                        }))
+                    }))
+                    .child(resize_handle(cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.start_resize(Target::Focus(id2.clone()), centre.0, centre.1, zoom, e.position, cx);
+                    })))
+                    .into_any_element(),
+            );
+        }
+        if !exact && !framing {
             layers.push(
                 div()
                     .absolute()
@@ -998,6 +1245,27 @@ impl Render for Player {
     }
 }
 
+/// A knob mid-way along one side of the focus frame: drag it to move that side.
+fn side_handle(side: Side, on_down: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static) -> Stateful<Div> {
+    let across = matches!(side, Side::Left | Side::Right);
+    let knob = div().bg(white()).rounded(px(2.)).border_1().border_color(black().opacity(0.6));
+    let strip = div()
+        .id(SharedString::from(format!("focus-side-{side:?}")))
+        .absolute()
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor(if across { CursorStyle::ResizeLeftRight } else { CursorStyle::ResizeUpDown })
+        .child(if across { knob.w(px(6.)).h(px(20.)) } else { knob.w(px(20.)).h(px(6.)) })
+        .on_mouse_down(MouseButton::Left, on_down);
+    match side {
+        Side::Left => strip.left(px(-7.)).top_0().bottom_0().w(px(12.)),
+        Side::Right => strip.right(px(-7.)).top_0().bottom_0().w(px(12.)),
+        Side::Top => strip.top(px(-7.)).left_0().right_0().h(px(12.)),
+        Side::Bottom => strip.bottom(px(-7.)).left_0().right_0().h(px(12.)),
+    }
+}
+
 /// A corner square on the selected item: drag it to resize about the centre.
 fn resize_handle(on_down: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static) -> Stateful<Div> {
     div()
@@ -1012,4 +1280,16 @@ fn resize_handle(on_down: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'sta
         .border_color(black().opacity(0.6))
         .cursor(CursorStyle::ResizeUpLeftDownRight)
         .on_mouse_down(MouseButton::Left, on_down)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::panel_at;
+
+    #[test]
+    fn panel_at_picks_the_band_under_y() {
+        let bands = [(0, 640), (640, 640), (1280, 642)];
+        assert_eq!([-5., 0., 639.9, 640., 1300., 5000.].map(|y| panel_at(&bands, y)), [0, 0, 0, 1, 2, 2]);
+        assert_eq!(panel_at(&[], 10.), 0);
+    }
 }

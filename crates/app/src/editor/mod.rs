@@ -321,7 +321,7 @@ impl EditorPage {
 
     // ---- keyboard ------------------------------------------------------------------
 
-    /// Space, ⌘Z/⇧⌘Z, S, T, Delete, ←/→ (Shift: a second). Not while typing.
+    /// Space, ⌘Z/⇧⌘Z, S, T, F, Delete, ←/→ (Shift: a second). Not while typing.
     fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         // Text fields and sliders keep their keys (React skipped input, textarea, select).
         if !(self.focus.is_focused(window) || window.focused(cx).is_none()) {
@@ -349,6 +349,10 @@ impl EditorPage {
             }
             "t" if !command => {
                 self.editor.update(cx, |e, cx| e.add_text(cx));
+                true
+            }
+            "f" if !command => {
+                self.editor.update(cx, |e, cx| e.add_focus(cx));
                 true
             }
             "backspace" | "delete" => {
@@ -549,6 +553,11 @@ impl EditorPage {
                     .on_click(cx.listener(|this, _, _, cx| this.editor.update(cx, |e, cx| e.add_text(cx)))),
             )
             .child(
+                tool("editor-focus", "focus", "Focus", "Lock the frame on a crop from the playhead (F)")
+                    .disabled(!editable)
+                    .on_click(cx.listener(|this, _, _, cx| this.editor.update(cx, |e, cx| e.add_focus(cx)))),
+            )
+            .child(
                 tool("editor-media", "film", "Media", "Add a video or image at the playhead")
                     .loading(self.adding_media)
                     .disabled(!editable || self.adding_media)
@@ -575,7 +584,7 @@ impl EditorPage {
                     .into_any_element()
             })
             .child(
-                tool("editor-delete", "trash", "Delete", "Delete the selected piece, text, sound or overlay (Delete)")
+                tool("editor-delete", "trash", "Delete", "Delete the selected piece, text, focus, sound or overlay (Delete)")
                     .disabled(!editable || !can_remove)
                     .on_click(cx.listener(|this, _, _, cx| this.editor.update(cx, |e, cx| e.remove_selected(cx)))),
             )

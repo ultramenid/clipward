@@ -8,7 +8,8 @@
 use crate::state;
 use clipward_core::clip_engine::TranscriptSegment;
 use clipward_core::clip_engine::render::project::{
-    AudioItem, MediaFile, OverlayBox, OverlayPreview, PipItem, Project, TextLayer, VideoItem,
+    AudioItem, Crop, FocusLayer, MAX_FOCUS_LAYERS, MediaFile, OverlayBox, OverlayPreview, PipItem, Project, TextLayer,
+    VideoItem,
 };
 use clipward_core::edit_history::EditHistory;
 use clipward_core::editor::EditorProject;
@@ -24,7 +25,7 @@ const OVERLAY_PREVIEW_DELAY: Duration = Duration::from_millis(300);
 pub const TRACK_MIN: f32 = 64.;
 pub const TRACK_MAX: f32 = 240.;
 pub const TRACK_DEFAULT: f32 = 120.;
-/// A new text layer's length and size (canvas px).
+/// A new text layer's (or focus's) length, and a text layer's size (canvas px).
 pub const NEW_TEXT_MS: i64 = 3000;
 pub const NEW_TEXT_SIZE: i64 = 72;
 /// Imported music starts a little quieter and ducks under speech.
@@ -40,11 +41,12 @@ pub const OVERLAY_SCALE_MAX: f64 = 3.0;
 pub const ZOOM_MIN: f64 = 8.;
 pub const ZOOM_MAX: f64 = 400.;
 
-/// What the inspector shows: one piece, text layer, sound, overlay or PiP at a time.
+/// What the inspector shows: one piece, text layer, focus, sound, overlay or PiP at a time.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Selection {
     Piece(usize),
     Text(String),
+    Focus(String),
     Sound(String),
     Overlay(OverlayKey),
     Pip(String),
@@ -261,6 +263,25 @@ impl EditorState {
         self.change(|p| changed(&p.texts, update(&p.texts)).map(|texts| Project { texts, ..p.clone() }), record, cx);
     }
 
+    pub fn edit_focus(&mut self, update: impl FnOnce(&[FocusLayer]) -> Vec<FocusLayer>, record: bool, cx: &mut Context<Self>) {
+        self.change(|p| changed(&p.focus, update(&p.focus)).map(|focus| Project { focus, ..p.clone() }), record, cx);
+    }
+
+    /// Change focus `id` in place (see `edit_focus`).
+    pub fn edit_focus_layer(&mut self, id: &str, change: impl FnOnce(&mut FocusLayer), record: bool, cx: &mut Context<Self>) {
+        self.edit_focus(
+            |focus| {
+                let mut focus = focus.to_vec();
+                if let Some(f) = focus.iter_mut().find(|f| f.id == id) {
+                    change(f);
+                }
+                focus
+            },
+            record,
+            cx,
+        );
+    }
+
     pub fn edit_sounds(&mut self, update: impl FnOnce(&[AudioItem]) -> Vec<AudioItem>, record: bool, cx: &mut Context<Self>) {
         self.change(|p| changed(&p.audio, update(&p.audio)).map(|audio| Project { audio, ..p.clone() }), record, cx);
     }
@@ -394,16 +415,38 @@ impl EditorState {
         self.edit_video(|v| timeline::split_at(v, at), true, cx);
     }
 
-    /// Add a text layer at the playhead (T).
-    pub fn add_text(&mut self, cx: &mut Context<Self>) {
-        let Some(project) = self.project() else { return };
+    /// Where a new text layer or focus goes: NEW_TEXT_MS from the playhead, inside the
+    /// edit, on frames (a focus's ends are cuts).
+    fn new_span(&self, cx: &App) -> Option<(i64, i64)> {
+        let fps = &self.project()?.fps;
         let total = self.total() as i64;
-        let now = self.time(cx) as i64;
-        let start = now.min(total - NEW_TEXT_MS.min(total)).max(0);
-        let end = (start + NEW_TEXT_MS).min(total);
-        if end - start < timeline::MIN_TEXT_MS {
+        let start = timeline::snap_to_frame(self.time(cx).min((total - NEW_TEXT_MS.min(total)) as f64).max(0.), fps);
+        let end = timeline::snap_to_frame((start + NEW_TEXT_MS) as f64, fps).min(total);
+        (end - start >= timeline::MIN_TEXT_MS).then_some((start, end))
+    }
+
+    /// Lock the frame on a crop from the playhead (F): it starts as the crop shown there
+    /// (or the middle of the picture) for the user to drag and zoom.
+    pub fn add_focus(&mut self, cx: &mut Context<Self>) {
+        let (Some(project), Some((start_ms, end_ms))) = (self.project(), self.new_span(cx)) else { return };
+        if project.focus.len() >= MAX_FOCUS_LAYERS {
             return;
         }
+        // The bottom panel there: a new overlapping focus usually stacks under it.
+        let crop = project.focus_at(start_ms).last().map(|f| f.crop).or_else(|| {
+            let p = timeline::placement_at(&project.video, start_ms as f64).filter(|p| p.item.framing == "crop")?;
+            Some(timeline::crop_at(p.item, (start_ms - p.start) as f64))
+        });
+        let id = timeline::next_focus_id(&project.focus);
+        let layer = FocusLayer { id: id.clone(), start_ms, end_ms, crop: crop.unwrap_or(Crop { x: 0.5, y: 0.5, zoom: 1.0 }), aspect: None };
+        self.edit_focus(|focus| [focus, &[layer]].concat(), true, cx);
+        self.select(Some(Selection::Focus(id)), cx);
+        self.set_playing(false, cx);
+    }
+
+    /// Add a text layer at the playhead (T).
+    pub fn add_text(&mut self, cx: &mut Context<Self>) {
+        let (Some(project), Some((start, end))) = (self.project(), self.new_span(cx)) else { return };
         let id = timeline::next_text_id(&project.texts);
         let layer = TextLayer {
             id: id.clone(),
@@ -439,6 +482,10 @@ impl EditorState {
             }
             Some(Selection::Text(id)) => {
                 self.edit_texts(|texts| texts.iter().filter(|t| t.id != id).cloned().collect(), true, cx);
+                self.select(None, cx);
+            }
+            Some(Selection::Focus(id)) => {
+                self.edit_focus(|focus| focus.iter().filter(|f| f.id != id).cloned().collect(), true, cx);
                 self.select(None, cx);
             }
             Some(Selection::Piece(index)) => {
@@ -700,6 +747,7 @@ impl EditorState {
         let gone = match &self.selection {
             Some(Selection::Piece(i)) => *i >= p.video.len(),
             Some(Selection::Text(id)) => !p.texts.iter().any(|t| &t.id == id),
+            Some(Selection::Focus(id)) => !p.focus.iter().any(|f| &f.id == id),
             Some(Selection::Sound(id)) => !p.audio.iter().any(|a| &a.id == id),
             Some(Selection::Pip(id)) => !p.pip.iter().any(|x| &x.id == id),
             // The title keeps its inspector while its text is retyped (an empty title draws nothing).

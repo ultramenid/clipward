@@ -6,7 +6,7 @@ use crate::layout::types::{Box as LBox, ShotLayout, SCREEN, STACK, TALKING_HEAD}
 use crate::render::layout_renderer::{caption_anchor, stack_panels};
 use crate::render::process::SystemRunner;
 use crate::render::project::{
-    AudioItem, ColorAdjust, Crop, CropKey, LogoLayer, MediaFile, OverlayBox, PipItem, Project, ProjectGraph, ProjectRender, TextLayer, VideoItem, FRAMING_AUTO, FRAMING_CROP,
+    AudioItem, ColorAdjust, Crop, CropKey, FocusLayer, LogoLayer, MediaFile, OverlayBox, PipItem, Project, ProjectGraph, ProjectRender, TextLayer, VideoItem, FRAMING_AUTO, FRAMING_CROP,
     FRAMING_FIT, FRAMING_SPLIT, FRAMING_SPLIT3,
 };
 use crate::render::service::{RenderRequest, Renderer};
@@ -54,6 +54,7 @@ fn project(video: Vec<VideoItem>) -> Project {
         media: vec![],
         pip: vec![],
         backdrop: None,
+        focus: vec![],
     }
 }
 
@@ -99,6 +100,84 @@ fn validate_rejects_pieces_outside_the_source() {
     let mut loud = project(vec![item("a", 1_000, 3_000)]);
     loud.video[0].volume = 3.0;
     assert!(loud.validate(10_000).is_err());
+}
+
+#[test]
+fn a_focus_crops_its_stretch_of_the_main_track() {
+    // One smart-framed piece over 0-3 s; a zoom-2 focus over 1-2 s.
+    let mut p = project(vec![item("a", 3_000, 6_000)]);
+    p.focus = vec![FocusLayer { id: "f0".into(), start_ms: 1_000, end_ms: 2_000, crop: Crop { x: 0.5, y: 0.5, zoom: 2.0 }, aspect: None }];
+    assert!(p.validate(10_000).is_ok());
+    let g = p.pieces_graph((0, 3_000), Path::new("s.mp4"), false, Path::new("."), "anull").unwrap();
+    // Cut at the focus edges; only the read inside it crops.
+    assert_eq!(g.reads, [(3_000, 1_000), (4_000, 1_000), (5_000, 1_000)]);
+    assert!(g.graph.contains("[1:v]crop=66:120:127:60[p1_crop]"), "{}", g.graph);
+    assert!(!g.graph.contains("[p0_crop]") && !g.graph.contains("[p2_crop]"), "{}", g.graph);
+    // Captions see a whole-frame shot there, between the smart-framed ones.
+    let (plan, _) = p.timeline();
+    let spans: Vec<_> = plan.shots.iter().map(|s| (s.start_ms, s.end_ms, s.layout.as_str())).collect();
+    assert_eq!(spans, [(0, 1_000, TALKING_HEAD), (1_000, 2_000, SCREEN), (2_000, 3_000, TALKING_HEAD)]);
+    p.focus[0].crop.zoom = 9.0;
+    assert!(p.validate(10_000).is_err());
+}
+
+#[test]
+fn overlapping_focuses_stack_as_panels() {
+    // Focuses over 1-2 s and 1.5-2.5 s (that one drawn square): the overlap splits the
+    // canvas, earliest start on top.
+    let mut p = project(vec![item("a", 3_000, 6_000)]);
+    let focus = |id: &str, start_ms, end_ms, x, aspect| FocusLayer { id: id.into(), start_ms, end_ms, crop: Crop { x, y: 0.5, zoom: 2.0 }, aspect };
+    p.focus = vec![focus("f1", 1_500, 2_500, 0.25, Some(1.0)), focus("f0", 1_000, 2_000, 0.5, None)];
+    assert!(p.validate(10_000).is_ok());
+    let g = p.pieces_graph((0, 3_000), Path::new("s.mp4"), false, Path::new("."), "anull").unwrap();
+    assert_eq!(g.reads, [(3_000, 1_000), (4_000, 500), (4_500, 500), (5_000, 500), (5_500, 500)]);
+    // 180x320 canvas: two 180x160 panels; the window is the panel's shape, or the drawn
+    // one fitted in with bars.
+    let fit = |w: i64, h: i64| format!("scale={w}:{h}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1");
+    let panels = format!(
+        "[2:v]split=2[p2_focuss0][p2_focuss1];\
+         [p2_focuss0]crop=134:120:93:60,{}[p2_focusq0];\
+         [p2_focuss1]crop=120:120:20:60,{}[p2_focusq1];\
+         [p2_focusq0][p2_focusq1]vstack=inputs=2[p2_crop]",
+        fit(180, 160),
+        fit(180, 160)
+    );
+    assert!(g.graph.contains(&panels), "{}", g.graph);
+    // Either side of the overlap, one focus: a plain canvas-shaped crop, or the drawn
+    // square fitted into the canvas.
+    assert!(g.graph.contains("[1:v]crop=66:120:127:60[p1_crop]"), "{}", g.graph);
+    assert!(g.graph.contains(&format!("[3:v]crop=120:120:20:60,{}[p3_crop]", fit(180, 320))), "{}", g.graph);
+    // Three panels: even bands, the last takes the rest. A solid backdrop colours the bars.
+    assert_eq!(p.focus_bands(3), [(0, 106), (106, 106), (212, 108)]);
+    p.backdrop = Some("#ff0000".into());
+    let g = p.pieces_graph((0, 3_000), Path::new("s.mp4"), false, Path::new("."), "anull").unwrap();
+    assert!(g.graph.contains(":color=0xff0000,") && !g.graph.contains("color=black"), "{}", g.graph);
+    p.focus[0].aspect = Some(20.0);
+    assert!(p.validate(10_000).is_err());
+    p.focus = vec![focus("f", 0, 100, 0.5, None); 51];
+    assert!(p.validate(10_000).unwrap_err().to_string().ends_with("Too many focuses"));
+}
+
+#[test]
+fn stacked_focuses_follow_the_timeline_lanes() {
+    // f2 starts after f1 but takes f0's freed top lane, so it is the top panel.
+    let mut p = project(vec![item("a", 3_000, 6_000)]);
+    let focus = |id: &str, start_ms, end_ms| FocusLayer { id: id.into(), start_ms, end_ms, crop: Crop { x: 0.5, y: 0.5, zoom: 2.0 }, aspect: None };
+    p.focus = vec![focus("f0", 0, 1_000), focus("f1", 500, 3_000), focus("f2", 1_500, 2_500)];
+    let ids = |t| p.focus_at(t).iter().map(|f| f.id.clone()).collect::<Vec<_>>();
+    assert_eq!(ids(700), ["f0", "f1"]);
+    assert_eq!(ids(2_000), ["f2", "f1"]);
+}
+
+#[test]
+fn a_focus_past_the_end_stops_with_the_edit() {
+    // A 3 s edit: the focus over 2-5 s ends at 3 s; the one from 3 s is gone.
+    let mut p = project(vec![item("a", 3_000, 6_000)]);
+    let focus = |start_ms, end_ms| FocusLayer { id: format!("f{start_ms}"), start_ms, end_ms, crop: Crop { x: 0.5, y: 0.5, zoom: 2.0 }, aspect: None };
+    p.focus = vec![focus(2_000, 5_000), focus(3_000, 4_000)];
+    let (plan, _) = p.timeline();
+    let spans: Vec<_> = plan.shots.iter().map(|s| (s.start_ms, s.end_ms, s.layout.as_str())).collect();
+    assert_eq!(spans, [(0, 2_000, TALKING_HEAD), (2_000, 3_000, SCREEN)]);
 }
 
 // ---- media -----------------------------------------------------------------------
@@ -514,6 +593,13 @@ fn a_dissolve_overlaps_pieces_and_blends_them() {
     let g = p.pieces_graph((0, 4_000), Path::new("s.mp4"), true, Path::new("."), "anull").unwrap();
     assert_eq!(g.reads, [(1_000, 1_000), (2_000, 1_000), (4_000, 1_000), (5_000, 2_000)]);
     assert!(g.graph.contains("concat=n=3:v=1:a=1"), "{}", g.graph);
+    // A focus inside the overlap cuts it in three blends; they share its two reads.
+    let mut focused = p.clone();
+    focused.focus = vec![FocusLayer { id: "f0".into(), start_ms: 1_300, end_ms: 1_700, crop: Crop { x: 0.5, y: 0.5, zoom: 2.0 }, aspect: None }];
+    let g = focused.pieces_graph((0, 4_000), Path::new("s.mp4"), true, Path::new("."), "anull").unwrap();
+    assert_eq!(g.reads, [(1_000, 1_000), (2_000, 1_000), (4_000, 1_000), (5_000, 2_000)]);
+    assert!(g.graph.contains("concat=n=5:v=1:a=1") && g.graph.contains("trim=start_frame=9:end_frame=21"), "{}", g.graph);
+    assert_eq!((g.graph.matches("[1:v]").count(), g.graph.matches("[2:a:0]").count()), (3, 3), "{}", g.graph);
 
     // Dissolves in and out of one piece must fit inside it (b is now 2 s).
     p.video[1].src_out_ms = 6_000;
@@ -550,6 +636,16 @@ fn a_dissolve_renders_the_same_in_the_preview() {
         let diff = mean_diff(&frame(&ffmpeg, &export, 1.3 + t), &frame(&ffmpeg, &part, t));
         assert!(diff < 4.0, "preview differs from the export at +{t}s: {diff}");
     }
+    // A focus inside the dissolve (its blends share their reads) previews the same too.
+    let crop = Crop { x: 0.3, y: 0.5, zoom: 2.0 };
+    let focused = Project { focus: vec![FocusLayer { id: "f0".into(), start_ms: 1_400, end_ms: 1_700, crop, aspect: None }], ..p.clone() };
+    let (whole, part) = (render(&focused, "focus.mp4", None), render(&focused, "focus_part.mp4", Some((1_300, 2_300))));
+    // (Away from the focus edges: a seek just before a scene cut can land on it.)
+    for t in [0.2, 0.25, 0.55] {
+        let diff = mean_diff(&frame(&ffmpeg, &whole, 1.3 + t), &frame(&ffmpeg, &part, t));
+        assert!(diff < 4.0, "focused preview differs at +{t}s: {diff}");
+    }
+    assert!(mean_diff(&frame(&ffmpeg, &whole, 1.55), &frame(&ffmpeg, &export, 1.55)) > 3.0, "the focus doesn't crop");
     // Half way through the dissolve, the frame is between a's and b's.
     let cut = project(vec![item("a", 1_000, 3_000), item("b", 5_000, 8_000)]);
     let cut = render(&Project { captions: false, title: None, ..cut }, "cut.mp4", None);

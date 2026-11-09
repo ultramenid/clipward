@@ -1,4 +1,4 @@
-//! The text, overlay, picture-in-picture and sound inspectors and the overlays list
+//! The text, focus, overlay, picture-in-picture and sound inspectors and the overlays list
 //! (TextPanels.tsx TextInspector, OverlayPanels.tsx, SoundPanels.tsx).
 use super::{Inspector, Pick, header, hint, label, section};
 use crate::editor::state::{EditorState, OVERLAY_SCALE_MAX, OVERLAY_SCALE_MIN, Selection};
@@ -6,10 +6,10 @@ use crate::theme::ActiveTokens;
 use crate::ui::{self, Btn, TypeScale, u};
 use crate::{shell, state};
 use clipward_core::clip_engine::render::project::{
-    AudioItem, OverlayBox, PIP_WIDTH_RANGE, PipItem, Project, TEXT_SIZE_RANGE, TextLayer,
+    AudioItem, MAX_CROP_ZOOM, OverlayBox, PIP_WIDTH_RANGE, PipItem, Project, TEXT_SIZE_RANGE, TextLayer,
 };
 use clipward_core::clip_engine::render::service::{MAX_LOGO_SIZE, MIN_LOGO_SIZE};
-use clipward_core::inspector::{fade_label, fade_max, volume_label};
+use clipward_core::inspector::{fade_label, fade_max, volume_label, zoom_label, zoom_to_slider};
 use clipward_core::overlays::{OverlayKey, OverlayView};
 use clipward_core::timeline::js_round;
 use gpui_kit::component::input::{Input, Textarea};
@@ -265,6 +265,28 @@ impl Inspector {
                 .child(size)
                 .children(volume)
                 .child(hint("Drag it on the video to move it, or its corner to resize it.", &t))
+                .into_any_element(),
+        )
+    }
+
+    pub(super) fn focus_inspector(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let layer = self.editor.read(cx).project()?.focus.iter().find(|f| f.id == id)?.clone();
+        let t = *cx.tokens();
+        let zoom = self.slider(
+            "focus-zoom",
+            "Zoom",
+            zoom_to_slider(layer.crop.zoom),
+            (10., MAX_CROP_ZOOM * 10., 1.),
+            zoom_label(layer.crop.zoom),
+            move |e, v, cx| e.edit_focus_layer(&layer.id, |f| f.crop.zoom = v / 10., true, cx),
+            window,
+            cx,
+        );
+        Some(
+            section(&t)
+                .child(header("Focus", Some(("delete-focus", "Remove (Delete)")), &self.editor, &t))
+                .child(zoom)
+                .child(hint("Drag the frame on the video to move the crop, its sides to reshape it, or its corner to zoom. Overlapping focuses split the frame, top to bottom. Drag the focus on the timeline, or its ends, to change when it holds.", &t))
                 .into_any_element(),
         )
     }

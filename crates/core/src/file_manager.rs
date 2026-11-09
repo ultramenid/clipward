@@ -290,11 +290,12 @@ async fn video_duration_seconds(paths: &AppPaths, video: &Path) -> Option<f64> {
 }
 
 /// A cached JPEG frame for a video (the middle of the clip unless `seek` is given),
-/// generated with ffmpeg into the private thumbnails folder.
+/// generated with ffmpeg into the private `folder` of user data ("thumbnails", "stills").
 pub async fn generate_thumbnail(
     paths: &AppPaths,
     video_path: &Path,
     seek: Option<f64>,
+    folder: &str,
 ) -> Option<PathBuf> {
     let ext = video_path.extension()?.to_str()?.to_ascii_lowercase();
     if !["mp4", "m4v", "mkv", "webm", "mov", "avi", "flv"].contains(&ext.as_str()) {
@@ -308,7 +309,7 @@ pub async fn generate_thumbnail(
     if !meta.is_file() {
         return None;
     }
-    let dir = crate::paths::private_dir(&paths.user_data.join("thumbnails")).ok()?;
+    let dir = crate::paths::private_dir(&paths.user_data.join(folder)).ok()?;
     let mtime = meta
         .modified()
         .ok()
@@ -367,6 +368,24 @@ pub async fn generate_thumbnail(
     let result = made && std::fs::rename(&temp, &thumb).is_ok();
     let _ = std::fs::remove_file(&temp);
     result.then_some(thumb)
+}
+
+/// Deletes the oldest files in `dir` (by modified time) past the newest `keep`.
+pub fn prune_oldest(dir: &Path, keep: usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<_> = entries
+        .flatten()
+        .filter_map(|e| {
+            let meta = e.metadata().ok().filter(|m| m.is_file())?;
+            Some((meta.modified().ok(), e.path()))
+        })
+        .collect();
+    files.sort_by_key(|f| std::cmp::Reverse(f.0));
+    for (_, path) in files.iter().skip(keep) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -464,6 +483,30 @@ pub fn export_clips(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prune_keeps_the_newest_files() {
+        let dir = std::env::temp_dir().join(format!("clipward-stills-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, secs) in [("old.jpg", 1), ("mid.jpg", 2), ("new.jpg", 3)] {
+            std::fs::write(dir.join(name), [0u8]).unwrap();
+            let file = std::fs::File::options()
+                .append(true)
+                .open(dir.join(name))
+                .unwrap();
+            file.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(secs))
+                .unwrap();
+        }
+        prune_oldest(&dir, 2);
+        let mut left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["mid.jpg", "new.jpg"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn export_names_are_safe() {

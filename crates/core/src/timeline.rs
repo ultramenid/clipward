@@ -10,8 +10,10 @@
 //!
 //! Rounding follows JavaScript's `Math.round` ([`js_round`]), not `f64::round`, so
 //! every edit lands on the same millisecond as before.
+/// Timeline rows; the renderer stacks overlapping focuses in this order.
+pub use clip_engine::render::project::lanes_of;
 use clip_engine::render::project::{
-    AudioItem, Crop, CropKey, PipItem, TextLayer, VideoItem, MAX_CROP_ZOOM, MAX_TRANSITION_MS,
+    AudioItem, Crop, CropKey, FocusLayer, PipItem, TextLayer, VideoItem, MAX_CROP_ZOOM, MAX_TRANSITION_MS,
 };
 use clip_engine::{TranscriptSegment, TranscriptWord};
 use std::collections::{HashMap, HashSet};
@@ -22,7 +24,7 @@ pub const MIN_ITEM_MS: i64 = 100;
 pub const KEY_SNAP_MS: i64 = 34;
 /// Shortest a caption word may be.
 pub const MIN_WORD_MS: i64 = 50;
-/// Shortest a text layer may be.
+/// Shortest a text layer (or a focus) may be.
 pub const MIN_TEXT_MS: i64 = 200;
 /// Text layer animation lengths (private TEXT_IN_MS, TEXT_OUT_MS, TYPEWRITER_MS in the
 /// engine's captions.rs).
@@ -774,30 +776,43 @@ pub fn text_motion(layer: &TextLayer, t: f64) -> TextMotion {
     }
 }
 
-/// Timeline rows for (id, start, end) items: each goes in the first row where it
-/// overlaps nothing, in start order. Row by id.
-pub fn lanes_of<'a>(
-    items: impl IntoIterator<Item = (&'a str, i64, i64)>,
-) -> HashMap<String, usize> {
-    let mut sorted: Vec<_> = items.into_iter().collect();
-    sorted.sort_by_key(|&(_, start, _)| start);
-    let mut ends: Vec<i64> = Vec::new();
-    let mut lanes = HashMap::new();
-    for (id, start, end) in sorted {
-        let lane = ends.iter().position(|&e| e <= start).unwrap_or(ends.len());
-        if lane == ends.len() {
-            ends.push(end);
-        } else {
-            ends[lane] = end;
-        }
-        lanes.insert(id.to_string(), lane);
-    }
-    lanes
+/// A layer shown over a stretch of the edited timeline: a text layer or a focus.
+pub trait Span: Clone {
+    fn id(&self) -> &str;
+    fn range(&self) -> (i64, i64);
+    fn set_range(&mut self, start_ms: i64, end_ms: i64);
 }
 
-/// Rows for the text layers.
-pub fn text_lanes(texts: &[TextLayer]) -> HashMap<String, usize> {
-    lanes_of(texts.iter().map(|t| (t.id.as_str(), t.start_ms, t.end_ms)))
+impl Span for TextLayer {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn range(&self) -> (i64, i64) {
+        (self.start_ms, self.end_ms)
+    }
+    fn set_range(&mut self, start_ms: i64, end_ms: i64) {
+        (self.start_ms, self.end_ms) = (start_ms, end_ms);
+    }
+}
+
+impl Span for FocusLayer {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn range(&self) -> (i64, i64) {
+        (self.start_ms, self.end_ms)
+    }
+    fn set_range(&mut self, start_ms: i64, end_ms: i64) {
+        (self.start_ms, self.end_ms) = (start_ms, end_ms);
+    }
+}
+
+/// Rows for text layers or focus stretches.
+pub fn span_lanes(spans: &[impl Span]) -> HashMap<String, usize> {
+    lanes_of(spans.iter().map(|t| {
+        let (start, end) = t.range();
+        (t.id(), start, end)
+    }))
 }
 
 /// Anything on the timeline that plays a stretch of a file: a sound or a
@@ -925,43 +940,42 @@ pub fn next_text_id(texts: &[TextLayer]) -> String {
     )
 }
 
+/// A fresh focus id ("f<n>").
+pub fn next_focus_id(focus: &[FocusLayer]) -> String {
+    next_id("f", &focus.iter().map(|f| f.id.as_str()).collect::<Vec<_>>())
+}
+
 /// Moves a layer to start at `start`, keeping its length and staying inside [0, total].
-pub fn move_text(texts: &[TextLayer], id: &str, start: f64, total: i64) -> Vec<TextLayer> {
-    texts
+pub fn move_span<T: Span>(spans: &[T], id: &str, start: f64, total: i64) -> Vec<T> {
+    spans
         .iter()
         .map(|t| {
-            if t.id != id {
-                return t.clone();
+            let mut t = t.clone();
+            if t.id() == id {
+                let (s0, e0) = t.range();
+                let len = e0 - s0;
+                let s = round_ms(start.max(0.0).min(0.max(total - len) as f64));
+                t.set_range(s, s + len);
             }
-            let len = t.end_ms - t.start_ms;
-            let s = round_ms(start.max(0.0).min(0.max(total - len) as f64));
-            TextLayer {
-                start_ms: s,
-                end_ms: s + len,
-                ..t.clone()
-            }
+            t
         })
         .collect()
 }
 
 /// Moves a layer's start or end, within [0, total] and the minimum length.
-pub fn trim_text(texts: &[TextLayer], id: &str, edge: Edge, ms: f64, total: i64) -> Vec<TextLayer> {
-    texts
+pub fn trim_span<T: Span>(spans: &[T], id: &str, edge: Edge, ms: f64, total: i64) -> Vec<T> {
+    spans
         .iter()
         .map(|t| {
-            if t.id != id {
-                return t.clone();
+            let mut t = t.clone();
+            if t.id() == id {
+                let (s0, e0) = t.range();
+                match edge {
+                    Edge::In => t.set_range(round_ms(ms.max(0.0).min((e0 - MIN_TEXT_MS) as f64)), e0),
+                    Edge::Out => t.set_range(s0, round_ms(ms.min(total as f64).max((s0 + MIN_TEXT_MS) as f64))),
+                }
             }
-            match edge {
-                Edge::In => TextLayer {
-                    start_ms: round_ms(ms.max(0.0).min((t.end_ms - MIN_TEXT_MS) as f64)),
-                    ..t.clone()
-                },
-                Edge::Out => TextLayer {
-                    end_ms: round_ms(ms.min(total as f64).max((t.start_ms + MIN_TEXT_MS) as f64)),
-                    ..t.clone()
-                },
-            }
+            t
         })
         .collect()
 }
@@ -1350,27 +1364,27 @@ mod tests {
             text("t1", 1000, 3000),
             text("t2", 2000, 2500),
         ];
-        let lanes = text_lanes(&texts);
+        let lanes = span_lanes(&texts);
         assert_eq!(
             (lanes.len(), lanes["t0"], lanes["t1"], lanes["t2"]),
             (3, 0, 1, 0)
         );
         assert_eq!(next_text_id(&texts), "t3");
         assert_eq!(
-            move_text(&texts, "t1", 9000.0, 4000)[1],
+            move_span(&texts, "t1", 9000.0, 4000)[1],
             TextLayer {
                 start_ms: 2000,
                 end_ms: 4000,
                 ..texts[1].clone()
             }
         );
-        assert_eq!(move_text(&texts, "t1", -50.0, 4000)[1].start_ms, 0);
+        assert_eq!(move_span(&texts, "t1", -50.0, 4000)[1].start_ms, 0);
         assert_eq!(
-            trim_text(&texts, "t0", Edge::Out, 50.0, 4000)[0].end_ms,
+            trim_span(&texts, "t0", Edge::Out, 50.0, 4000)[0].end_ms,
             MIN_TEXT_MS
         );
         assert_eq!(
-            trim_text(&texts, "t0", Edge::Out, 9000.0, 4000)[0].end_ms,
+            trim_span(&texts, "t0", Edge::Out, 9000.0, 4000)[0].end_ms,
             4000
         );
     }

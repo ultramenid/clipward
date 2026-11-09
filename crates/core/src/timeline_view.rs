@@ -15,7 +15,7 @@ pub const DRAG_SLOP: f64 = 4.0;
 /// Shortest an overlay may be shown.
 pub const MIN_OVERLAY_MS: i64 = 200;
 
-/// Track heights: the ruler, one overlay row (and its box), a PiP or text lane (and
+/// Track heights: the ruler, one overlay row (and its box), a PiP, text or focus lane (and
 /// its box), the caption words, a sound lane (and its box), the gap between tracks.
 pub const RULER_H: f64 = 24.0;
 pub const OVERLAY_ROW: f64 = 22.0;
@@ -98,6 +98,7 @@ pub struct TrackLayout {
     pub pip: Option<f64>,
     pub texts: Option<f64>,
     pub words: Option<f64>,
+    pub focus: Option<f64>,
     pub main: f64,
     pub sounds: Option<f64>,
     pub height: f64,
@@ -108,6 +109,7 @@ pub fn track_layout(
     pip_rows: usize,
     text_rows: usize,
     words: bool,
+    focus_rows: usize,
     track_height: f64,
     sound_rows: usize,
 ) -> TrackLayout {
@@ -124,6 +126,7 @@ pub fn track_layout(
     let pip = track(pip_rows > 0, pip_rows as f64 * LANE_ROW);
     let texts = track(text_rows > 0, text_rows as f64 * LANE_ROW);
     let words = track(words, WORDS_H);
+    let focus = track(focus_rows > 0, focus_rows as f64 * LANE_ROW);
     let main = y + GAP;
     y = main + track_height + GAP;
     let sounds = (sound_rows > 0).then(|| {
@@ -131,7 +134,7 @@ pub fn track_layout(
         y += sound_rows as f64 * SOUND_ROW + GAP;
         top
     });
-    TrackLayout { overlays, pip, texts, words, main, sounds, height: y }
+    TrackLayout { overlays, pip, texts, words, focus, main, sounds, height: y }
 }
 
 /// An overlay's box after dragging it (edge None) or an edge by `shift_ms` (frame
@@ -441,16 +444,17 @@ mod tests {
 
     #[test]
     fn tracks_stack_top_to_bottom() {
-        let only = track_layout(0, 0, 0, false, 120.0, 0);
-        assert_eq!(only, TrackLayout { overlays: None, pip: None, texts: None, words: None, main: 32.0, sounds: None, height: 160.0 });
-        let all = track_layout(2, 1, 2, true, 100.0, 2);
+        let only = track_layout(0, 0, 0, false, 0, 120.0, 0);
+        assert_eq!(only, TrackLayout { overlays: None, pip: None, texts: None, words: None, focus: None, main: 32.0, sounds: None, height: 160.0 });
+        let all = track_layout(2, 1, 2, true, 1, 100.0, 2);
         assert_eq!(all.overlays, Some(32.0));
         assert_eq!(all.pip, Some(32.0 + 44.0 + 8.0));
         assert_eq!(all.texts, Some(84.0 + 26.0 + 8.0));
         assert_eq!(all.words, Some(118.0 + 52.0 + 8.0));
-        assert_eq!(all.main, 178.0 + 20.0 + 8.0);
-        assert_eq!(all.sounds, Some(206.0 + 100.0 + 8.0));
-        assert_eq!(all.height, 314.0 + 68.0 + 8.0);
+        assert_eq!(all.focus, Some(178.0 + 20.0 + 8.0));
+        assert_eq!(all.main, 206.0 + 26.0 + 8.0);
+        assert_eq!(all.sounds, Some(240.0 + 100.0 + 8.0));
+        assert_eq!(all.height, 348.0 + 68.0 + 8.0);
         let lanes: HashMap<String, usize> = [("a".to_string(), 0), ("b".to_string(), 2)].into();
         assert_eq!(lane_rows(&lanes), 3);
         assert_eq!(lane_rows(&HashMap::new()), 0);
