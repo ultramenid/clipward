@@ -78,6 +78,7 @@ fn renderer(paths: &AppPaths, run: &Path) -> Renderer {
         whisper_model_path: PathBuf::new(),
         ai: Default::default(),
         custom_vocabulary: Vec::new(),
+        max_source_height: 2160,
         work_dir: run.to_path_buf(),
         output_dir: run.to_path_buf(),
     })
@@ -93,9 +94,10 @@ pub fn preview_size(project: &Project) -> (i64, i64) {
 /// A checked edit and its source, from the library.
 fn open(library: &Path, output_dir: &str, project: &Project) -> Result<(PathBuf, PathBuf), String> {
     let run = run_dir(output_dir, library)?;
-    let (source, duration_ms, _) = source_of(&run, library)?;
+    let (source, duration_ms, _, spans) = source_of(&run, library)?;
     let source = source.ok_or("This clip's source video is no longer available.")?;
     project.validate(duration_ms).map_err(|e| e.to_string())?;
+    crate::editor::check_source_spans(project, &spans)?;
     Ok((run, source))
 }
 
@@ -589,11 +591,12 @@ pub async fn filmstrip(
     block: u32,
 ) -> Result<PathBuf, String> {
     let run = run_dir(output_dir, library)?;
-    let video = match file {
-        Some(name) => crate::editor::run_file(&run, name)?,
-        None => source_of(&run, library)?
-            .0
-            .ok_or("This clip's source video is no longer available.")?,
+    let (video, sparse) = match file {
+        Some(name) => (crate::editor::run_file(&run, name)?, false),
+        None => {
+            let source = source_of(&run, library)?;
+            (source.0.ok_or("This clip's source video is no longer available.")?, !source.3.is_empty())
+        }
     };
     let height = clip_engine::render::project::FILMSTRIP_HEIGHT;
     let stem = file.unwrap_or(clip_engine::pipeline::SOURCE_STEM);
@@ -606,6 +609,7 @@ pub async fn filmstrip(
             &resolve_binary(paths, Tool::Ffmpeg),
             &video,
             block,
+            sparse,
             &temp,
             &CancellationToken::new(),
         )

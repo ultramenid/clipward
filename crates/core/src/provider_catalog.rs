@@ -186,6 +186,10 @@ pub const RETENTION_OPTIONS: [(&str, &str); 5] = [
     ("0", "Don't keep (clips can't be edited)"),
 ];
 
+/// Settings → Output → Download quality: (`clip_engine::download::SOURCE_HEIGHTS` value, label).
+pub const QUALITY_OPTIONS: [(&str, &str); 3] =
+    [("2160", "Best available (up to 4K)"), ("1440", "Up to 1440p"), ("1080", "Up to 1080p (fastest)")];
+
 /// The option showing `days`; a value not offered shows as 30 days.
 pub fn retention_value(days: Option<u32>) -> &'static str {
     let Some(days) = days else { return "forever" };

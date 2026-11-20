@@ -51,6 +51,16 @@ const OUTPUT_FILENAME: &str = "source.mp4";
 const INFO_STEM: &str = "info";
 const INFO_FILE: &str = "info.json";
 const DASHY_INFO_FILE: &str = "info.dashy.json";
+/// The copy whose video is only the clusters a job's spans need (`info.sparse.json`),
+/// and the run that reads the video's index first. All share the `info.` cleanup prefix.
+const SPARSE_INFO_FILE: &str = "info.sparse.json";
+const HEAD_INFO_FILE: &str = "info.head.json";
+const HEAD_FILE: &str = "info.head.webm";
+/// How much of the video to read for its index: YouTube puts the cues before the first
+/// cluster, about 20 bytes per cluster (some 100 KB for a six-hour video).
+const INDEX_HEAD_BYTES: u64 = 256 << 10;
+/// Video fetched before and after each span, for the edits and analysis around a clip.
+pub const SPAN_PADDING_SECONDS: f64 = 10.0;
 /// The early audio handed to the caller (`audio.mp4`).
 const AUDIO_STEM: &str = "audio";
 /// yt-dlp's own `youtube:formats=dashy` fragment size.
@@ -67,12 +77,18 @@ const PROGRESS_MARKER: &str = "clipward-progress ";
 const PROGRESS_START: f64 = 5.0;
 const PROGRESS_SPAN: f64 = 10.0;
 
+/// Settings → Download quality: the tallest stream to fetch (first is the default). A
+/// lower one is a smaller download; yt-dlp only goes above it when nothing smaller exists.
+pub const SOURCE_HEIGHTS: [u32; 3] = [2160, 1440, 1080];
+
 /// YouTube format selection. Filters only exclude AV1, which the bundled FFmpeg cannot
 /// decode in software; the sort picks the best remaining stream. H.264 tops out at 1080p
 /// on YouTube, so 1440p/2160p arrives as VP9. "res" measures the shorter side, so 2160
 /// covers landscape 4K and vertical 2160x3840. SDR is preferred because renders are SDR
 /// H.264 without tone mapping.
-pub const YOUTUBE_FORMAT_SORT: &str = "hdr:SDR,res:2160,fps";
+fn format_sort(max_height: u32) -> String {
+    format!("hdr:SDR,res:{max_height},fps")
+}
 pub const YOUTUBE_FORMAT_SELECTORS: [&str; 2] = [
     // Best separate video + audio streams (the only way to get >720p).
     "bv*[vcodec!^=av01]+ba/b[vcodec!^=av01]",
@@ -486,6 +502,7 @@ fn metadata_from_probe(info: &Value, title: String) -> Result<VideoMetadata> {
         height,
         fps: parse_fps(video.get("r_frame_rate")),
         has_audio,
+        video_spans: None,
     })
 }
 
@@ -515,10 +532,11 @@ pub async fn download(
     progress: &ProgressFn,
     cancel: &CancellationToken,
     early_audio: Option<oneshot::Sender<EarlyAudio>>,
+    spans: Option<&[(f64, f64)]>,
 ) -> Result<DownloadResult> {
     let limit = duration_limit(max_duration_seconds);
     let source = detect_source(url)?;
-    report(progress, 0.0, "Downloading video...");
+    report(progress, 0.0, "Preparing video...");
     match &source {
         Source::Local(path) => {
             let result = use_local_file(path, cfg, cancel).await?;
@@ -529,10 +547,10 @@ pub async fn download(
         Source::YouTube(u) | Source::Twitch(u) => {
             // yt-dlp resolves hosts itself; check the source host before handing it over.
             net::resolve_public_destination(u).await.map_err(net_error)?;
-            fetch_remote(&source, cfg, limit, progress, cancel, early_audio).await
+            fetch_remote(&source, cfg, limit, progress, cancel, early_audio, spans).await
         }
         // Every hop is validated and pinned in `download_direct`.
-        Source::Direct(_) => fetch_remote(&source, cfg, limit, progress, cancel, None).await,
+        Source::Direct(_) => fetch_remote(&source, cfg, limit, progress, cancel, None, None).await,
     }
 }
 
@@ -555,10 +573,11 @@ async fn fetch_remote(
     progress: &ProgressFn,
     cancel: &CancellationToken,
     early_audio: Option<oneshot::Sender<EarlyAudio>>,
+    spans: Option<&[(f64, f64)]>,
 ) -> Result<DownloadResult> {
     tokio::fs::create_dir_all(&cfg.work_dir).await.map_err(io_error)?;
     let output = cfg.work_dir.join(OUTPUT_FILENAME);
-    let result = fetch_remote_inner(source, cfg, &output, limit, progress, cancel, early_audio).await;
+    let result = fetch_remote_inner(source, cfg, &output, limit, progress, cancel, early_audio, spans).await;
     if result.is_err() {
         for name in [OUTPUT_FILENAME, INFO_STEM, AUDIO_STEM] {
             remove_partial_files(&cfg.work_dir.join(name));
@@ -567,6 +586,7 @@ async fn fetch_remote(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn fetch_remote_inner(
     source: &Source,
     cfg: &EngineConfig,
@@ -575,10 +595,11 @@ async fn fetch_remote_inner(
     progress: &ProgressFn,
     cancel: &CancellationToken,
     early_audio: Option<oneshot::Sender<EarlyAudio>>,
+    spans: Option<&[(f64, f64)]>,
 ) -> Result<DownloadResult> {
     let deadline = Instant::now() + DOWNLOAD_DEADLINE;
     check_free_space(&cfg.work_dir, 0)?;
-    let title = match source {
+    let (title, video_spans) = match source {
         Source::YouTube(url) | Source::Twitch(url) => {
             let ytdlp = cfg.ytdlp.as_deref().ok_or_else(|| failed("yt-dlp is not installed"))?;
             let job = YtdlpJob {
@@ -590,13 +611,15 @@ async fn fetch_remote_inner(
                 url,
                 twitch: matches!(source, Source::Twitch(_)),
                 max_duration: limit,
+                max_height: cfg.max_source_height,
+                spans: spans.filter(|_| matches!(source, Source::YouTube(_))),
                 deadline,
                 progress,
                 cancel,
             };
             download_with_ytdlp(&job, early_audio).await?
         }
-        Source::Direct(url) => download_direct(url, output, &cfg.work_dir, deadline, progress, cancel).await?,
+        Source::Direct(url) => (download_direct(url, output, &cfg.work_dir, deadline, progress, cancel).await?, None),
         Source::Local(_) => return Err(failed("unsupported source")),
     };
     let size = std::fs::metadata(output).map_err(|_| failed("output file not found"))?.len();
@@ -611,6 +634,7 @@ async fn fetch_remote_inner(
         tracing::warn!(height = metadata.height, "downloaded video is below 720p");
     }
     metadata.title = title;
+    metadata.video_spans = video_spans;
     check_duration(metadata.duration_seconds, limit)?;
     report(progress, 1.0, "Video downloaded");
     Ok(DownloadResult { path: output.to_path_buf(), metadata, is_local: false })
@@ -628,6 +652,9 @@ struct YtdlpJob<'a> {
     url: &'a str,
     twitch: bool,
     max_duration: f64,
+    max_height: u32,
+    /// The only parts of the video the job reads (seconds); None fetches all of it.
+    spans: Option<&'a [(f64, f64)]>,
     deadline: Instant,
     progress: &'a ProgressFn,
     cancel: &'a CancellationToken,
@@ -660,13 +687,11 @@ fn common_args(twitch: bool) -> Vec<String> {
     args
 }
 
-fn info_args(url: &str, twitch: bool) -> Vec<String> {
+fn info_args(url: &str, twitch: bool, max_height: u32) -> Vec<String> {
     let mut args = common_args(twitch);
     if !twitch {
         // The info then names the formats the download picks (`format_id` "137+251").
-        args.extend(
-            ["--format", YOUTUBE_FORMAT_SELECTORS[0], "--format-sort", YOUTUBE_FORMAT_SORT].map(String::from),
-        );
+        args.extend(["--format", YOUTUBE_FORMAT_SELECTORS[0], "--format-sort", &format_sort(max_height)].map(String::from));
     }
     args.extend(["-J".into(), "--".into(), url.into()]);
     args
@@ -690,8 +715,18 @@ fn tool_path(path: &Path) -> PathBuf {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Merge {
+    /// One stream, fetched as-is (the early audio, the index head).
+    No,
+    Yes,
+    /// The video is sparse: keep its timestamps, so it stays in step with the audio.
+    KeepTimestamps,
+}
+
 /// `input` is the Twitch URL (extracted again, so the live status is re-checked) or the
-/// saved YouTube info file. Without `merge`, one stream is fetched as-is (early audio).
+/// saved YouTube info file.
+#[allow(clippy::too_many_arguments)]
 fn download_args(
     input: &str,
     twitch: bool,
@@ -699,15 +734,17 @@ fn download_args(
     ffmpeg: &Path,
     output_name: &str,
     max_duration: f64,
-    merge: bool,
+    merge: Merge,
+    max_height: u32,
 ) -> Vec<String> {
     let mut args = common_args(twitch);
+    let sort = format_sort(max_height);
     args.extend(
         [
             "--format",
             selector,
             "--format-sort",
-            YOUTUBE_FORMAT_SORT,
+            &sort,
             "--user-agent",
             pick_user_agent(),
             "--add-headers",
@@ -734,13 +771,14 @@ fn download_args(
     ));
     args.extend(["--max-filesize".into(), MAX_SOURCE_BYTES.to_string()]);
     args.extend(["--ffmpeg-location".into(), tool_path(ffmpeg).to_string_lossy().into_owned()]);
-    if merge {
+    if merge != Merge::No {
         // Remux a non-mp4 result, never re-encode it. The source is only read locally,
         // so skip faststart's second full write: moov stays at the end, where FFmpeg and
-        // AVFoundation read it just as well.
+        // AVFoundation read it just as well. FFmpeg otherwise moves each input to start
+        // at zero, which would slide a sparse video's first cluster under the audio's start.
+        let ffmpeg_args = if merge == Merge::KeepTimestamps { "ffmpeg:-copyts -movflags -faststart" } else { "ffmpeg:-movflags -faststart" };
         args.extend(
-            ["--merge-output-format", "mp4", "--remux-video", "mp4", "--postprocessor-args", "ffmpeg:-movflags -faststart"]
-                .map(String::from),
+            ["--merge-output-format", "mp4", "--remux-video", "mp4", "--postprocessor-args", ffmpeg_args].map(String::from),
         );
     } else {
         // Byte for byte the file the merge would read, so the video run reuses it.
@@ -784,33 +822,40 @@ fn has_video(format: &Value) -> bool {
 /// the pick). Only an https format of known size qualifies; audio stays a plain
 /// download so the merge can reuse the early audio. False leaves `info` unchanged.
 fn dash_video_format(info: &mut Value) -> bool {
-    let Some(ids) = info.get("format_id").and_then(Value::as_str).map(|s| s.split('+').map(String::from).collect::<Vec<_>>())
-    else {
+    let Some((format, url, size)) = ranged_video(info) else {
         return false;
     };
-    let Some(format) = info.get_mut("formats").and_then(Value::as_array_mut).and_then(|formats| {
-        formats.iter_mut().find(|f| {
-            has_video(f) && f.get("format_id").and_then(Value::as_str).is_some_and(|id| ids.iter().any(|i| i == id))
-        })
-    }) else {
-        return false;
-    };
-    let size = format.get("filesize").and_then(Value::as_u64).filter(|s| *s > 0);
-    let url = format.get("url").and_then(Value::as_str).map(String::from);
-    let (Some("https"), Some(size), Some(url)) = (format.get("protocol").and_then(Value::as_str), size, url) else {
-        return false;
-    };
+    // The last request ends at `size`, one past the final byte, as yt-dlp's own does.
+    let starts = (0..size).step_by(DASH_FRAGMENT_BYTES as usize);
+    set_fragments(format, starts.map(|start| range_request(&url, start, (start + DASH_FRAGMENT_BYTES - 1).min(size))).collect());
+    true
+}
+
+/// The picked video of `info` with its URL and size, when byte ranges of it can be
+/// requested: an https format of known size.
+fn ranged_video(info: &mut Value) -> Option<(&mut Value, String, u64)> {
+    let ids: Vec<String> = info.get("format_id")?.as_str()?.split('+').map(String::from).collect();
+    let format = info.get_mut("formats")?.as_array_mut()?.iter_mut().find(|f| {
+        has_video(f) && f.get("format_id").and_then(Value::as_str).is_some_and(|id| ids.iter().any(|i| i == id))
+    })?;
+    let size = format.get("filesize").and_then(Value::as_u64).filter(|s| *s > 0)?;
+    let url = format.get("url").and_then(Value::as_str).map(String::from)?;
+    (format.get("protocol").and_then(Value::as_str) == Some("https")).then_some((format, url, size))
+}
+
+fn range_request(url: &str, first: u64, last: u64) -> Value {
     let sep = if url.contains('?') { '&' } else { '?' };
-    let fragments: Vec<Value> = (0..size)
-        .step_by(DASH_FRAGMENT_BYTES as usize)
-        .map(|start| json!({ "url": format!("{url}{sep}range={start}-{}", (start + DASH_FRAGMENT_BYTES - 1).min(size)) }))
-        .collect();
+    json!({ "url": format!("{url}{sep}range={first}-{last}") })
+}
+
+/// Makes `format` a list of range requests, which yt-dlp fetches in parallel and writes
+/// one after another.
+fn set_fragments(format: &mut Value, fragments: Vec<Value>) {
     format["protocol"] = "http_dash_segments".into();
     format["fragments"] = fragments.into();
     if let Some(fields) = format.as_object_mut() {
         fields.remove("downloader_options");
     }
-    true
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -862,7 +907,7 @@ fn ytdlp_error(failure: &YtdlpFailure, twitch: bool) -> EngineError {
 }
 
 async fn fetch_info(job: &YtdlpJob<'_>) -> Result<Value> {
-    let run = run_ytdlp(job.ytdlp, &info_args(job.url, job.twitch), job.work_dir, job.deadline, job.cancel, None)
+    let run = run_ytdlp(job.ytdlp, &info_args(job.url, job.twitch, job.max_height), job.work_dir, job.deadline, job.cancel, None)
         .await?;
     if !run.status.success() {
         return Err(ytdlp_error(&classify_ytdlp_failure(&run.stderr_tail), job.twitch));
@@ -903,8 +948,9 @@ async fn fetch_early_audio(job: &YtdlpJob<'_>, info: &Value) -> Result<Option<Ea
     };
     let stem = job.output.file_stem().and_then(|s| s.to_str()).unwrap_or("source");
     let name = format!("{stem}.f{id}.{ext}");
-    let args = download_args(INFO_FILE, false, id, job.ffmpeg, &name, job.max_duration, false);
+    let args = download_args(INFO_FILE, false, id, job.ffmpeg, &name, job.max_duration, Merge::No, job.max_height);
     let mut monitor = DownloadMonitor::new(job.work_dir, job.output, job.progress);
+    monitor.step = "Getting audio...";
     let run = run_ytdlp(job.ytdlp, &args, job.work_dir, job.deadline, job.cancel, Some(&mut monitor)).await?;
     if !run.status.success() {
         // Even a refusal (YouTube answers some requests with HTTP 403) gets the usual
@@ -931,9 +977,79 @@ async fn fetch_early_audio(job: &YtdlpJob<'_>, info: &Value) -> Result<Option<Ea
     Ok((duration > 0.0).then_some(EarlyAudio { path: copy, duration_seconds: duration }))
 }
 
+/// For a job that reads only `spans` of the video: fetches the start of the picked WebM
+/// video, reads its cluster index and writes `info.sparse.json`, whose video is the
+/// file's header and then just the clusters covering the padded spans. Each cluster
+/// starts on a keyframe and keeps its timestamp, so the merged source plays those
+/// spans at their own times and has no frames between them. False when the pick is
+/// not an indexed WebM or little would be saved; the whole video is then fetched.
+/// Otherwise the spans of video the source will have.
+// shortcut: WebM (VP9) only; an H.264 pick has an MP4 `sidx` index instead and downloads whole. Add a sidx reader if those jobs are slow.
+async fn prepare_sparse(job: &YtdlpJob<'_>, info: &Value, spans: &[(f64, f64)]) -> Result<Option<Vec<(f64, f64)>>> {
+    let mut head = info.clone();
+    let Some((format, url, size)) = ranged_video(&mut head) else {
+        return Ok(None);
+    };
+    let safe = |s: &&str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    let Some(id) = format.get("format_id").and_then(Value::as_str).filter(safe).map(String::from) else {
+        return Ok(None);
+    };
+    if format.get("ext").and_then(Value::as_str) != Some("webm") {
+        return Ok(None);
+    }
+    set_fragments(format, vec![range_request(&url, 0, INDEX_HEAD_BYTES.min(size) - 1)]);
+    let bytes = serde_json::to_vec(&head).map_err(|_| failed("video info was invalid"))?;
+    tokio::fs::write(job.work_dir.join(HEAD_INFO_FILE), bytes).await.map_err(io_error)?;
+    let args = download_args(HEAD_INFO_FILE, false, &id, job.ffmpeg, HEAD_FILE, job.max_duration, Merge::No, job.max_height);
+    let run = run_ytdlp(job.ytdlp, &args, job.work_dir, job.deadline, job.cancel, None).await?;
+    let index = match tokio::fs::read(job.work_dir.join(HEAD_FILE)).await {
+        Ok(bytes) if run.status.success() => crate::webm_index::WebmIndex::parse(&bytes),
+        _ => None,
+    };
+    let _ = tokio::fs::remove_file(job.work_dir.join(HEAD_FILE)).await;
+    let Some(index) = index else {
+        tracing::warn!("no usable video index; downloading the whole video");
+        return Ok(None);
+    };
+    // Padded, in order, and joined where they meet: what the source is promised to hold
+    // (the clusters fetched reach a little further on both sides).
+    let mut padded: Vec<(f64, f64)> = Vec::new();
+    let mut sorted: Vec<(f64, f64)> =
+        spans.iter().map(|(from, to)| ((from - SPAN_PADDING_SECONDS).max(0.0), to + SPAN_PADDING_SECONDS)).collect();
+    sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for (from, to) in sorted {
+        match padded.last_mut() {
+            Some(last) if from <= last.1 => last.1 = last.1.max(to),
+            _ => padded.push((from, to)),
+        }
+    }
+    let ranges = index.byte_ranges(&padded, size);
+    let wanted: u64 = index.header_len + ranges.iter().map(|(first, last)| last - first + 1).sum::<u64>();
+    // Not worth a source with holes in it unless it saves a real share of the download.
+    if ranges.is_empty() || index.header_len == 0 || wanted.saturating_mul(4) > size.saturating_mul(3) {
+        return Ok(None);
+    }
+    let mut sparse = info.clone();
+    let Some((format, url, _)) = ranged_video(&mut sparse) else {
+        return Ok(None);
+    };
+    let pieces = std::iter::once((0, index.header_len - 1)).chain(ranges).flat_map(|(first, last)| {
+        let url = &url;
+        (first..=last).step_by(DASH_FRAGMENT_BYTES as usize).map(move |start| range_request(url, start, (start + DASH_FRAGMENT_BYTES - 1).min(last)))
+    });
+    set_fragments(format, pieces.collect());
+    let bytes = serde_json::to_vec(&sparse).map_err(|_| failed("video info was invalid"))?;
+    tokio::fs::write(job.work_dir.join(SPARSE_INFO_FILE), bytes).await.map_err(io_error)?;
+    tracing::info!(mb = wanted as f64 / 1e6, of_mb = size as f64 / 1e6, "downloading only the video the clips need");
+    Ok(Some(padded))
+}
+
 /// Metadata first (duration and Twitch status), then the format fallback loop.
-/// Returns the source title.
-async fn download_with_ytdlp(job: &YtdlpJob<'_>, early_audio: Option<oneshot::Sender<EarlyAudio>>) -> Result<String> {
+/// Returns the source title, and the spans of video it has when it is not all of it.
+async fn download_with_ytdlp(
+    job: &YtdlpJob<'_>,
+    early_audio: Option<oneshot::Sender<EarlyAudio>>,
+) -> Result<(String, Option<Vec<(f64, f64)>>)> {
     remove_partial_files(job.output);
     let info = fetch_info(job).await?;
     let duration = finite_number(info.get("duration"), 0.0);
@@ -951,21 +1067,30 @@ async fn download_with_ytdlp(job: &YtdlpJob<'_>, early_audio: Option<oneshot::Se
     // parallel range requests when it qualifies, then sequentially as before.
     let mut attempts: Vec<(&str, String)> = Vec::new();
     let mut early_sent = false;
+    let mut video_spans = None;
     if job.twitch {
         attempts.extend(TWITCH_FORMAT_SELECTORS.iter().map(|s| (job.url, s.to_string())));
     } else {
-        let mut dashy = info.clone();
-        if let (true, Some(ids)) = (dash_video_format(&mut dashy), info.get("format_id").and_then(Value::as_str)) {
-            let bytes = serde_json::to_vec(&dashy).map_err(|_| failed("video info was invalid"))?;
-            tokio::fs::write(job.work_dir.join(DASHY_INFO_FILE), bytes).await.map_err(io_error)?;
-            attempts.push((DASHY_INFO_FILE, ids.to_string()));
-        }
-        attempts.extend(YOUTUBE_FORMAT_SELECTORS.iter().map(|s| (INFO_FILE, s.to_string())));
         if let Some(tx) = early_audio {
             if let Some(audio) = fetch_early_audio(job, &info).await? {
                 early_sent = tx.send(audio).is_ok();
             }
         }
+        let ids = info.get("format_id").and_then(Value::as_str);
+        // Only the clusters the job's spans need, when the pick allows it; else all of it.
+        if let (Some(spans), Some(ids)) = (job.spans, ids) {
+            video_spans = prepare_sparse(job, &info, spans).await?;
+            if video_spans.is_some() {
+                attempts.push((SPARSE_INFO_FILE, ids.to_string()));
+            }
+        }
+        let mut dashy = info.clone();
+        if let (true, Some(ids)) = (dash_video_format(&mut dashy), ids) {
+            let bytes = serde_json::to_vec(&dashy).map_err(|_| failed("video info was invalid"))?;
+            tokio::fs::write(job.work_dir.join(DASHY_INFO_FILE), bytes).await.map_err(io_error)?;
+            attempts.push((DASHY_INFO_FILE, ids.to_string()));
+        }
+        attempts.extend(YOUTUBE_FORMAT_SELECTORS.iter().map(|s| (INFO_FILE, s.to_string())));
     }
 
     let output_name = job.output.file_name().and_then(|n| n.to_str()).unwrap_or(OUTPUT_FILENAME);
@@ -980,7 +1105,8 @@ async fn download_with_ytdlp(job: &YtdlpJob<'_>, early_audio: Option<oneshot::Se
         if idx > 0 {
             remove_partial_files(job.output);
         }
-        let args = download_args(input, job.twitch, selector, job.ffmpeg, output_name, job.max_duration, true);
+        let merge = if *input == SPARSE_INFO_FILE { Merge::KeepTimestamps } else { Merge::Yes };
+        let args = download_args(input, job.twitch, selector, job.ffmpeg, output_name, job.max_duration, merge, job.max_height);
         let mut monitor = DownloadMonitor::new(job.work_dir, job.output, job.progress);
         monitor.background = early_sent;
         // Size, disk, deadline and cancel guards abort immediately (no retry).
@@ -989,14 +1115,16 @@ async fn download_with_ytdlp(job: &YtdlpJob<'_>, early_audio: Option<oneshot::Se
             succeeded = true;
             break;
         }
+        // Every later attempt fetches the whole video.
+        video_spans = None;
         if job.twitch && run.status.code() == Some(101) {
             return Err(twitch_not_completed());
         }
         let failure = classify_ytdlp_failure(&run.stderr_tail);
         match failure {
             YtdlpFailure::DiskFull => return Err(ytdlp_error(&failure, job.twitch)),
-            // Anything else retries the range requests as one sequential download.
-            _ if *input == DASHY_INFO_FILE => {
+            // Anything else retries the range requests: all of the video, then sequentially.
+            _ if *input == SPARSE_INFO_FILE || *input == DASHY_INFO_FILE => {
                 tracing::warn!(attempt = idx + 1, "parallel yt-dlp attempt failed");
                 last_failure = Some(failure);
             }
@@ -1019,7 +1147,7 @@ async fn download_with_ytdlp(job: &YtdlpJob<'_>, early_audio: Option<oneshot::Se
         // Exit 0 without a file: a match filter (Twitch duration) or --max-filesize skipped it.
         return Err(if job.twitch { twitch_duration() } else { failed("output file not found") });
     }
-    Ok(title)
+    Ok((title, video_spans))
 }
 
 /// Live checks while yt-dlp runs: reported and stored bytes, free space, progress.
@@ -1030,13 +1158,15 @@ struct DownloadMonitor<'a> {
     downloaded: u64,
     total: u64,
     last_percent: Option<u64>,
+    /// What is being fetched, as the progress step shows it.
+    step: &'static str,
     /// The caller already has the early audio and only waits for the video.
     background: bool,
 }
 
 impl<'a> DownloadMonitor<'a> {
     fn new(work_dir: &'a Path, output: &'a Path, progress: &'a ProgressFn) -> Self {
-        Self { work_dir, output, progress, downloaded: 0, total: 0, last_percent: None, background: false }
+        Self { work_dir, output, progress, downloaded: 0, total: 0, last_percent: None, step: "Downloading video...", background: false }
     }
 
     /// `clipward-progress <downloaded> <total> <estimate>`; unknown fields print "NA".
@@ -1061,9 +1191,9 @@ impl<'a> DownloadMonitor<'a> {
             if self.last_percent != Some(percent) {
                 self.last_percent = Some(percent);
                 let step = if self.background {
-                    format!("Finishing video download... {percent}%")
+                    format!("Still downloading the video... {percent}%")
                 } else {
-                    "Downloading video...".into()
+                    self.step.into()
                 };
                 report(self.progress, percent as f64 / 100.0 * 0.9, &step);
             }
@@ -1528,7 +1658,7 @@ mod tests {
 
     #[test]
     fn download_youtube_prefers_highest_quality_without_av1() {
-        assert_eq!(YOUTUBE_FORMAT_SORT, "hdr:SDR,res:2160,fps");
+        assert_eq!(format_sort(SOURCE_HEIGHTS[0]), "hdr:SDR,res:2160,fps");
         for selector in YOUTUBE_FORMAT_SELECTORS.iter().chain(TWITCH_FORMAT_SELECTORS.iter()) {
             assert!(!selector.contains("height"));
             for alternative in selector.split('/') {
@@ -1550,9 +1680,9 @@ mod tests {
     fn download_ytdlp_args_disable_proxy_config_and_native_handlers() {
         let ffmpeg = Path::new("/opt/ff/ffmpeg");
         for twitch in [false, true] {
-            let info = info_args(URL, twitch);
+            let info = info_args(URL, twitch, 1440);
             let input = if twitch { URL } else { INFO_FILE };
-            let dl = download_args(input, twitch, "b[vcodec!^=av01]", ffmpeg, "source.mp4", 21600.0, true);
+            let dl = download_args(input, twitch, "b[vcodec!^=av01]", ffmpeg, "source.mp4", 21600.0, Merge::Yes, 1440);
             for args in [&info, &dl] {
                 assert!(has_pair(args, "--proxy", ""));
                 assert!(has_pair(args, "--downloader", "native"));
@@ -1576,17 +1706,19 @@ mod tests {
             assert!(has_pair(&dl, "--merge-output-format", "mp4"));
             assert!(has_pair(&dl, "--ffmpeg-location", &tool_path(ffmpeg).to_string_lossy()));
             assert!(has_pair(&dl, "--max-filesize", "20000000000"));
-            assert!(has_pair(&dl, "--format-sort", YOUTUBE_FORMAT_SORT));
+            // The Settings download quality caps both the pick and the download.
+            assert_eq!(has_pair(&info, "--format-sort", "hdr:SDR,res:1440,fps"), !twitch);
+            assert!(has_pair(&dl, "--format-sort", "hdr:SDR,res:1440,fps"));
             assert!(has_pair(&dl, "--retries", "10"));
             assert!(has_pair(&dl, "--output", "source.mp4"));
             assert_eq!(dl.iter().any(|a| a == "--abort-on-unavailable-fragments"), twitch);
             assert_eq!(has_pair(&dl, "--break-match-filters", TWITCH_LIVE_FILTER), twitch);
             assert_eq!(has_pair(&dl, "--match-filters", "duration>0 & duration<=21600"), twitch);
         }
-        let escaped = download_args(INFO_FILE, false, "b", Path::new("ffmpeg"), "a%(id)s.mp4", 60.0, true);
+        let escaped = download_args(INFO_FILE, false, "b", Path::new("ffmpeg"), "a%(id)s.mp4", 60.0, Merge::Yes, 2160);
         assert!(has_pair(&escaped, "--output", "a%%(id)s.mp4"));
         // The early audio is kept exactly as fetched, so the merge can reuse it.
-        let audio = download_args(INFO_FILE, false, "251", ffmpeg, "source.f251.webm", 60.0, false);
+        let audio = download_args(INFO_FILE, false, "251", ffmpeg, "source.f251.webm", 60.0, Merge::No, 2160);
         assert!(has_pair(&audio, "--fixup", "never") && has_pair(&audio, "--format", "251"));
         assert!(!audio.iter().any(|a| a == "--remux-video" || a == "--merge-output-format"));
     }
@@ -1701,7 +1833,7 @@ mod tests {
         let cfg = test_config(dir.path(), None);
         let progress: ProgressFn = Arc::new(|_| {});
         for url in ["http://127.0.0.1/secret-token.mp4", "http://localhost/secret-token.mp4", "http://10.0.0.1:8080/secret-token.mp4"] {
-            let err = message(download(url, &cfg, None, &progress, &CancellationToken::new(), None).await.unwrap_err());
+            let err = message(download(url, &cfg, None, &progress, &CancellationToken::new(), None, None).await.unwrap_err());
             assert!(err.starts_with("video download failed"), "{err}");
             assert!(!err.contains("secret") && !err.contains("127.0.0.1"), "{err}");
         }
@@ -1712,7 +1844,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cfg = test_config(dir.path(), None);
         let progress: ProgressFn = Arc::new(|_| {});
-        let err = message(download("/no/such/secret.mp4", &cfg, None, &progress, &CancellationToken::new(), None).await.unwrap_err());
+        let err = message(download("/no/such/secret.mp4", &cfg, None, &progress, &CancellationToken::new(), None, None).await.unwrap_err());
         assert_eq!(err, "video download failed: local video not found");
     }
 
@@ -1725,6 +1857,7 @@ mod tests {
             whisper_model_path: root.join("model.bin"),
             ai: Default::default(),
             custom_vocabulary: Vec::new(),
+            max_source_height: 2160,
             work_dir: root.join("work"),
             output_dir: root.join("out"),
         }
@@ -1782,7 +1915,7 @@ mod tests {
 
         pub async fn run(fx: &Fixture, source: Source) -> Result<DownloadResult> {
             let progress: ProgressFn = Arc::new(|_| {});
-            fetch_remote(&source, &fx.cfg, 21600.0, &progress, &CancellationToken::new(), None).await
+            fetch_remote(&source, &fx.cfg, 21600.0, &progress, &CancellationToken::new(), None, None).await
         }
 
         pub fn work_files(fx: &Fixture) -> Vec<String> {
@@ -1890,6 +2023,82 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn download_youtube_fetches_only_the_clusters_its_spans_need() {
+        use fake_tools::*;
+        // Clusters every 60 s (the cue times count 10 ms), 1000 bytes each.
+        let cues: Vec<(u16, u16)> = (0..6).map(|i| (i * 6000, 1000 + i * 1000)).collect();
+        let (head, segment, header_len) = crate::webm_index::tests::head(&cues, Some(10_000_000));
+        let size = segment + 7000;
+        let info = json!({"title": "t", "duration": 360, "format_id": "313+251", "formats": [
+            {"format_id": "313", "protocol": "https", "vcodec": "vp9", "ext": "webm", "filesize": size,
+             "url": "https://v.example/videoplayback?id=1", "downloader_options": {"http_chunk_size": 10485760}},
+            {"format_id": "251", "protocol": "https", "vcodec": "none", "ext": "webm", "url": "https://v.example/videoplayback?id=2"}]});
+        // The head run writes the start of the video; `fail` makes the sparse run fail.
+        let body = "case \"$*\" in *info.head.json) cp \"$d/head.bin\" info.head.webm; exit 0;; esac\n\
+                    case \"$*\" in *info.sparse.json) [ -f \"$d/fail\" ] && exit 1;; esac\nprintf media > source.mp4\n";
+        let yt = Source::YouTube("https://youtu.be/abc".into());
+        let progress: ProgressFn = Arc::new(|_| {});
+        let fetch = |fx: &Fixture, spans: &'static [(f64, f64)]| {
+            let (yt, progress, cfg) = (yt.clone(), progress.clone(), fx.cfg.clone());
+            async move { fetch_remote(&yt, &cfg, 21600.0, &progress, &CancellationToken::new(), None, Some(spans)).await }
+        };
+        let calls = |fx: &Fixture| -> Vec<String> {
+            std::fs::read_to_string(fx.bin.join("args.log")).unwrap().lines().map(String::from).collect()
+        };
+        let ranges = |fx: &Fixture, file: &str| -> Vec<String> {
+            let info: Value = serde_json::from_slice(&std::fs::read(fx.cfg.work_dir.join(file)).unwrap()).unwrap();
+            let urls = info["formats"][0]["fragments"].as_array().unwrap().iter();
+            urls.map(|f| f["url"].as_str().unwrap().rsplit_once("range=").unwrap().1.to_string()).collect()
+        };
+
+        // 130-140 s, padded by 10 s each side, lies in the cluster that starts at 120 s.
+        let fx = fixture(&info, body);
+        std::fs::write(fx.bin.join("head.bin"), &head).unwrap();
+        let source = fetch(&fx, &[(130.0, 140.0)]).await.unwrap();
+        assert_eq!(source.metadata.video_spans, Some(vec![(120.0, 150.0)]));
+        let log = calls(&fx);
+        assert_eq!(log.len(), 3, "{log:?}");
+        assert!(log[1].contains("--format 313 ") && log[1].contains("--output info.head.webm"));
+        assert!(log[1].ends_with("--load-info-json info.head.json"));
+        assert_eq!(ranges(&fx, HEAD_INFO_FILE), [format!("0-{}", size - 1)]);
+        assert!(log[2].contains("--format 313+251 ") && log[2].ends_with("--load-info-json info.sparse.json"));
+        // The merge keeps the clusters' own timestamps.
+        assert!(log[2].contains("--postprocessor-args ffmpeg:-copyts -movflags -faststart"));
+        assert_eq!(
+            ranges(&fx, SPARSE_INFO_FILE),
+            [format!("0-{}", header_len - 1), format!("{}-{}", segment + 3000, segment + 3999)]
+        );
+        assert!(!work_files(&fx).contains(&HEAD_FILE.to_string()));
+
+        // A failed sparse run, spans that need most of the file, and a video without a
+        // readable index all download the whole video, merged as before.
+        for (case, spans, head) in [
+            ("fail", &[(130.0, 140.0)][..], &head[..]),
+            ("most", &[(0.0, 300.0)][..], &head[..]),
+            ("index", &[(130.0, 140.0)][..], &b"not a webm file"[..]),
+        ] {
+            let fx = fixture(&info, body);
+            std::fs::write(fx.bin.join("head.bin"), head).unwrap();
+            std::fs::write(fx.bin.join(case), "").unwrap();
+            let spans: &'static [(f64, f64)] = Box::leak(spans.to_vec().into_boxed_slice());
+            assert_eq!(fetch(&fx, spans).await.unwrap().metadata.video_spans, None, "{case}");
+            let log = calls(&fx);
+            let last = log.last().unwrap();
+            assert!(last.ends_with("--load-info-json info.dashy.json"), "{case}: {log:?}");
+            assert!(last.contains("--postprocessor-args ffmpeg:-movflags -faststart"), "{case}");
+            assert_eq!(log.iter().filter(|c| c.contains("info.sparse.json")).count(), usize::from(case == "fail"), "{case}");
+        }
+
+        // Twitch never takes the sparse path.
+        let fx = fixture(&saved_info(), "printf media > source.mp4\n");
+        fetch_remote(&Source::Twitch(URL.into()), &fx.cfg, 21600.0, &progress, &CancellationToken::new(), None, Some(&[(1.0, 2.0)]))
+            .await
+            .unwrap();
+        assert!(!calls(&fx).iter().any(|c| c.contains("info.head.json")));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn download_youtube_hands_over_early_audio_and_reuses_it() {
         use fake_tools::*;
         // The audio run writes the stream alone; the video run needs that very file (yt-dlp
@@ -1903,7 +2112,7 @@ mod tests {
         let sink = steps.clone();
         let progress: ProgressFn = Arc::new(move |p: Progress| sink.lock().unwrap().push(p.step));
         let yt = Source::YouTube("https://youtu.be/abc".into());
-        let result = fetch_remote(&yt, &fx.cfg, 21600.0, &progress, &CancellationToken::new(), Some(tx)).await.unwrap();
+        let result = fetch_remote(&yt, &fx.cfg, 21600.0, &progress, &CancellationToken::new(), Some(tx), None).await.unwrap();
         assert_eq!(result.path, fx.cfg.work_dir.join("source.mp4"));
         let audio = rx.await.unwrap();
         assert_eq!((audio.path.clone(), audio.duration_seconds), (fx.cfg.work_dir.join("audio.mp4"), 59.0));
@@ -1918,7 +2127,8 @@ mod tests {
         let dashy: Value = serde_json::from_slice(&std::fs::read(fx.cfg.work_dir.join(DASHY_INFO_FILE)).unwrap()).unwrap();
         assert_eq!(dashy["formats"][0]["fragments"].as_array().unwrap().len(), 3);
         // yt-dlp prints progress on stdout; after the audio it reads as the video's remainder.
-        assert!(steps.lock().unwrap().iter().any(|s| s == "Finishing video download... 50%"));
+        assert!(steps.lock().unwrap().iter().any(|s| s == "Still downloading the video... 50%"));
+        assert!(!steps.lock().unwrap().iter().any(|s| s == "Downloading video..."));
 
         // A failed range-split run falls back to the sequential selectors; when all fail,
         // the saved info and early audio go with the partial files.
@@ -1926,7 +2136,7 @@ mod tests {
                     echo 'ERROR: Requested format is not available' >&2\nexit 1\n";
         let fx = fixture(&picked_info(), body);
         let (tx, rx) = oneshot::channel();
-        let err = fetch_remote(&yt, &fx.cfg, 21600.0, &progress, &CancellationToken::new(), Some(tx)).await.unwrap_err();
+        let err = fetch_remote(&yt, &fx.cfg, 21600.0, &progress, &CancellationToken::new(), Some(tx), None).await.unwrap_err();
         assert_eq!(message(err), "video download failed: no compatible video format");
         assert!(rx.await.is_ok());
         assert_eq!(std::fs::read_to_string(fx.bin.join("args.log")).unwrap().lines().count(), 5);
@@ -1937,7 +2147,7 @@ mod tests {
                     printf media > source.mp4\n";
         let fx = fixture(&picked_info(), body);
         let (tx, rx) = oneshot::channel();
-        let result = fetch_remote(&yt, &fx.cfg, 21600.0, &progress, &CancellationToken::new(), Some(tx)).await.unwrap();
+        let result = fetch_remote(&yt, &fx.cfg, 21600.0, &progress, &CancellationToken::new(), Some(tx), None).await.unwrap();
         assert_eq!(result.path, fx.cfg.work_dir.join("source.mp4"));
         assert!(rx.await.is_err());
         assert_eq!(std::fs::read_to_string(fx.bin.join("args.log")).unwrap().lines().count(), 3);
@@ -1965,7 +2175,7 @@ mod tests {
         });
         let progress: ProgressFn = Arc::new(|_| {});
         let started = std::time::Instant::now();
-        let err = fetch_remote(&Source::Twitch(URL.into()), &fx.cfg, 21600.0, &progress, &cancel, None).await.unwrap_err();
+        let err = fetch_remote(&Source::Twitch(URL.into()), &fx.cfg, 21600.0, &progress, &cancel, None, None).await.unwrap_err();
         assert!(matches!(err, EngineError::Cancelled));
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(work_files(&fx).is_empty());
@@ -1977,10 +2187,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let progress: ProgressFn = Arc::new(|_| {});
         let cfg = test_config(dir.path(), None);
-        let err = fetch_remote(&Source::Twitch(URL.into()), &cfg, 60.0, &progress, &CancellationToken::new(), None).await;
+        let err = fetch_remote(&Source::Twitch(URL.into()), &cfg, 60.0, &progress, &CancellationToken::new(), None, None).await;
         assert_eq!(message(err.unwrap_err()), "video download failed: yt-dlp is not installed");
         let cfg = test_config(dir.path(), Some(dir.path().join("missing/yt-dlp")));
-        let err = fetch_remote(&Source::Twitch(URL.into()), &cfg, 60.0, &progress, &CancellationToken::new(), None).await;
+        let err = fetch_remote(&Source::Twitch(URL.into()), &cfg, 60.0, &progress, &CancellationToken::new(), None, None).await;
         assert_eq!(message(err.unwrap_err()), "video download failed: yt-dlp is not installed");
     }
 
@@ -1994,12 +2204,12 @@ mod tests {
         let progress: ProgressFn = Arc::new(|_| {});
         let url = Url::from_file_path(&video).unwrap().to_string();
         for input in [video.to_string_lossy().into_owned(), url] {
-            let result = download(&input, &fx.cfg, None, &progress, &CancellationToken::new(), None).await.unwrap();
+            let result = download(&input, &fx.cfg, None, &progress, &CancellationToken::new(), None, None).await.unwrap();
             assert!(result.is_local);
             assert_eq!(result.path, video);
             assert_eq!(result.metadata.title, "My Talk");
         }
-        let err = download(&video.to_string_lossy(), &fx.cfg, Some(10.0), &progress, &CancellationToken::new(), None).await;
+        let err = download(&video.to_string_lossy(), &fx.cfg, Some(10.0), &progress, &CancellationToken::new(), None, None).await;
         assert!(message(err.unwrap_err()).contains("exceeds maximum allowed duration"));
         assert!(video.exists());
     }

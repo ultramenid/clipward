@@ -326,21 +326,21 @@ pub enum Edge {
     Out,
 }
 
-/// Moves an item's in or out point to source time `src_ms`, within the source and the
-/// minimum length.
+/// Moves an item's in or out point to source time `src_ms`, within `bounds` (the earliest
+/// in point and latest out point its video allows) and the minimum length.
 pub fn trim_item(
     video: &[VideoItem],
     index: usize,
     edge: Edge,
     src_ms: f64,
-    source_duration_ms: i64,
+    bounds: (i64, i64),
 ) -> Vec<VideoItem> {
     let Some(item) = video.get(index) else {
         return video.to_vec();
     };
     let next = match edge {
         Edge::In => {
-            let src_in_ms = round_ms(src_ms.max(0.0).min((item.src_out_ms - MIN_ITEM_MS) as f64));
+            let src_in_ms = round_ms(src_ms.max(bounds.0 as f64).min((item.src_out_ms - MIN_ITEM_MS) as f64));
             // Keyframes stay on their frames: they move by the trim (fit_keyframes drops any cut off).
             let shift = round_ms((src_in_ms - item.src_in_ms) as f64 / item.speed);
             let keyframes = item
@@ -361,7 +361,7 @@ pub fn trim_item(
         Edge::Out => VideoItem {
             src_out_ms: round_ms(
                 src_ms
-                    .min(source_duration_ms as f64)
+                    .min(bounds.1 as f64)
                     .max((item.src_in_ms + MIN_ITEM_MS) as f64),
             ),
             ..item.clone()
@@ -1263,21 +1263,24 @@ mod tests {
     fn trims_stay_inside_the_source_and_keep_a_minimum_length() {
         let track = track();
         assert_eq!(
-            trim_item(&track, 0, Edge::In, -500.0, 10000)[0].src_in_ms,
+            trim_item(&track, 0, Edge::In, -500.0, (0, 10000))[0].src_in_ms,
             0
         );
         assert_eq!(
-            trim_item(&track, 0, Edge::In, 2990.0, 10000)[0].src_in_ms,
+            trim_item(&track, 0, Edge::In, 2990.0, (0, 10000))[0].src_in_ms,
             2900
         );
         assert_eq!(
-            trim_item(&track, 1, Edge::Out, 12000.0, 10000)[1].src_out_ms,
+            trim_item(&track, 1, Edge::Out, 12000.0, (0, 10000))[1].src_out_ms,
             10000
         );
         assert_eq!(
-            trim_item(&track, 1, Edge::Out, 4000.0, 10000)[1].src_out_ms,
+            trim_item(&track, 1, Edge::Out, 4000.0, (0, 10000))[1].src_out_ms,
             5100
         );
+        // A source downloaded only around its clips: the piece stays where there is video.
+        assert_eq!(trim_item(&track, 0, Edge::In, -500.0, (800, 3500))[0].src_in_ms, 800);
+        assert_eq!(trim_item(&track, 0, Edge::Out, 9000.0, (800, 3500))[0].src_out_ms, 3500);
     }
 
     #[test]
@@ -1804,7 +1807,7 @@ mod tests {
             }
         );
         // Trimming 500 ms off the start moves the keys with their frames; the first falls off.
-        let trimmed = &trim_item(std::slice::from_ref(&keyed), 0, Edge::In, 1500.0, 10000)[0];
+        let trimmed = &trim_item(std::slice::from_ref(&keyed), 0, Edge::In, 1500.0, (0, 10000))[0];
         assert_eq!(
             trimmed.keyframes.iter().map(|k| k.t_ms).collect::<Vec<_>>(),
             [1500]

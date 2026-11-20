@@ -1738,8 +1738,9 @@ pub const FILMSTRIP_BLOCK_S: u32 = 60;
 pub const FILMSTRIP_HEIGHT: u32 = 180;
 
 /// Frames of seconds `block * FILMSTRIP_BLOCK_S ..` of a video, one per second, side by
-/// side in one JPEG at `out` (a short last block is padded black).
-pub async fn filmstrip(ffmpeg: &Path, file: &Path, block: u32, out: &Path, cancel: &CancellationToken) -> Result<()> {
+/// side in one JPEG at `out` (a short last block is padded black). `sparse`: the video
+/// has stretches without frames (a source downloaded only around its clips).
+pub async fn filmstrip(ffmpeg: &Path, file: &Path, block: u32, sparse: bool, out: &Path, cancel: &CancellationToken) -> Result<()> {
     let mut args: Vec<String> = ["-nostdin", "-nostats", "-v", "error", "-y", "-ss"].map(String::from).to_vec();
     args.push(format!("{}", block * FILMSTRIP_BLOCK_S));
     args.extend(MEDIA_INPUT_OPTIONS.iter().map(|v| v.to_string()));
@@ -1749,8 +1750,11 @@ pub async fn filmstrip(ffmpeg: &Path, file: &Path, block: u32, out: &Path, cance
     // nearest k + 0.5, which put every thumbnail half a second ahead of the preview.
     // The first frame always counts, and a frame just after it (when seeking lands a
     // hair before 0) does not.
+    // Tiles fill in arrival order, so a stretch without frames would slide every later
+    // thumbnail left: `fps` repeats the last frame through it, keeping frame k at second k.
+    let hold = if sparse { "setpts='max(PTS,0)',fps=1:start_time=0:round=down," } else { "" };
     args.push(format!(
-        "select='eq(n,0)+gt(floor(t),floor(prev_t))*gte(t,0.5)',scale=-2:{FILMSTRIP_HEIGHT},tile={FILMSTRIP_BLOCK_S}x1"
+        "select='eq(n,0)+gt(floor(t),floor(prev_t))*gte(t,0.5)',{hold}scale=-2:{FILMSTRIP_HEIGHT},tile={FILMSTRIP_BLOCK_S}x1"
     ));
     args.extend(["-frames:v", "1", "-q:v", "6"].map(String::from));
     args.push(out.to_string_lossy().into_owned());

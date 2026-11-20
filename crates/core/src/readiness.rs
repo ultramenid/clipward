@@ -117,6 +117,7 @@ mod tests {
             appearance: Appearance::default(),
             window_blur_supported: false,
             source_retention_days: Some(30),
+            max_source_height: 2160,
         }
     }
 

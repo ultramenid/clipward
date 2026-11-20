@@ -18,7 +18,7 @@ use crate::{shell, state};
 use clipward_core::ToolStatus;
 use clipward_core::appearance::Appearance;
 use clipward_core::provider_catalog::{
-    self as catalog, APP_NAME, CLIPWARD_URL, LICENSE_NAME, RETENTION_OPTIONS,
+    self as catalog, APP_NAME, CLIPWARD_URL, LICENSE_NAME, QUALITY_OPTIONS, RETENTION_OPTIONS,
 };
 use clipward_core::shared::{ISSUES_URL, REPO_URL};
 use clipward_core::sources::SourceUsage;
@@ -92,6 +92,7 @@ pub struct SettingsPage {
     sources_busy: bool,
     sources_error: Option<SharedString>,
     retention: Entity<RetentionSelect>,
+    quality: Entity<RetentionSelect>,
     tools_expanded: bool,
     // Appearance (appearance.rs)
     /// Colors and the rail, folded by default.
@@ -126,6 +127,12 @@ impl SettingsPage {
             .position(|o| o.value == catalog::retention_value(saved.source_retention_days))
             .map(|row| gpui_kit::component::IndexPath::default().row(row));
         let retention = cx.new(|cx| SelectState::new(SearchableVec::new(options), selected, window, cx));
+        let options: Vec<Choice> = QUALITY_OPTIONS.iter().map(|(value, label)| Choice::new(*value, *label)).collect();
+        let selected = options
+            .iter()
+            .position(|o| o.value == saved.max_source_height.to_string())
+            .map(|row| gpui_kit::component::IndexPath::default().row(row));
+        let quality = cx.new(|cx| SelectState::new(SearchableVec::new(options), selected, window, cx));
         let picker = cx.new(|cx| {
             color_picker::ColorPicker::new(
                 saved.appearance.accent_color.as_deref().unwrap_or(clipward_core::appearance::ACCENT_COLOR_PRESETS[0]),
@@ -157,6 +164,11 @@ impl SettingsPage {
                 let SelectEvent::Confirm(Some(value)) = event else { return };
                 this.set_retention(catalog::retention_days(value), cx);
             }),
+            cx.subscribe(&quality, |this, _, event: &SelectEvent<SearchableVec<Choice>>, cx| {
+                let SelectEvent::Confirm(Some(value)) = event else { return };
+                let Ok(height) = value.parse() else { return };
+                this.set_quality(height, cx);
+            }),
             cx.subscribe_in(&picker, window, |this, _, event: &color_picker::ColorChanged, _, cx| {
                 let mut next = this.appearance(cx);
                 next.accent_color = Some(event.0.clone());
@@ -187,6 +199,7 @@ impl SettingsPage {
             sources_busy: false,
             sources_error: None,
             retention,
+            quality,
             tools_expanded: false,
             appearance_more: false,
             appearance_draft: None,
@@ -222,6 +235,8 @@ impl SettingsPage {
         }
         let retention = SharedString::from(catalog::retention_value(s.source_retention_days));
         self.retention.update(cx, |select, cx| select.set_selected_value(&retention, window, cx));
+        let quality = SharedString::from(s.max_source_height.to_string());
+        self.quality.update(cx, |select, cx| select.set_selected_value(&quality, window, cx));
         let usage_for = (s.output_directory.clone(), s.source_retention_days);
         if self.usage_for.as_ref() != Some(&usage_for) {
             self.usage_for = Some(usage_for);
@@ -390,6 +405,18 @@ impl SettingsPage {
             });
         })
         .detach();
+    }
+
+    fn set_quality(&mut self, height: u32, cx: &mut Context<Self>) {
+        if height == self.saved(cx).max_source_height {
+            return;
+        }
+        self.sources_error = None;
+        if !self.settings.update(cx, |s, cx| s.set_max_source_height(height, cx)) {
+            let message = self.settings.read(cx).save_error.clone();
+            self.sources_error = Some(message.unwrap_or_else(|| "Could not save this setting".into()).into());
+        }
+        cx.notify();
     }
 
     fn set_retention(&mut self, days: Option<u32>, cx: &mut Context<Self>) {
@@ -676,6 +703,18 @@ impl SettingsPage {
                     .flex()
                     .flex_col()
                     .gap(u(8.))
+                    .child(ui::setting_row(
+                        "Download quality",
+                        Some("For YouTube and Twitch links. Lower downloads much faster on a slow connection; clips are less sharp.".into()),
+                        div().w(u(224.)).flex_shrink_0().child(
+                            Select::new(&self.quality)
+                                .with_size(Size::Small)
+                                .accessibility_label("Download quality")
+                                .text_caption(),
+                        ),
+                        false,
+                        &t,
+                    ))
                     .child(ui::setting_row(
                         "Keep original videos",
                         Some("Needed to edit clips later. Your own files are never moved or deleted.".into()),

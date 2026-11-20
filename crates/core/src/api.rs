@@ -119,6 +119,11 @@ impl Core {
         self.settings.set_appearance(appearance)
     }
 
+    /// Download quality: the tallest YouTube or Twitch stream later jobs fetch.
+    pub fn set_max_source_height(&self, height: u32) -> CmdResult<PublicSettings> {
+        self.settings.set_max_source_height(height)
+    }
+
     /// How long runs keep their source video for re-editing; None keeps it until the run is deleted.
     pub fn set_source_retention(&self, days: Option<u32>) -> CmdResult<PublicSettings> {
         let saved = self.settings.set_source_retention(days)?;

@@ -77,6 +77,8 @@ pub struct Opened {
     /// The source video, for the instant (approximate) preview.
     pub source_path: Option<PathBuf>,
     pub source_duration_ms: i64,
+    /// Where the source has video, when only part of it was downloaded (empty: all of it).
+    pub source_spans: Vec<(i64, i64)>,
     /// The campaign brief.
     pub requirements: Option<String>,
 }
@@ -170,12 +172,13 @@ impl EditorState {
                             source_available,
                             source_path,
                             source_duration_ms,
+                            source_spans,
                             requirements,
                             unexported,
                         } = opened;
                         this.unexported = unexported;
                         this.history.open(project);
-                        this.opened = Some(Opened { source_available, source_path, source_duration_ms, requirements });
+                        this.opened = Some(Opened { source_available, source_path, source_duration_ms, source_spans, requirements });
                         this.refresh_overlays(cx);
                     }
                     Err(message) => this.load_error = Some(message),

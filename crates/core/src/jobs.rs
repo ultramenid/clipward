@@ -554,6 +554,7 @@ async fn run_tracked_job(app: Arc<Core>, id: String) {
         whisper_model_path,
         ai: settings.engine_ai(cli_path),
         custom_vocabulary: vocabulary_terms(&settings.custom_vocabulary),
+        max_source_height: settings.max_source_height,
         work_dir: work_dir.clone(),
         output_dir: run_dir.clone(),
     };

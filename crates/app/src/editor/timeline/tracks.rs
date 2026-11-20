@@ -448,10 +448,10 @@ impl Tracks {
                 let base = if *edge == Edge::In { item.src_in_ms } else { item.src_out_ms };
                 // A sped-up piece moves through its source faster than the timeline.
                 let src = snap(base as f64 + ms * item.speed);
-                let source_ms = editor.opened.as_ref().map_or(0, |o| o.source_duration_ms);
-                // An added video trims within its own length.
-                let bound = view::trim_bound(project, item, source_ms);
-                let next = timeline::trim_item(video, *index, *edge, src, bound);
+                let (source_ms, spans) = editor.opened.as_ref().map_or((0, &[][..]), |o| (o.source_duration_ms, &o.source_spans[..]));
+                // An added video trims within its own length, the source within its video.
+                let bounds = view::trim_bounds(project, item, source_ms, spans);
+                let next = timeline::trim_item(video, *index, *edge, src, bounds);
                 // Show the frame at the edge being dragged.
                 let seek = timeline::placements(&next)
                     .get(*index)

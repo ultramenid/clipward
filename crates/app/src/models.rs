@@ -121,6 +121,11 @@ impl Settings {
         self.take(result, cx)
     }
 
+    pub fn set_max_source_height(&mut self, height: u32, cx: &mut Context<Self>) -> bool {
+        let result = state::core(cx).set_max_source_height(height);
+        self.take(result, cx)
+    }
+
     pub fn set_source_retention(&mut self, days: Option<u32>, cx: &mut Context<Self>) -> bool {
         let result = state::core(cx).set_source_retention(days);
         self.take(result, cx)

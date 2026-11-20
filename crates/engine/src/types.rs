@@ -111,6 +111,8 @@ pub struct EngineConfig {
     pub whisper_model_path: PathBuf,
     pub ai: AiSettings,
     pub custom_vocabulary: Vec<String>,
+    /// Tallest YouTube or Twitch stream to download ([`crate::download::SOURCE_HEIGHTS`]).
+    pub max_source_height: u32,
     /// Scratch space for this job; removed by the caller afterwards.
     pub work_dir: PathBuf,
     /// Run folder where clips, transcript.json, plan.json and result.json land.
@@ -205,6 +207,10 @@ pub struct VideoMetadata {
     pub height: u32,
     pub fps: f64,
     pub has_audio: bool,
+    /// The only parts of a downloaded source that have video (seconds, ascending, apart);
+    /// None when it is all there. The audio is always whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_spans: Option<Vec<(f64, f64)>>,
 }
 
 #[derive(Debug, Clone)]

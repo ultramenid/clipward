@@ -73,6 +73,7 @@ async fn main() {
         whisper_model_path: PathBuf::new(),
         ai: Default::default(),
         custom_vocabulary: vec![],
+        max_source_height: 2160,
         work_dir: std::env::temp_dir(),
         output_dir: std::env::temp_dir(),
     };

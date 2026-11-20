@@ -90,8 +90,13 @@ impl Job {
         // 1. Download, as its own task. A YouTube source hands its audio over first:
         // transcription and planning run on it while the video keeps downloading, and
         // only layout and rendering wait for the video.
-        self.report(Stage::Downloading, 5.0, "Downloading video...", 0, 0);
-        let mut video = Video::start(&self.req.video_url, &self.cfg, &self.progress, &self.cancel);
+        self.report(Stage::Downloading, 5.0, "Preparing video...", 0, 0);
+        // A manual run reads the video only at its typed clips, so only those parts are fetched.
+        let spans = self.req.manual_clips.as_ref().map(|clips| {
+            let usable = clips.iter().filter(|c| c.start_seconds.is_finite() && c.end_seconds > c.start_seconds);
+            usable.map(|c| (c.start_seconds, c.end_seconds)).collect()
+        });
+        let mut video = Video::start(&self.req.video_url, &self.cfg, spans, &self.progress, &self.cancel);
         let result = self.process(&mut video, job_id).await;
         // A failed run can leave the download running: stop it before the work dir goes.
         video.stop().await;
@@ -103,7 +108,7 @@ impl Job {
         let (media, mut video_duration) = match video.early_audio().await {
             Some(audio) => (audio.path, audio.duration_seconds),
             None => {
-                let source = video.finish(Stage::Downloading, 15.0).await?;
+                let source = video.finish(15.0).await?;
                 (source.path.clone(), source.metadata.duration_seconds)
             }
         };
@@ -157,7 +162,7 @@ impl Job {
             None => {
                 // Without speech the planner reads frames, so it needs the video itself.
                 let media = if transcript.segments.is_empty() {
-                    let source = video.finish(Stage::Transcribing, 15.0).await?;
+                    let source = video.finish(15.0).await?;
                     video_duration = source.metadata.duration_seconds;
                     source.path.clone()
                 } else {
@@ -190,8 +195,7 @@ impl Job {
         self.check_cancel()?;
 
         // Layout and rendering need the video.
-        let waiting = if manual_clips.is_some() { Stage::Transcribing } else { Stage::Planning };
-        let source = video.finish(waiting, 50.0).await?.clone();
+        let source = video.finish(50.0).await?.clone();
         self.stages.insert("download", video.download_seconds);
         let meta = source.metadata.clone();
         let video_duration = meta.duration_seconds;
@@ -393,8 +397,8 @@ enum Shown {
     All,
     /// None while transcription and planning run on the early audio.
     Hidden,
-    /// Under the job's stage and percent while it waits for the video.
-    Waiting(Stage, f64),
+    /// As the download stage, at the job's percent, while it waits for the video.
+    Waiting(f64),
 }
 
 /// The source download, run as its own task so the job can go on with early audio.
@@ -410,7 +414,13 @@ struct Video {
 }
 
 impl Video {
-    fn start(url: &str, cfg: &EngineConfig, progress: &ProgressFn, cancel: &CancellationToken) -> Self {
+    fn start(
+        url: &str,
+        cfg: &EngineConfig,
+        spans: Option<Vec<(f64, f64)>>,
+        progress: &ProgressFn,
+        cancel: &CancellationToken,
+    ) -> Self {
         let cancel = cancel.child_token();
         let shown = Arc::new(Mutex::new(Shown::All));
         let (audio_tx, audio) = oneshot::channel();
@@ -420,12 +430,12 @@ impl Video {
             match shown {
                 Shown::All => sink(p),
                 Shown::Hidden => {}
-                Shown::Waiting(stage, percent) => sink(Progress { stage, percent, ..p }),
+                Shown::Waiting(percent) => sink(Progress { stage: Stage::Downloading, percent, ..p }),
             }
         });
         let task = tokio::spawn(async move {
             let t = Instant::now();
-            let source = download::download(&url, &cfg, None, &filtered, &token, Some(audio_tx)).await?;
+            let source = download::download(&url, &cfg, None, &filtered, &token, Some(audio_tx), spans.as_deref()).await?;
             Ok((source, t.elapsed().as_secs_f64()))
         });
         Video { task: Some(task), audio: Some(audio), done: None, download_seconds: 0.0, cancel, shown, progress: progress.clone() }
@@ -456,14 +466,14 @@ impl Video {
         }
     }
 
-    /// Waits for the video. After early audio, the download's progress shows meanwhile
-    /// under the job's current `stage` and `percent`.
-    async fn finish(&mut self, stage: Stage, percent: f64) -> Result<&DownloadResult> {
+    /// Waits for the video. After early audio, the job is back in the download stage
+    /// meanwhile (the stepper must not show Download as done), at its current `percent`.
+    async fn finish(&mut self, percent: f64) -> Result<&DownloadResult> {
         if let Some(task) = self.task.take() {
             if !task.is_finished() && matches!(*self.shown(), Shown::Hidden) {
-                *self.shown() = Shown::Waiting(stage, percent);
-                let step = "Finishing video download...".into();
-                (self.progress)(Progress { stage, percent, step, clips_done: 0, clips_total: 0 });
+                *self.shown() = Shown::Waiting(percent);
+                let step = "Still downloading the video...".into();
+                (self.progress)(Progress { stage: Stage::Downloading, percent, step, clips_done: 0, clips_total: 0 });
             }
             let joined = task.await;
             self.joined(joined)?;
@@ -861,6 +871,7 @@ mod tests {
             whisper_model_path: dir.path().join("missing.bin"),
             ai: Default::default(),
             custom_vocabulary: vec![],
+            max_source_height: 2160,
             work_dir: dir.path().join("work"),
             output_dir: dir.path().join("run"),
         };
@@ -904,6 +915,7 @@ mod tests {
             // A configured provider must not be used by a manual run.
             ai: crate::types::AiSettings { provider: "openrouter".into(), ..Default::default() },
             custom_vocabulary: vec![],
+            max_source_height: 2160,
             work_dir: dir.join("work"),
             output_dir: dir.join("run"),
         };
@@ -992,6 +1004,7 @@ mod tests {
             path: work.join("dl.webm"),
             metadata: crate::types::VideoMetadata {
                 title: "t".into(), duration_seconds: 1.0, width: 2, height: 2, fps: 30.0, has_audio: true,
+                video_spans: Some(vec![(0.25, 0.75)]),
             },
             is_local: false,
         };
@@ -1003,6 +1016,8 @@ mod tests {
         assert_eq!(kept["source"]["path"], "source.webm");
         assert_eq!(kept["request"]["logos"][0]["path"], "logo_0.png");
         assert_eq!(kept["source"]["metadata"]["width"], 2);
+        // The editor reads which parts of a partly downloaded source have video.
+        assert_eq!(kept["source"]["metadata"]["video_spans"], json!([[0.25, 0.75]]));
     }
 
     #[tokio::test]
@@ -1059,6 +1074,7 @@ mod tests {
             whisper_model_path: dir.path().join("missing.bin"),
             ai: Default::default(),
             custom_vocabulary: vec![],
+            max_source_height: 2160,
             work_dir: dir.path().join("work"),
             output_dir: dir.path().join("run"),
         };

@@ -4,6 +4,7 @@ pub mod media;
 pub mod types;
 
 pub mod download;
+pub mod webm_index;
 pub mod net;
 pub mod transcribe;
 

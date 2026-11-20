@@ -70,6 +70,8 @@ pub struct AppSettings {
     pub local_images: bool,
     /// Days a run keeps its source video for re-editing; None keeps it until the run is deleted.
     pub source_retention_days: Option<u32>,
+    /// Tallest YouTube or Twitch stream to download (`clip_engine::download::SOURCE_HEIGHTS`).
+    pub max_source_height: u32,
 }
 
 impl AppSettings {
@@ -160,6 +162,7 @@ pub struct PublicSettings {
     /// Whether the shell sets the glass blur radius (macOS only).
     pub window_blur_supported: bool,
     pub source_retention_days: Option<u32>,
+    pub max_source_height: u32,
 }
 
 /// The fields the renderer may change with settings:save.
@@ -216,6 +219,13 @@ struct PersistedSettings {
     /// Missing in files written before source videos were kept.
     #[serde(default = "default_source_retention_days")]
     source_retention_days: Option<u32>,
+    /// Missing in files written before the Download quality setting.
+    #[serde(default = "default_max_source_height")]
+    max_source_height: u32,
+}
+
+fn default_max_source_height() -> u32 {
+    clip_engine::download::SOURCE_HEIGHTS[0]
 }
 
 fn default_window_glass() -> bool {
@@ -253,6 +263,7 @@ pub fn public_settings(settings: &AppSettings) -> PublicSettings {
         appearance: settings.appearance.clone(),
         window_blur_supported: crate::window_glass::BLUR_SUPPORTED,
         source_retention_days: settings.source_retention_days,
+        max_source_height: settings.max_source_height,
     }
 }
 
@@ -311,6 +322,7 @@ impl SettingsStore {
                 local_model: String::new(),
                 local_images: false,
                 source_retention_days: default_source_retention_days(),
+                max_source_height: default_max_source_height(),
             },
             cache: Mutex::new(None),
         }
@@ -379,6 +391,12 @@ impl SettingsStore {
             source_retention_days: settings
                 .source_retention_days
                 .map(|days| days.min(MAX_SOURCE_RETENTION_DAYS)),
+            // Only the offered heights reach yt-dlp's arguments.
+            max_source_height: if clip_engine::download::SOURCE_HEIGHTS.contains(&settings.max_source_height) {
+                settings.max_source_height
+            } else {
+                default_max_source_height()
+            },
         };
         if !Path::new(&normalized.output_directory).is_absolute() {
             return Err("Settings folders must be absolute paths".into());
@@ -438,6 +456,7 @@ impl SettingsStore {
             local_model: persisted.local_model,
             local_images: persisted.local_images,
             source_retention_days: persisted.source_retention_days,
+            max_source_height: persisted.max_source_height,
             ..self.defaults.clone()
         };
         for key in SECRET_KEYS {
@@ -512,6 +531,7 @@ impl SettingsStore {
             local_model: settings.local_model.clone(),
             local_images: settings.local_images,
             source_retention_days: settings.source_retention_days,
+            max_source_height: settings.max_source_height,
             stored_keys: SECRET_KEYS
                 .iter()
                 .filter(|key| !settings.secret(key).is_empty())
@@ -563,6 +583,15 @@ impl SettingsStore {
         let current = self.load()?;
         Ok(public_settings(&self.save(AppSettings {
             source_retention_days: days,
+            ..current
+        })?))
+    }
+
+    /// Download quality: the tallest stream to fetch; a height not offered saves as the default.
+    pub fn set_max_source_height(&self, height: u32) -> Result<PublicSettings, String> {
+        let current = self.load()?;
+        Ok(public_settings(&self.save(AppSettings {
+            max_source_height: height,
             ..current
         })?))
     }
@@ -797,6 +826,23 @@ mod tests {
         let reread = SettingsStore::new(&dir, None, &home).load().unwrap();
         assert_eq!(reread.local_model, "/models/Qwen2.5-14B");
         assert_eq!(reread.local_base_url, "http://localhost:11434/v1");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn download_quality_defaults_for_old_files_is_validated_and_round_trips() {
+        let old: PersistedSettings = serde_json::from_str(
+            r#"{"version":1,"aiProvider":"openrouter","aiModel":"","whisperModel":"base","outputDirectory":"/x"}"#,
+        )
+        .unwrap();
+        assert_eq!(old.max_source_height, 2160);
+
+        let dir = std::env::temp_dir().join(format!("clipward-quality-{}", uuid::Uuid::new_v4()));
+        let home = std::env::temp_dir();
+        let store = SettingsStore::new(&dir, None, &home);
+        assert_eq!(store.set_max_source_height(1080).unwrap().max_source_height, 1080);
+        assert_eq!(SettingsStore::new(&dir, None, &home).load().unwrap().max_source_height, 1080);
+        assert_eq!(store.set_max_source_height(720).unwrap().max_source_height, 2160);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

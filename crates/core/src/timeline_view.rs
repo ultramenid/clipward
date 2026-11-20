@@ -163,11 +163,18 @@ pub fn drop_index(video: &[VideoItem], index: usize, dx_ms: f64) -> usize {
     timeline::placements(&others).iter().filter(|o| ((o.start + o.end) as f64 / 2.0) < middle).count()
 }
 
-/// How far a piece's out point may go: an added video's own length, else the source's.
-pub fn trim_bound(project: &Project, item: &VideoItem, source_duration_ms: i64) -> i64 {
+/// How far a piece's in and out points may go: within an added video's own length, else
+/// the source's. A source downloaded only around its clips has video in `source_spans`
+/// alone (empty: all of it), and a piece stays inside the span it is in.
+pub fn trim_bounds(project: &Project, item: &VideoItem, source_duration_ms: i64, source_spans: &[(i64, i64)]) -> (i64, i64) {
     match &item.media {
-        Some(media) => project.media.iter().find(|m| &m.file == media).map_or(item.src_out_ms, |m| m.duration_ms),
-        None => source_duration_ms,
+        Some(media) => (0, project.media.iter().find(|m| &m.file == media).map_or(item.src_out_ms, |m| m.duration_ms)),
+        None if source_spans.is_empty() => (0, source_duration_ms),
+        // A piece outside every span (none should exist) can only get shorter.
+        None => source_spans
+            .iter()
+            .find(|(from, to)| *from <= item.src_in_ms && item.src_out_ms <= *to)
+            .map_or((item.src_in_ms, item.src_out_ms), |(from, to)| (*from, (*to).min(source_duration_ms))),
     }
 }
 
@@ -498,11 +505,16 @@ mod tests {
         .unwrap_or_else(|e| panic!("{e}"));
         project.media.push(MediaFile { file: "m.mp4".into(), name: "M".into(), width: 1, height: 1, duration_ms: 4000, image: false });
         let source = piece("a", 0, 1000);
-        assert_eq!(trim_bound(&project, &source, 60_000), 60_000);
+        assert_eq!(trim_bounds(&project, &source, 60_000, &[]), (0, 60_000));
+        // Only 0.5-9 s and 30-70 s were downloaded: the piece keeps to its own span.
+        let spans = [(500, 9000), (30_000, 70_000)];
+        assert_eq!(trim_bounds(&project, &piece("a", 600, 1000), 60_000, &spans), (500, 9000));
+        assert_eq!(trim_bounds(&project, &piece("a", 31_000, 40_000), 60_000, &spans), (30_000, 60_000));
+        assert_eq!(trim_bounds(&project, &piece("a", 8000, 12_000), 60_000, &spans), (8000, 12_000));
         let added = VideoItem { media: Some("m.mp4".into()), ..piece("b", 0, 1000) };
-        assert_eq!(trim_bound(&project, &added, 60_000), 4000);
+        assert_eq!(trim_bounds(&project, &added, 60_000, &spans), (0, 4000));
         let missing = VideoItem { media: Some("gone.mp4".into()), ..piece("c", 0, 1500) };
-        assert_eq!(trim_bound(&project, &missing, 60_000), 1500);
+        assert_eq!(trim_bounds(&project, &missing, 60_000, &[]), (0, 1500));
     }
 
     #[test]

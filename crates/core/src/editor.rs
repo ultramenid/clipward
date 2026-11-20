@@ -23,6 +23,9 @@ pub struct EditorProject {
     /// The source video, for the editor's instant (approximate) preview while dragging.
     pub source_path: Option<PathBuf>,
     pub source_duration_ms: i64,
+    /// Where the source has video (ms), when only the parts around its clips were
+    /// downloaded; empty when it is all there.
+    pub source_spans: Vec<(i64, i64)>,
     /// The campaign brief, shown next to the timeline.
     pub requirements: Option<String>,
     /// Saved edits the library's clip file doesn't have yet (see `unexported_file`).
@@ -99,11 +102,13 @@ pub fn project_file(run: &Path, clip_index: u32) -> Result<PathBuf, String> {
     Ok(run.join(format!("clip_{clip_index:02}.project.json")))
 }
 
-/// The kept source (a file name in the run folder, or the user's own file) and its length.
+/// The kept source (a file name in the run folder, or the user's own file), its length,
+/// the run's brief, and the spans of the source that have video (ms; empty: all of it).
+#[allow(clippy::type_complexity)]
 pub fn source_of(
     run: &Path,
     library: &Path,
-) -> Result<(Option<PathBuf>, i64, Option<String>), String> {
+) -> Result<(Option<PathBuf>, i64, Option<String>, Vec<(i64, i64)>), String> {
     let (text, _) = read_library_file(&run.join(REQUEST_FILE), library, MAX_REQUEST_BYTES)
         .map_err(|_| "This clip was made before clips could be edited.".to_string())?;
     let saved: Value = serde_json::from_str(&text)
@@ -126,7 +131,26 @@ pub fn source_of(
             (named.file_name() == Some(named.as_os_str())).then(|| run.join(named))
         }
     });
-    Ok((path.filter(|p| p.is_file()), duration_ms, requirements))
+    // Rounded inwards: only time that certainly has video.
+    let spans = saved["source"]["metadata"]["video_spans"]
+        .as_array()
+        .map(|spans| {
+            let ms = |v: &Value| v.as_f64().unwrap_or(0.0) * 1000.0;
+            spans.iter().map(|s| (ms(&s[0]).ceil() as i64, ms(&s[1]).floor() as i64)).collect()
+        })
+        .unwrap_or_default();
+    Ok((path.filter(|p| p.is_file()), duration_ms, requirements, spans))
+}
+
+/// Rejects an edit whose source pieces reach past the video that was downloaded.
+pub fn check_source_spans(project: &Project, spans: &[(i64, i64)]) -> Result<(), String> {
+    let inside = |item: &clip_engine::render::project::VideoItem| {
+        item.media.is_some() || spans.iter().any(|(from, to)| *from <= item.src_in_ms && item.src_out_ms <= *to)
+    };
+    if spans.is_empty() || project.video.iter().all(inside) {
+        return Ok(());
+    }
+    Err("This clip can only use the part of the video that was downloaded for it. Make the clip again to use more.".into())
 }
 
 pub fn load(output_dir: &str, clip_index: u32, library: &Path) -> Result<EditorProject, String> {
@@ -154,13 +178,14 @@ pub fn load(output_dir: &str, clip_index: u32, library: &Path) -> Result<EditorP
             logo.path = format!("logo_{i}.{ext}");
         }
     }
-    let (source, source_duration_ms, requirements) = source_of(&run, library)?;
+    let (source, source_duration_ms, requirements, source_spans) = source_of(&run, library)?;
     let unexported = unexported_file(&run, clip_index).is_file();
     Ok(EditorProject {
         project,
         source_available: source.is_some(),
         source_path: source,
         source_duration_ms,
+        source_spans,
         requirements,
         unexported,
     })
@@ -178,10 +203,11 @@ pub fn save(
     if !path.is_file() {
         return Err("This clip can't be edited.".into());
     }
-    let (_, source_duration_ms, _) = source_of(&run, library)?;
+    let (_, source_duration_ms, _, source_spans) = source_of(&run, library)?;
     project
         .validate(source_duration_ms)
         .map_err(|e| e.to_string())?;
+    check_source_spans(project, &source_spans)?;
     let bytes =
         serde_json::to_vec_pretty(project).map_err(|_| "Could not save the edit".to_string())?;
     crate::paths::write_atomic(&path, &bytes).map_err(|_| "Could not save the edit".to_string())?;
@@ -221,6 +247,41 @@ mod tests {
             "logos": [], "speed": 1.0
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn a_partly_downloaded_source_limits_edits_to_its_video() {
+        let lib = library();
+        let run = lib.join(RUN);
+        std::fs::write(run.join("source.mp4"), b"video").unwrap();
+        std::fs::write(
+            run.join(REQUEST_FILE),
+            serde_json::to_vec(&serde_json::json!({
+                "request": {},
+                "source": { "path": "source.mp4", "local": false,
+                            "metadata": { "duration_seconds": 10.0, "video_spans": [[0.5004, 4.9996], [7.0, 9.0]] } }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(run.join("clip_00.project.json"), serde_json::to_vec(&project()).unwrap()).unwrap();
+        let dir = run.to_string_lossy().into_owned();
+
+        // Rounded inwards to whole milliseconds.
+        let opened = load(&dir, 0, &lib).unwrap();
+        assert_eq!(opened.source_spans, [(501, 4999), (7000, 9000)]);
+        // The piece (1-4 s) is inside the first span; reaching past it, or across the gap, is refused.
+        let mut edited = opened.project;
+        save(&dir, 0, &edited, &lib).unwrap();
+        for (src_in_ms, src_out_ms) in [(1000, 6000), (400, 4000), (4000, 8000)] {
+            edited.video[0] = VideoItem { src_in_ms, src_out_ms, ..edited.video[0].clone() };
+            let refused = save(&dir, 0, &edited, &lib).unwrap_err();
+            assert!(refused.contains("the part of the video that was downloaded"), "{refused}");
+        }
+        // An added video is not the source: its own length is what counts.
+        edited.video[0] = VideoItem { media: Some("gone.mp4".into()), ..edited.video[0].clone() };
+        assert!(check_source_spans(&edited, &opened.source_spans).is_ok());
+        let _ = std::fs::remove_dir_all(lib);
     }
 
     #[test]

@@ -81,6 +81,7 @@ fn engine_jobs(args: &[String], ffmpeg: PathBuf, jobs: usize) {
         whisper_model_path: args[2].clone().into(),
         ai: Default::default(),
         custom_vocabulary: vec![],
+        max_source_height: 2160,
         work_dir: std::env::temp_dir(),
         output_dir: std::env::temp_dir(),
     });

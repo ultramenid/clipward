@@ -28,6 +28,7 @@ async fn main() {
             ..Default::default()
         },
         custom_vocabulary: vec![],
+        max_source_height: 2160,
         work_dir: work.path().to_path_buf(),
         output_dir: work.path().to_path_buf(),
     };

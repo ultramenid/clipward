@@ -1051,6 +1051,7 @@ fn engine_config(work: &Path, ai: AiSettings) -> EngineConfig {
         whisper_model_path: work.join("model.bin"),
         ai,
         custom_vocabulary: vec![],
+        max_source_height: 2160,
         work_dir: work.into(),
         output_dir: work.into(),
     }
