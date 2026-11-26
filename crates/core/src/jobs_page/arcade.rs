@@ -80,7 +80,7 @@ pub const GAMES: [GameDef; 3] = [
     GameDef { id: "snake", label: "snake", pitch: 8., fit: None, matrix: true, tick_ms: 60., idle_dim: 0.8, hint: "arrows / wasd to turn", create: |seed| Box::new(Snake::new(seed)) },
     // The 28 x 31 arcade maze with a tile of margin around it.
     GameDef { id: "pacman", label: "pac-man", pitch: 14., fit: Some((30, 33)), matrix: false, tick_ms: PAC_TICK_MS, idle_dim: 0.5, hint: "arrows / wasd to move", create: |seed| Box::new(Pacman::new(seed)) },
-    GameDef { id: "breaker", label: "block breaker", pitch: 8., fit: None, matrix: true, tick_ms: 16., idle_dim: 0.6, hint: "arrows / a d / mouse to move", create: |seed| Box::new(Breaker::new(seed)) },
+    GameDef { id: "breaker", label: "block breaker", pitch: 8., fit: None, matrix: true, tick_ms: 16., idle_dim: 0.6, hint: "arrows / a d / mouse to move · up to launch", create: |seed| Box::new(Breaker::new(seed)) },
 ];
 
 /// Difficulty scales every game's tick: hard runs everything faster.
@@ -1172,28 +1172,111 @@ impl Game for Pacman {
 
 const BRICK_W: i32 = 4;
 const BRICK_TOP: i32 = 2;
+/// Ticks a served ball rides the paddle before it launches itself.
+const SERVE_TICKS: u32 = 60;
+/// Ticks a wide paddle lasts.
+const WIDE_TICKS: u32 = 900;
+const MAX_BALLS: usize = 9;
 
+#[derive(Clone, Copy)]
 struct Ball {
     x: f64,
     y: f64,
-    vx: f64,
-    vy: f64,
+    /// Unit heading; the game's pace scales it.
+    dx: f64,
+    dy: f64,
 }
 
+impl Ball {
+    /// Heading `dx` across, kept off the horizontal, going up or down.
+    fn new(x: f64, y: f64, dx: f64, up: bool) -> Self {
+        let dx = dx.clamp(-0.8, 0.8);
+        let dy = (1.0 - dx * dx).sqrt();
+        Self { x, y, dx, dy: if up { -dy } else { dy } }
+    }
+}
+
+/// What a broken brick can drop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Power {
+    Wide,
+    /// Every ball in play splits in three.
+    Multi,
+    /// The ball drops back to the level's starting pace.
+    Slow,
+    Life,
+}
+
+impl Power {
+    /// Its 3 x 3 dots, a row each: an H, three balls, an hourglass, a plus.
+    fn glyph(self) -> [u8; 3] {
+        match self {
+            Power::Wide => [0b101, 0b111, 0b101],
+            Power::Multi => [0b010, 0b000, 0b101],
+            Power::Slow => [0b111, 0b010, 0b111],
+            Power::Life => [0b010, 0b111, 0b010],
+        }
+    }
+}
+
+/// A falling power: `x` is its middle column, `y` its top row.
+struct Pickup {
+    x: f64,
+    y: f64,
+    power: Power,
+}
+
+/// Hits the brick at (col, r) takes on `level`: 0 for a gap, 2 for armor.
+/// Six walls in turn; after the first round more of each is armored.
+fn layout(level: u32, col: i32, r: i32, cols: i32, rows: i32) -> u8 {
+    // Rings in from the wall's edge, and how far out from its middle column.
+    let ring = col.min(cols - 1 - col).min(r).min(rows - 1 - r);
+    let out = (2 * col + 1 - cols).abs();
+    let (brick, armor) = match (level - 1) % 6 {
+        0 => (true, false),
+        1 => ((col + r) % 2 == 0, r == 0),
+        2 => (col % 3 != 2, r % 3 == 0),
+        // A wedge, widest at the top.
+        3 => (out * rows <= (rows - r) * cols, r == 0),
+        4 => (ring % 2 == 0, ring == 0),
+        _ => (true, r % 2 == 0),
+    };
+    match (brick, armor || (level > 6 && (col + r) % 3 == 0)) {
+        (false, _) => 0,
+        (true, true) => 2,
+        (true, false) => 1,
+    }
+}
+
+/// Brick breaker: walls that change by level, armored bricks, falling powers,
+/// multi-ball, and a ball that speeds up the longer it stays in play.
 struct Breaker {
     cols: f64,
     rows: f64,
+    /// Hits each brick still takes; 0 once it's gone.
     bricks: Vec<u8>,
     brick_cols: i32,
     brick_rows: i32,
     bx0: i32,
     left: i32,
     px: f64,
+    /// Paddle width, before a wide power.
     pw: f64,
     shift: f64,
     target: Option<f64>,
+    /// Ball speed in cells a tick, at the start of level 1.
     speed: f64,
-    ball: Ball,
+    balls: Vec<Ball>,
+    /// Ticks until the ball riding the paddle launches; 0 in flight.
+    held: u32,
+    pickups: Vec<Pickup>,
+    /// Ticks of wide paddle left.
+    wide: u32,
+    level: u32,
+    /// Brick hits since the serve: the ball speeds up with them.
+    hits: u32,
+    /// Bricks broken since the ball last touched the paddle; each scores more.
+    combo: u32,
     score: u32,
     lives: u32,
     over: bool,
@@ -1202,7 +1285,7 @@ struct Breaker {
 
 impl Breaker {
     fn new(seed: u64) -> Self {
-        Self { cols: 0., rows: 0., bricks: Vec::new(), brick_cols: 0, brick_rows: 0, bx0: 0, left: 0, px: 0., pw: 6., shift: 0., target: None, speed: 0.3, ball: Ball { x: 0., y: 0., vx: 0., vy: 0. }, score: 0, lives: 3, over: false, rng: Rng::new(seed) }
+        Self { cols: 0., rows: 0., bricks: Vec::new(), brick_cols: 0, brick_rows: 0, bx0: 0, left: 0, px: 0., pw: 6., shift: 0., target: None, speed: 0.3, balls: Vec::new(), held: 0, pickups: Vec::new(), wide: 0, level: 1, hits: 0, combo: 0, score: 0, lives: 3, over: false, rng: Rng::new(seed) }
     }
 
     fn brick_at(&self, x: f64, y: f64) -> Option<usize> {
@@ -1212,23 +1295,123 @@ impl Breaker {
             return None;
         }
         let i = (r * self.brick_cols + col) as usize;
-        (self.bricks[i] == 1).then_some(i)
+        (self.bricks[i] > 0).then_some(i)
     }
 
+    fn width(&self) -> f64 {
+        if self.wide > 0 { round(self.pw * 1.5).min(self.cols) } else { self.pw }
+    }
+
+    /// Cells a ball moves this tick: faster each level, and with every brick hit.
+    fn pace(&self) -> f64 {
+        self.speed * (0.94 + 0.06 * self.level.min(9) as f64) * (1.0 + 0.005 * self.hits.min(80) as f64)
+    }
+
+    fn award(&mut self, points: u32, controlled: bool) {
+        if controlled {
+            self.score += points;
+        }
+    }
+
+    /// One ball on the paddle; whatever was falling or in effect is gone.
     fn serve(&mut self) {
-        self.px = self.cols / 2.0;
-        let side = if self.rng.next() < 0.5 { -1.0 } else { 1.0 };
-        let vx = self.speed * 0.5 * side;
-        self.ball = Ball { x: self.px, y: self.rows - 3.0, vx, vy: -(self.speed.powi(2) - vx.powi(2)).sqrt() };
+        let side = if self.rng.next() < 0.5 { -0.5 } else { 0.5 };
+        self.balls = vec![Ball::new(self.px, self.rows - 2.5, side, true)];
+        self.held = SERVE_TICKS;
+        self.pickups.clear();
+        self.wide = 0;
+        self.hits = 0;
+        self.combo = 0;
     }
 
-    fn level(&mut self) {
+    /// The wall for the current level.
+    fn build(&mut self) {
         self.brick_cols = self.cols as i32 / BRICK_W;
-        self.brick_rows = (self.rows as i32 / 6).clamp(2, 6);
+        self.brick_rows = (self.rows as i32 / 6).clamp(2, 8);
         self.bx0 = (self.cols as i32 - self.brick_cols * BRICK_W) / 2;
-        self.bricks = vec![1; (self.brick_cols * self.brick_rows) as usize];
-        self.left = self.bricks.len() as i32;
+        let (cols, rows) = (self.brick_cols, self.brick_rows);
+        self.bricks = (0..cols * rows).map(|i| layout(self.level, i % cols, i / cols, cols, rows)).collect();
+        self.left = self.bricks.iter().filter(|&&b| b > 0).count() as i32;
         self.serve();
+    }
+
+    fn hit(&mut self, i: usize, controlled: bool) {
+        self.hits += 1;
+        self.bricks[i] -= 1;
+        if self.bricks[i] > 0 {
+            return self.award(5, controlled);
+        }
+        self.left -= 1;
+        self.combo += 1;
+        self.award(10 * self.combo.min(8), controlled);
+        if self.rng.next() < 0.12 {
+            let power = match self.rng.below(10) {
+                0..=3 => Power::Wide,
+                4..=6 => Power::Multi,
+                7..=8 => Power::Slow,
+                _ => Power::Life,
+            };
+            let i = i as i32;
+            let x = self.bx0 + i % self.brick_cols * BRICK_W + 1;
+            self.pickups.push(Pickup { x: x as f64, y: (BRICK_TOP + i / self.brick_cols) as f64, power });
+        }
+    }
+
+    fn take(&mut self, power: Power, controlled: bool) {
+        self.award(50, controlled);
+        match power {
+            Power::Wide => self.wide = WIDE_TICKS,
+            Power::Slow => self.hits = 0,
+            Power::Life if controlled => self.lives = (self.lives + 1).min(5),
+            Power::Life => {}
+            Power::Multi => {
+                // Headings either side of the ball's own, folded back in when too flat.
+                let fold = |dx: f64| if dx.abs() > 0.8 { dx - 1.3 * dx.signum() } else { dx };
+                for b in self.balls.clone() {
+                    for turn in [-0.5, 0.5] {
+                        if self.balls.len() < MAX_BALLS {
+                            self.balls.push(Ball::new(b.x, b.y, fold(b.dx + turn), b.dy < 0.0));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Moves a ball one tick, an axis at a time and in steps too short to skip
+    /// a brick; false once it's off the bottom.
+    fn fly(&mut self, b: &mut Ball, controlled: bool) -> bool {
+        let pace = self.pace();
+        let steps = (pace / 0.5).ceil().max(1.0);
+        let s = pace / steps;
+        let py = self.rows - 2.0;
+        for _ in 0..steps as i32 {
+            let nx = b.x + b.dx * s;
+            if nx < 0.5 || nx > self.cols - 0.5 {
+                b.dx = -b.dx;
+            } else if let Some(i) = self.brick_at(nx, b.y) {
+                self.hit(i, controlled);
+                b.dx = -b.dx;
+            } else {
+                b.x = nx;
+            }
+            let ny = b.y + b.dy * s;
+            if ny < 0.5 {
+                b.dy = -b.dy;
+            } else if let Some(i) = self.brick_at(b.x, ny) {
+                self.hit(i, controlled);
+                b.dy = -b.dy;
+            } else if b.dy > 0.0 && b.y < py && ny >= py && (b.x - self.px).abs() <= self.width() / 2.0 + 0.5 {
+                // Where it lands on the paddle sets the angle, as in the arcade game.
+                *b = Ball::new(b.x, b.y, (b.x - self.px) / (self.width() / 2.0), true);
+                self.combo = 0;
+            } else if ny >= self.rows {
+                return false;
+            } else {
+                b.y = ny;
+            }
+        }
+        true
     }
 
     fn lose(&mut self, controlled: bool) {
@@ -1266,11 +1449,18 @@ impl Game for Breaker {
         self.over = false;
         self.target = None;
         self.shift = 0.0;
-        self.level();
+        self.level = 1;
+        self.px = self.cols / 2.0;
+        self.build();
     }
-    fn steer(&mut self, x: i32, _: i32) {
-        self.shift = x as f64;
-        self.target = None;
+    fn steer(&mut self, x: i32, y: i32) {
+        if y < 0 {
+            // Up launches the ball waiting on the paddle.
+            self.held = 0;
+        } else if y == 0 {
+            self.shift = x as f64;
+            self.target = None;
+        }
     }
     fn point(&mut self, x: f64) {
         self.target = Some(x);
@@ -1279,72 +1469,85 @@ impl Game for Breaker {
         if self.over || self.bricks.is_empty() {
             return;
         }
+        let half = self.width() / 2.0;
+        let rows = self.rows;
         let aim = if controlled {
             self.target
+        } else if self.held > 0 {
+            Some(self.px)
         } else {
-            Some(self.ball.x + self.ball.y.sin() * self.pw * 0.3)
+            // The autopilot shadows the lowest ball coming down, off center so the angle varies.
+            let low = |b: &Ball| if b.dy > 0.0 { b.y } else { b.y - rows };
+            self.balls.iter().max_by(|a, b| low(a).total_cmp(&low(b))).map(|b| b.x + b.y.sin() * half * 0.6)
         };
+        // The mouse leads the paddle faster than the keys or the autopilot move it.
+        let reach = if controlled { 2.0 } else { 1.0 };
         match aim {
-            Some(aim) => self.px += (aim - self.px).clamp(-1.0, 1.0),
+            Some(aim) => self.px += (aim - self.px).clamp(-reach, reach),
             None => self.px += self.shift,
         }
-        self.px = self.px.min(self.cols - self.pw / 2.0).max(self.pw / 2.0);
+        self.px = self.px.min(self.cols - half).max(half);
+        if self.held > 0 {
+            self.held -= 1;
+            self.balls[0].x = self.px;
+            return;
+        }
+        self.wide = self.wide.saturating_sub(1);
 
-        let mut nx = self.ball.x + self.ball.vx;
-        let mut ny = self.ball.y + self.ball.vy;
-        if nx < 0.0 || nx >= self.cols {
-            self.ball.vx = -self.ball.vx;
-            nx = self.ball.x;
-        }
-        if ny < 0.0 {
-            self.ball.vy = -self.ball.vy;
-            ny = self.ball.y;
-        }
-        if let Some(hit) = self.brick_at(nx, ny) {
-            self.bricks[hit] = 0;
-            self.left -= 1;
-            if controlled {
-                self.score += 1;
+        let (px, py, fall) = (self.px, rows - 2.0, self.speed * 0.4);
+        let mut caught = Vec::new();
+        self.pickups.retain_mut(|p| {
+            p.y += fall;
+            let hit = p.y + 3.0 >= py && p.y <= py + 1.0 && (p.x + 0.5 - px).abs() <= half + 1.5;
+            if hit {
+                caught.push(p.power);
             }
-            if self.brick_at(nx, self.ball.y) == Some(hit) {
-                self.ball.vx = -self.ball.vx;
-            } else {
-                self.ball.vy = -self.ball.vy;
-            }
-            if self.left == 0 {
-                self.level();
-            }
-            return;
+            !hit && p.y < rows
+        });
+        for power in caught {
+            self.take(power, controlled);
         }
-        let py = self.rows - 2.0;
-        if self.ball.vy > 0.0 && self.ball.y < py && ny >= py && (nx - self.px).abs() <= self.pw / 2.0 + 0.5 {
-            // Where it lands on the paddle sets the angle, as in the arcade game.
-            self.ball.vx = ((nx - self.px) / (self.pw / 2.0)).clamp(-0.8, 0.8) * self.speed;
-            self.ball.vy = -(self.speed.powi(2) - self.ball.vx.powi(2)).sqrt();
-            return;
+
+        let mut balls = std::mem::take(&mut self.balls);
+        balls.retain_mut(|b| self.fly(b, controlled));
+        self.balls = balls;
+        if self.left == 0 {
+            self.award(100 * self.level, controlled);
+            self.level += 1;
+            return self.build();
         }
-        if ny >= self.rows {
-            return self.lose(controlled);
+        if self.balls.is_empty() {
+            self.lose(controlled);
         }
-        self.ball.x = nx;
-        self.ball.y = ny;
     }
     fn draw(&self, d: &mut dyn Draw) {
-        for r in 0..self.brick_rows {
-            for col in 0..self.brick_cols {
-                if self.bricks[(r * self.brick_cols + col) as usize] == 1 {
-                    for k in 0..BRICK_W - 1 {
-                        let x = self.bx0 + col * BRICK_W + k;
-                        d.cell(x as f32, (BRICK_TOP + r) as f32, 0.75 - r as f32 * 0.08, 1.0);
-                    }
+        for (i, &hits) in self.bricks.iter().enumerate() {
+            if hits == 0 {
+                continue;
+            }
+            let (col, r) = (i as i32 % self.brick_cols, i as i32 / self.brick_cols);
+            // Armor is lit full until its first hit.
+            let alpha = if hits > 1 { 1.0 } else { 0.7 - r as f32 * 0.06 };
+            for k in 0..BRICK_W - 1 {
+                let x = self.bx0 + col * BRICK_W + k;
+                d.cell(x as f32, (BRICK_TOP + r) as f32, alpha, 1.0);
+            }
+        }
+        for p in &self.pickups {
+            for (k, row) in p.power.glyph().into_iter().enumerate() {
+                for j in (0..3).filter(|j| row >> j & 1 == 1) {
+                    d.cell(p.x as f32 - 1.0 + j as f32, p.y as f32 + k as f32, 0.9, 0.6);
                 }
             }
         }
-        let start = round(self.px - self.pw / 2.0) as f32;
-        for k in 0..self.pw as i32 {
+        let width = self.width();
+        let start = round(self.px - width / 2.0) as f32;
+        for k in 0..width as i32 {
             d.cell(start + k as f32, self.rows as f32 - 2.0, 0.8, 1.0);
         }
-        d.cell(self.ball.x as f32 - 0.5, self.ball.y as f32 - 0.5, 1.0, 1.0);
+        for b in &self.balls {
+            d.cell(b.x as f32 - 0.5, b.y as f32 - 0.5, 1.0, 1.0);
+        }
     }
 }
 
@@ -1520,15 +1723,64 @@ mod tests {
         let mut game = Breaker::new(9);
         game.resize(40, 30);
         let bricks = game.left;
-        game.ball = Ball { x: game.bx0 as f64 + 1.0, y: (BRICK_TOP + 1) as f64 + 0.5, vx: 0.0, vy: -0.3 };
+        // Straight up into the bottom row of the wall.
+        game.held = 0;
+        game.balls = vec![Ball::new(game.bx0 as f64 + 1.0, (BRICK_TOP + game.brick_rows) as f64 + 0.2, 0.0, true)];
         game.step(true);
-        assert_eq!((game.score, game.left), (1, bricks - 1));
+        assert_eq!((game.score, game.left), (10, bricks - 1));
+        assert!(game.balls[0].dy > 0.0, "bounced back down");
         for _ in 0..3 {
-            game.ball = Ball { x: 0.5, y: game.rows - 0.1, vx: 0.0, vy: 0.3 };
+            game.held = 0;
+            game.balls = vec![Ball::new(0.5, game.rows - 0.1, 0.0, false)];
             game.px = game.cols - game.pw;
             game.step(true);
         }
         assert!(game.over);
+    }
+
+    #[test]
+    fn breaker_has_levels_armor_and_powers() {
+        for level in 1..=12 {
+            for (cols, rows) in [(3, 2), (10, 4), (25, 8)] {
+                let bricks = (0..cols * rows).filter(|i| layout(level, i % cols, i / cols, cols, rows) > 0).count();
+                assert!(bricks > 0, "level {level} has a wall at {cols} x {rows}");
+            }
+        }
+        let mut game = Breaker::new(9);
+        game.resize(40, 30);
+        // The served ball rides the paddle until up launches it.
+        game.point(10.0);
+        game.step(true);
+        assert_eq!((game.balls[0].x, game.held), (game.px, SERVE_TICKS - 1));
+        game.steer(0, -1);
+        assert_eq!(game.held, 0);
+
+        game.bricks[0] = 2;
+        game.hit(0, true);
+        assert_eq!((game.bricks[0], game.score), (1, 5), "armor takes two hits");
+        game.take(Power::Multi, true);
+        assert_eq!(game.balls.len(), 3);
+        game.take(Power::Wide, true);
+        assert!(game.width() > game.pw);
+        game.take(Power::Life, true);
+        assert_eq!(game.lives, 4);
+
+        // A fast ball still can't skip a row of bricks.
+        game.hits = 80;
+        game.level = 9;
+        game.speed = 1.0;
+        let left = game.left;
+        let mut ball = Ball::new(game.bx0 as f64 + 1.0, (BRICK_TOP + game.brick_rows) as f64 + 0.9, 0.0, true);
+        assert!(game.fly(&mut ball, true) && game.left == left - 1 && ball.dy > 0.0);
+
+        // The last brick gone, the next wall goes up.
+        game.bricks.fill(0);
+        game.bricks[0] = 1;
+        game.left = 1;
+        game.hit(0, true);
+        game.step(true);
+        assert_eq!(game.level, 10);
+        assert!(game.left > 0 && game.held > 0 && game.balls.len() == 1);
     }
 
     #[test]
