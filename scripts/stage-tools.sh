@@ -14,18 +14,20 @@ os="${1:?usage: stage-tools.sh <macos|windows|linux> [dir]}"
 out="${2:-engine-bin}"
 
 ytdlp_version=2026.10.26
-# shortcut: BtbN deletes autobuilds after about a month, so this pin 404s then; re-pin to a
-# newer autobuild (hashes in its checksums.sha256), or mirror the archives if it keeps biting.
-btbn_tag=autobuild-2026-11-09-12-42
-btbn_build=ffmpeg-n8.1.3-34-ga35157abb9
-ffmpeg_commit=a35157abb9
+# shortcut: BtbN deletes a daily autobuild after about two weeks, so this pin 404s then; re-pin
+# to a newer autobuild (hashes in its checksums.sha256). Month-end autobuilds are kept far
+# longer: prefer the newest of those when it is not older than this pin. Mirror the archives
+# if it keeps biting.
+btbn_tag=autobuild-2026-11-26-12-56
+btbn_build=ffmpeg-n8.1.3-41-ga8029b6528
+ffmpeg_commit=a8029b6528
 
 case "$os" in
   macos)   ytdlp=(yt-dlp_macos 20d98fa608998eff87d1d35a6e9fb65e4b874639a6cc89addc19da3becde3ef1 yt-dlp) ;;
   linux)   ytdlp=(yt-dlp_linux f34053415136e55073dd64ba5326d161ecc23ce0e98c081d8752867b37809450 yt-dlp)
-           ffmpeg=("$btbn_build-linux64-lgpl-8.1.tar.xz" 70c3029eaa46cb83746ed5a218bbffbdc4fc3719e4080010af3a9690ff4e65f6) ;;
+           ffmpeg=("$btbn_build-linux64-lgpl-8.1.tar.xz" 313b6e52c31a7ce5db69fabe8fa04f6ef4b83d8c9cb365a0c8ed2a0349016948) ;;
   windows) ytdlp=(yt-dlp fd51b212cf8380c7a52ee08c0d6be7f3c59b2f2c832eaf7b45acfae6eab57419 yt-dlp.exe)
-           ffmpeg=("$btbn_build-win64-lgpl-8.1.zip" 7bdec3860d33145a7cd68146eb8e1414e8881cac76205401211fbdad38ef0ed3) ;;
+           ffmpeg=("$btbn_build-win64-lgpl-8.1.zip" 5eb24166e7f7103dcc12fa6d773674df9491005e78e8069c131e65b3661343da) ;;
   *) echo "Unknown OS: $os" >&2; exit 2 ;;
 esac
 
