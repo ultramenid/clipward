@@ -90,6 +90,7 @@ fn stage_status(stage: Stage) -> &'static str {
         Stage::Downloading => "downloading",
         Stage::Transcribing => "transcribing",
         Stage::Planning => "planning",
+        Stage::Fetching => "fetching",
         Stage::Rendering => "rendering",
     }
 }

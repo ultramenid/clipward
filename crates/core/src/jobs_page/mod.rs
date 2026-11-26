@@ -100,10 +100,12 @@ pub struct Step {
     pub statuses: &'static [&'static str],
 }
 
-pub const STEPS: [Step; 4] = [
+pub const STEPS: [Step; 5] = [
     Step { label: "Download", icon: "download", statuses: &["downloading"] },
     Step { label: "Transcribe", icon: "file-text", statuses: &["transcribing"] },
     Step { label: "Find moments", icon: "sparkles", statuses: &["planning"] },
+    // The video of the chosen clips only; a source that arrived whole passes straight through.
+    Step { label: "Get clips", icon: "scissors", statuses: &["fetching"] },
     Step { label: "Render", icon: "film", statuses: &["rendering", "uploading"] },
 ];
 
@@ -131,6 +133,7 @@ pub fn stage_label(status: &str) -> &'static str {
         "downloading" => "Downloading",
         "transcribing" => "Transcribing",
         "planning" => "Finding moments",
+        "fetching" => "Downloading clips",
         "rendering" => "Rendering clips",
         "uploading" => "Saving clips",
         "completed" => "Done",
@@ -263,11 +266,12 @@ mod tests {
     fn steps_skip_planning_for_manual_runs() {
         let ai = steps_for(false);
         let manual = steps_for(true);
-        assert_eq!(ai.len(), 4);
-        assert_eq!(manual.iter().map(|s| s.label).collect::<Vec<_>>(), ["Download", "Transcribe", "Render"]);
+        assert_eq!(ai.len(), 5);
+        assert_eq!(manual.iter().map(|s| s.label).collect::<Vec<_>>(), ["Download", "Transcribe", "Get clips", "Render"]);
         assert_eq!(step_index(&ai, "planning"), Some(2));
-        assert_eq!(step_index(&manual, "uploading"), Some(2));
-        assert_eq!(step_index(&ai, "completed"), Some(4));
+        assert_eq!(step_index(&ai, "fetching"), Some(3));
+        assert_eq!(step_index(&manual, "uploading"), Some(3));
+        assert_eq!(step_index(&ai, "completed"), Some(5));
         assert_eq!(step_index(&ai, "queued"), None);
     }
 
@@ -287,6 +291,7 @@ mod tests {
     fn labels_and_copy() {
         assert_eq!(stage_label("uploading"), "Saving clips");
         assert_eq!(stage_label("planning"), "Finding moments");
+        assert_eq!(stage_label("fetching"), "Downloading clips");
         assert_eq!(stage_label("weird"), "Working");
         assert_eq!(active_summary(2, 0, 2), "2 running · up to 2 at once");
         assert_eq!(active_summary(1, 3, 2), "1 running · 3 queued · up to 2 at once");

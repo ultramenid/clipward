@@ -88,15 +88,16 @@ impl Job {
             .unwrap_or_default();
 
         // 1. Download, as its own task. A YouTube source hands its audio over first:
-        // transcription and planning run on it while the video keeps downloading, and
-        // only layout and rendering wait for the video.
+        // transcription and planning run on it, and the video download waits for the
+        // plan so it fetches only the clips (a video that can't be fetched in parts
+        // downloads whole meanwhile).
         self.report(Stage::Downloading, 5.0, "Preparing video...", 0, 0);
-        // A manual run reads the video only at its typed clips, so only those parts are fetched.
-        let spans = self.req.manual_clips.as_ref().map(|clips| {
+        let mut video = Video::start(&self.req.video_url, &self.cfg, &self.progress, &self.cancel);
+        // A manual run's typed clips are its plan, known before anything is fetched.
+        if let Some(clips) = &self.req.manual_clips {
             let usable = clips.iter().filter(|c| c.start_seconds.is_finite() && c.end_seconds > c.start_seconds);
-            usable.map(|c| (c.start_seconds, c.end_seconds)).collect()
-        });
-        let mut video = Video::start(&self.req.video_url, &self.cfg, spans, &self.progress, &self.cancel);
+            video.want(usable.map(|c| (c.start_seconds, c.end_seconds)).collect());
+        }
         let result = self.process(&mut video, job_id).await;
         // A failed run can leave the download running: stop it before the work dir goes.
         video.stop().await;
@@ -194,7 +195,8 @@ impl Job {
         )?;
         self.check_cancel()?;
 
-        // Layout and rendering need the video.
+        // Layout and rendering need the video, but only where the clips are.
+        video.want(plan.clips.iter().map(|c| (c.start_time_ms as f64 / 1000.0, c.end_time_ms as f64 / 1000.0)).collect());
         let source = video.finish(50.0).await?.clone();
         self.stages.insert("download", video.download_seconds);
         let meta = source.metadata.clone();
@@ -397,16 +399,21 @@ enum Shown {
     All,
     /// None while transcription and planning run on the early audio.
     Hidden,
-    /// As the download stage, at the job's percent, while it waits for the video.
-    Waiting(f64),
+    /// As this stage, at the job's percent, while it waits for the video.
+    Waiting(Stage, f64),
 }
 
 /// The source download, run as its own task so the job can go on with early audio.
 struct Video {
-    task: Option<JoinHandle<Result<(DownloadResult, f64)>>>,
+    task: Option<JoinHandle<Result<DownloadResult>>>,
     audio: Option<oneshot::Receiver<EarlyAudio>>,
+    /// Tells the download which parts of the video the job reads; dropped, it fetches all.
+    spans: Option<oneshot::Sender<Vec<(f64, f64)>>>,
     done: Option<DownloadResult>,
+    /// How long the job itself waited for the audio and the video.
     download_seconds: f64,
+    /// The job named its clips, so what it waits for after planning is their video.
+    clips: bool,
     /// Stops the download and the work beside it; cancelled when either fails.
     cancel: CancellationToken,
     shown: Arc<Mutex<Shown>>,
@@ -414,31 +421,43 @@ struct Video {
 }
 
 impl Video {
-    fn start(
-        url: &str,
-        cfg: &EngineConfig,
-        spans: Option<Vec<(f64, f64)>>,
-        progress: &ProgressFn,
-        cancel: &CancellationToken,
-    ) -> Self {
+    fn start(url: &str, cfg: &EngineConfig, progress: &ProgressFn, cancel: &CancellationToken) -> Self {
         let cancel = cancel.child_token();
         let shown = Arc::new(Mutex::new(Shown::All));
         let (audio_tx, audio) = oneshot::channel();
+        let (spans, spans_rx) = oneshot::channel();
         let (url, cfg, token, sink, state) = (url.to_string(), cfg.clone(), cancel.clone(), progress.clone(), shown.clone());
         let filtered: ProgressFn = Arc::new(move |p: Progress| {
             let shown = *state.lock().unwrap_or_else(PoisonError::into_inner);
             match shown {
                 Shown::All => sink(p),
                 Shown::Hidden => {}
-                Shown::Waiting(percent) => sink(Progress { stage: Stage::Downloading, percent, ..p }),
+                Shown::Waiting(stage, percent) => sink(Progress { stage, percent, ..p }),
             }
         });
         let task = tokio::spawn(async move {
-            let t = Instant::now();
-            let source = download::download(&url, &cfg, None, &filtered, &token, Some(audio_tx), spans.as_deref()).await?;
-            Ok((source, t.elapsed().as_secs_f64()))
+            download::download(&url, &cfg, None, &filtered, &token, Some(audio_tx), Some(spans_rx)).await
         });
-        Video { task: Some(task), audio: Some(audio), done: None, download_seconds: 0.0, cancel, shown, progress: progress.clone() }
+        Video {
+            task: Some(task),
+            audio: Some(audio),
+            spans: Some(spans),
+            done: None,
+            download_seconds: 0.0,
+            clips: false,
+            cancel,
+            shown,
+            progress: progress.clone(),
+        }
+    }
+
+    /// Names the only parts of the video the job reads (seconds). A download that
+    /// waited for them fetches just those; the first call counts.
+    fn want(&mut self, spans: Vec<(f64, f64)>) {
+        if let Some(tx) = self.spans.take() {
+            let _ = tx.send(spans);
+            self.clips = true;
+        }
     }
 
     fn shown(&self) -> std::sync::MutexGuard<'_, Shown> {
@@ -447,16 +466,19 @@ impl Video {
 
     /// The audio, when it arrives before the video.
     async fn early_audio(&mut self) -> Option<EarlyAudio> {
-        let audio = self.audio.take()?.await.ok()?;
-        *self.shown() = Shown::Hidden;
-        Some(audio)
+        let t = Instant::now();
+        let audio = self.audio.take()?.await.ok();
+        self.download_seconds += t.elapsed().as_secs_f64();
+        if audio.is_some() {
+            *self.shown() = Shown::Hidden;
+        }
+        audio
     }
 
-    fn joined(&mut self, joined: std::result::Result<Result<(DownloadResult, f64)>, tokio::task::JoinError>) -> Result<()> {
+    fn joined(&mut self, joined: std::result::Result<Result<DownloadResult>, tokio::task::JoinError>) -> Result<()> {
         match joined.unwrap_or_else(|_| Err(EngineError::msg("video download failed"))) {
-            Ok((source, seconds)) => {
+            Ok(source) => {
                 self.done = Some(source);
-                self.download_seconds = seconds;
                 Ok(())
             }
             Err(e) => {
@@ -466,16 +488,24 @@ impl Video {
         }
     }
 
-    /// Waits for the video. After early audio, the job is back in the download stage
-    /// meanwhile (the stepper must not show Download as done), at its current `percent`.
+    /// Waits for the video. After early audio, the job shows a download stage meanwhile,
+    /// at its current `percent`: the clips' own once they are named, else the first again
+    /// (the stepper must not show Download as done).
     async fn finish(&mut self, percent: f64) -> Result<&DownloadResult> {
+        // Still unnamed, the job needs all of the video: a download waiting for spans goes on.
+        self.spans = None;
         if let Some(task) = self.task.take() {
             if !task.is_finished() && matches!(*self.shown(), Shown::Hidden) {
-                *self.shown() = Shown::Waiting(percent);
-                let step = "Still downloading the video...".into();
-                (self.progress)(Progress { stage: Stage::Downloading, percent, step, clips_done: 0, clips_total: 0 });
+                let (stage, step) = match self.clips {
+                    true => (Stage::Fetching, "Downloading the clips..."),
+                    false => (Stage::Downloading, "Still downloading the video..."),
+                };
+                *self.shown() = Shown::Waiting(stage, percent);
+                (self.progress)(Progress { stage, percent, step: step.into(), clips_done: 0, clips_total: 0 });
             }
+            let t = Instant::now();
             let joined = task.await;
+            self.download_seconds += t.elapsed().as_secs_f64();
             self.joined(joined)?;
         }
         self.done.as_ref().ok_or_else(|| EngineError::msg("video download failed"))

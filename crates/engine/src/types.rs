@@ -184,6 +184,8 @@ pub enum Stage {
     Downloading,
     Transcribing,
     Planning,
+    /// Downloading the video the planned clips need, after planning on the early audio.
+    Fetching,
     Rendering,
 }
 

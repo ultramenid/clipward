@@ -54,6 +54,7 @@ pub const ACTIVE_JOB_STATUSES: &[&str] = &[
     "downloading",
     "transcribing",
     "planning",
+    "fetching",
     "rendering",
     "uploading",
 ];

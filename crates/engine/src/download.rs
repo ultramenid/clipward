@@ -85,9 +85,11 @@ pub const SOURCE_HEIGHTS: [u32; 3] = [2160, 1440, 1080];
 /// decode in software; the sort picks the best remaining stream. H.264 tops out at 1080p
 /// on YouTube, so 1440p/2160p arrives as VP9. "res" measures the shorter side, so 2160
 /// covers landscape 4K and vertical 2160x3840. SDR is preferred because renders are SDR
-/// H.264 without tone mapping.
+/// H.264 without tone mapping. At the same size and rate a plain https stream wins over
+/// an HLS one ("proto"): only its byte ranges can be requested, so only it can be
+/// fetched in parts (YouTube's higher-bitrate "Premium" 1080p is HLS).
 fn format_sort(max_height: u32) -> String {
-    format!("hdr:SDR,res:{max_height},fps")
+    format!("hdr:SDR,res:{max_height},fps,proto")
 }
 pub const YOUTUBE_FORMAT_SELECTORS: [&str; 2] = [
     // Best separate video + audio streams (the only way to get >720p).
@@ -524,7 +526,10 @@ pub async fn probe_metadata(ffprobe: &Path, path: &Path, cancel: &CancellationTo
 /// to `cfg.work_dir/source.mp4` and returns its probed metadata. Local files are used
 /// in place (`is_local: true`). Partial files are removed on any failure or cancel.
 /// A YouTube source with a separate audio stream sends that audio to `early_audio` as
-/// soon as it is on disk, then downloads the video.
+/// soon as it is on disk, then downloads the video. `spans` names the only parts of the
+/// video the job reads, once the caller knows them (after planning on the early audio):
+/// a video that can be fetched in parts waits for them. Dropping the sender asks for
+/// the whole video.
 pub async fn download(
     url: &str,
     cfg: &EngineConfig,
@@ -532,7 +537,7 @@ pub async fn download(
     progress: &ProgressFn,
     cancel: &CancellationToken,
     early_audio: Option<oneshot::Sender<EarlyAudio>>,
-    spans: Option<&[(f64, f64)]>,
+    spans: Option<oneshot::Receiver<Vec<(f64, f64)>>>,
 ) -> Result<DownloadResult> {
     let limit = duration_limit(max_duration_seconds);
     let source = detect_source(url)?;
@@ -573,7 +578,7 @@ async fn fetch_remote(
     progress: &ProgressFn,
     cancel: &CancellationToken,
     early_audio: Option<oneshot::Sender<EarlyAudio>>,
-    spans: Option<&[(f64, f64)]>,
+    spans: Option<oneshot::Receiver<Vec<(f64, f64)>>>,
 ) -> Result<DownloadResult> {
     tokio::fs::create_dir_all(&cfg.work_dir).await.map_err(io_error)?;
     let output = cfg.work_dir.join(OUTPUT_FILENAME);
@@ -595,7 +600,7 @@ async fn fetch_remote_inner(
     progress: &ProgressFn,
     cancel: &CancellationToken,
     early_audio: Option<oneshot::Sender<EarlyAudio>>,
-    spans: Option<&[(f64, f64)]>,
+    spans: Option<oneshot::Receiver<Vec<(f64, f64)>>>,
 ) -> Result<DownloadResult> {
     let deadline = Instant::now() + DOWNLOAD_DEADLINE;
     check_free_space(&cfg.work_dir, 0)?;
@@ -612,12 +617,11 @@ async fn fetch_remote_inner(
                 twitch: matches!(source, Source::Twitch(_)),
                 max_duration: limit,
                 max_height: cfg.max_source_height,
-                spans: spans.filter(|_| matches!(source, Source::YouTube(_))),
                 deadline,
                 progress,
                 cancel,
             };
-            download_with_ytdlp(&job, early_audio).await?
+            download_with_ytdlp(&job, early_audio, spans).await?
         }
         Source::Direct(url) => (download_direct(url, output, &cfg.work_dir, deadline, progress, cancel).await?, None),
         Source::Local(_) => return Err(failed("unsupported source")),
@@ -653,8 +657,6 @@ struct YtdlpJob<'a> {
     twitch: bool,
     max_duration: f64,
     max_height: u32,
-    /// The only parts of the video the job reads (seconds); None fetches all of it.
-    spans: Option<&'a [(f64, f64)]>,
     deadline: Instant,
     progress: &'a ProgressFn,
     cancel: &'a CancellationToken,
@@ -977,15 +979,11 @@ async fn fetch_early_audio(job: &YtdlpJob<'_>, info: &Value) -> Result<Option<Ea
     Ok((duration > 0.0).then_some(EarlyAudio { path: copy, duration_seconds: duration }))
 }
 
-/// For a job that reads only `spans` of the video: fetches the start of the picked WebM
-/// video, reads its cluster index and writes `info.sparse.json`, whose video is the
-/// file's header and then just the clusters covering the padded spans. Each cluster
-/// starts on a keyframe and keeps its timestamp, so the merged source plays those
-/// spans at their own times and has no frames between them. False when the pick is
-/// not an indexed WebM or little would be saved; the whole video is then fetched.
-/// Otherwise the spans of video the source will have.
+/// Fetches the start of the picked WebM video and reads its cluster index, which
+/// `prepare_sparse` needs. None when the pick is not an indexed WebM; the whole video
+/// is then fetched.
 // shortcut: WebM (VP9) only; an H.264 pick has an MP4 `sidx` index instead and downloads whole. Add a sidx reader if those jobs are slow.
-async fn prepare_sparse(job: &YtdlpJob<'_>, info: &Value, spans: &[(f64, f64)]) -> Result<Option<Vec<(f64, f64)>>> {
+async fn fetch_index(job: &YtdlpJob<'_>, info: &Value) -> Result<Option<crate::webm_index::WebmIndex>> {
     let mut head = info.clone();
     let Some((format, url, size)) = ranged_video(&mut head) else {
         return Ok(None);
@@ -1007,8 +1005,26 @@ async fn prepare_sparse(job: &YtdlpJob<'_>, info: &Value, spans: &[(f64, f64)]) 
         _ => None,
     };
     let _ = tokio::fs::remove_file(job.work_dir.join(HEAD_FILE)).await;
-    let Some(index) = index else {
+    if index.is_none() {
         tracing::warn!("no usable video index; downloading the whole video");
+    }
+    Ok(index)
+}
+
+/// For a job that reads only `spans` of the video: writes `info.sparse.json`, whose
+/// video is the file's header and then just the clusters covering the padded spans.
+/// Each cluster starts on a keyframe and keeps its timestamp, so the merged source
+/// plays those spans at their own times and has no frames between them. None when
+/// little would be saved; the whole video is then fetched. Otherwise the spans of
+/// video the source will have.
+async fn prepare_sparse(
+    job: &YtdlpJob<'_>,
+    info: &Value,
+    index: &crate::webm_index::WebmIndex,
+    spans: &[(f64, f64)],
+) -> Result<Option<Vec<(f64, f64)>>> {
+    let mut sparse = info.clone();
+    let Some((format, url, size)) = ranged_video(&mut sparse) else {
         return Ok(None);
     };
     // Padded, in order, and joined where they meet: what the source is promised to hold
@@ -1029,10 +1045,6 @@ async fn prepare_sparse(job: &YtdlpJob<'_>, info: &Value, spans: &[(f64, f64)]) 
     if ranges.is_empty() || index.header_len == 0 || wanted.saturating_mul(4) > size.saturating_mul(3) {
         return Ok(None);
     }
-    let mut sparse = info.clone();
-    let Some((format, url, _)) = ranged_video(&mut sparse) else {
-        return Ok(None);
-    };
     let pieces = std::iter::once((0, index.header_len - 1)).chain(ranges).flat_map(|(first, last)| {
         let url = &url;
         (first..=last).step_by(DASH_FRAGMENT_BYTES as usize).map(move |start| range_request(url, start, (start + DASH_FRAGMENT_BYTES - 1).min(last)))
@@ -1049,6 +1061,7 @@ async fn prepare_sparse(job: &YtdlpJob<'_>, info: &Value, spans: &[(f64, f64)]) 
 async fn download_with_ytdlp(
     job: &YtdlpJob<'_>,
     early_audio: Option<oneshot::Sender<EarlyAudio>>,
+    spans: Option<oneshot::Receiver<Vec<(f64, f64)>>>,
 ) -> Result<(String, Option<Vec<(f64, f64)>>)> {
     remove_partial_files(job.output);
     let info = fetch_info(job).await?;
@@ -1078,10 +1091,19 @@ async fn download_with_ytdlp(
         }
         let ids = info.get("format_id").and_then(Value::as_str);
         // Only the clusters the job's spans need, when the pick allows it; else all of it.
-        if let (Some(spans), Some(ids)) = (job.spans, ids) {
-            video_spans = prepare_sparse(job, &info, spans).await?;
-            if video_spans.is_some() {
-                attempts.push((SPARSE_INFO_FILE, ids.to_string()));
+        if let (Some(spans), Some(ids)) = (spans, ids) {
+            if let Some(index) = fetch_index(job, &info).await? {
+                // The caller plans on the early audio meanwhile, then names its clips.
+                let spans = tokio::select! {
+                    spans = spans => spans.ok(),
+                    _ = job.cancel.cancelled() => return Err(EngineError::Cancelled),
+                };
+                if let Some(spans) = spans {
+                    video_spans = prepare_sparse(job, &info, &index, &spans).await?;
+                }
+                if video_spans.is_some() {
+                    attempts.push((SPARSE_INFO_FILE, ids.to_string()));
+                }
             }
         }
         let mut dashy = info.clone();
@@ -1109,6 +1131,11 @@ async fn download_with_ytdlp(
         let args = download_args(input, job.twitch, selector, job.ffmpeg, output_name, job.max_duration, merge, job.max_height);
         let mut monitor = DownloadMonitor::new(job.work_dir, job.output, job.progress);
         monitor.background = early_sent;
+        if *input == SPARSE_INFO_FILE {
+            monitor.step = "Downloading the clips...";
+        } else if early_sent {
+            monitor.step = "Still downloading the video...";
+        }
         // Size, disk, deadline and cancel guards abort immediately (no retry).
         let run = run_ytdlp(job.ytdlp, &args, job.work_dir, job.deadline, job.cancel, Some(&mut monitor)).await?;
         if run.status.success() {
@@ -1190,11 +1217,7 @@ impl<'a> DownloadMonitor<'a> {
             let percent = (downloaded.min(total) * 100) / total;
             if self.last_percent != Some(percent) {
                 self.last_percent = Some(percent);
-                let step = if self.background {
-                    format!("Still downloading the video... {percent}%")
-                } else {
-                    self.step.into()
-                };
+                let step = if self.background { format!("{} {percent}%", self.step) } else { self.step.into() };
                 report(self.progress, percent as f64 / 100.0 * 0.9, &step);
             }
         }
@@ -1658,7 +1681,7 @@ mod tests {
 
     #[test]
     fn download_youtube_prefers_highest_quality_without_av1() {
-        assert_eq!(format_sort(SOURCE_HEIGHTS[0]), "hdr:SDR,res:2160,fps");
+        assert_eq!(format_sort(SOURCE_HEIGHTS[0]), "hdr:SDR,res:2160,fps,proto");
         for selector in YOUTUBE_FORMAT_SELECTORS.iter().chain(TWITCH_FORMAT_SELECTORS.iter()) {
             assert!(!selector.contains("height"));
             for alternative in selector.split('/') {
@@ -1707,8 +1730,8 @@ mod tests {
             assert!(has_pair(&dl, "--ffmpeg-location", &tool_path(ffmpeg).to_string_lossy()));
             assert!(has_pair(&dl, "--max-filesize", "20000000000"));
             // The Settings download quality caps both the pick and the download.
-            assert_eq!(has_pair(&info, "--format-sort", "hdr:SDR,res:1440,fps"), !twitch);
-            assert!(has_pair(&dl, "--format-sort", "hdr:SDR,res:1440,fps"));
+            assert_eq!(has_pair(&info, "--format-sort", "hdr:SDR,res:1440,fps,proto"), !twitch);
+            assert!(has_pair(&dl, "--format-sort", "hdr:SDR,res:1440,fps,proto"));
             assert!(has_pair(&dl, "--retries", "10"));
             assert!(has_pair(&dl, "--output", "source.mp4"));
             assert_eq!(dl.iter().any(|a| a == "--abort-on-unavailable-fragments"), twitch);
@@ -2038,9 +2061,14 @@ mod tests {
                     case \"$*\" in *info.sparse.json) [ -f \"$d/fail\" ] && exit 1;; esac\nprintf media > source.mp4\n";
         let yt = Source::YouTube("https://youtu.be/abc".into());
         let progress: ProgressFn = Arc::new(|_| {});
-        let fetch = |fx: &Fixture, spans: &'static [(f64, f64)]| {
-            let (yt, progress, cfg) = (yt.clone(), progress.clone(), fx.cfg.clone());
-            async move { fetch_remote(&yt, &cfg, 21600.0, &progress, &CancellationToken::new(), None, Some(spans)).await }
+        let ready = |spans: &[(f64, f64)]| {
+            let (tx, rx) = oneshot::channel();
+            tx.send(spans.to_vec()).unwrap();
+            Some(rx)
+        };
+        let fetch = |fx: &Fixture, spans: &[(f64, f64)]| {
+            let (yt, progress, cfg, spans) = (yt.clone(), progress.clone(), fx.cfg.clone(), ready(spans));
+            async move { fetch_remote(&yt, &cfg, 21600.0, &progress, &CancellationToken::new(), None, spans).await }
         };
         let calls = |fx: &Fixture| -> Vec<String> {
             std::fs::read_to_string(fx.bin.join("args.log")).unwrap().lines().map(String::from).collect()
@@ -2080,7 +2108,6 @@ mod tests {
             let fx = fixture(&info, body);
             std::fs::write(fx.bin.join("head.bin"), head).unwrap();
             std::fs::write(fx.bin.join(case), "").unwrap();
-            let spans: &'static [(f64, f64)] = Box::leak(spans.to_vec().into_boxed_slice());
             assert_eq!(fetch(&fx, spans).await.unwrap().metadata.video_spans, None, "{case}");
             let log = calls(&fx);
             let last = log.last().unwrap();
@@ -2091,10 +2118,27 @@ mod tests {
 
         // Twitch never takes the sparse path.
         let fx = fixture(&saved_info(), "printf media > source.mp4\n");
-        fetch_remote(&Source::Twitch(URL.into()), &fx.cfg, 21600.0, &progress, &CancellationToken::new(), None, Some(&[(1.0, 2.0)]))
+        fetch_remote(&Source::Twitch(URL.into()), &fx.cfg, 21600.0, &progress, &CancellationToken::new(), None, ready(&[(1.0, 2.0)]))
             .await
             .unwrap();
         assert!(!calls(&fx).iter().any(|c| c.contains("info.head.json")));
+
+        // An AI run: the audio goes out first and the video waits for the plan's clips.
+        let body = format!("case \"$*\" in *'--fixup never'*'--output source.f251'*) printf audio > source.f251.webm; exit 0;; esac\n{body}");
+        let fx = fixture(&info, &body);
+        std::fs::write(fx.bin.join("head.bin"), &head).unwrap();
+        let (audio_tx, audio_rx) = oneshot::channel();
+        let (spans_tx, spans_rx) = oneshot::channel();
+        let (yt, cfg) = (yt.clone(), fx.cfg.clone());
+        let task = tokio::spawn(async move {
+            fetch_remote(&yt, &cfg, 21600.0, &progress, &CancellationToken::new(), Some(audio_tx), Some(spans_rx)).await
+        });
+        audio_rx.await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!task.is_finished() && !calls(&fx).iter().any(|c| c.contains("--output source.mp4")), "{:?}", calls(&fx));
+        spans_tx.send(vec![(130.0, 140.0)]).unwrap();
+        assert_eq!(task.await.unwrap().unwrap().metadata.video_spans, Some(vec![(120.0, 150.0)]));
+        assert!(calls(&fx).last().unwrap().ends_with("--load-info-json info.sparse.json"));
     }
 
     #[cfg(unix)]
