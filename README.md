@@ -32,11 +32,13 @@
 ## How it works
 
 ```
- Source video ──▶ Download ──▶ Transcribe ──▶ Find moments ──▶ Render
- (file or link)    yt-dlp      Whisper          your AI CLI      FFmpeg
-                               (offline,        or API key,      crop, captions,
-                               word timings)    follows brief    one file per clip
+ Source video ──▶ Download ──▶ Transcribe ──▶ Find moments ──▶ Get clips ──▶ Render
+ (file or link)    yt-dlp      Whisper          your AI CLI      yt-dlp          FFmpeg
+                   (audio      (offline,        or API key,      (only the       crop, captions,
+                   first)      word timings)    follows brief    chosen video)   one file per clip
 ```
+
+For a YouTube link, Clipward downloads the audio first, transcribes it and lets the AI pick the moments, then downloads only the video those clips need. On a 59-minute 1080p video that was 207 MB instead of the whole 720 MB stream. A local file, a Twitch VOD or a direct link is there in full after **Download**, so **Get clips** passes straight through.
 
 Create is a short wizard: **Video** (link or file, optional trim) → **Brief** (campaign requirements) → **Format** → **Clips** (lengths and count) → **Captions** → **Review**. The brief stays filled in for the next video, since you usually cut several videos for one campaign.
 
@@ -69,7 +71,7 @@ Only download or clip material you have permission to use, and follow each campa
 
 Paste a public, completed Twitch video link such as `https://www.twitch.tv/videos/1234567890` into Create, then choose your clip settings and generate. Clipward downloads the saved video and uses the same transcription, AI moment selection and rendering flow as other sources. Links on `twitch.tv`, `www.twitch.tv`, `m.twitch.tv` and `go.twitch.tv` are accepted and normalized to the canonical video URL.
 
-Live channels, Twitch clips, collections, subscriber-only videos and deleted or expired VODs are not supported. No Twitch login or cookies are used. The original source must be at most six hours and 20 GB. Clipward downloads the full source before applying the optional start and end times; a link's timestamp or tracking parameters are ignored. Typed clips from a YouTube link are the exception: Clipward downloads the audio and only the video around each clip (ten seconds either side), so the editor can trim a clip within that much. **Settings → Output → Download quality** caps the resolution fetched from YouTube and Twitch (up to 4K by default); a lower one downloads faster on a slow connection. For a longer source, trim a downloaded file before adding it. Downloads also stop after four hours or when less than 1 GB of free space would remain.
+Live channels, Twitch clips, collections, subscriber-only videos and deleted or expired VODs are not supported. No Twitch login or cookies are used. The original source must be at most six hours and 20 GB. Clipward downloads the full source before applying the optional start and end times; a link's timestamp or tracking parameters are ignored. A YouTube link is the exception: Clipward downloads the audio and only the video around each clip (ten seconds either side), whether the AI picked the clips or you typed them, so the editor can trim a clip within that much. It still downloads the whole video when there is no speech (the AI then reads frames), when the clips cover most of it, or when YouTube offers no stream that can be fetched in parts. **Settings → Output → Download quality** caps the resolution fetched from YouTube and Twitch (up to 4K by default); a lower one downloads faster on a slow connection. For a longer source, trim a downloaded file before adding it. Downloads also stop after four hours or when less than 1 GB of free space would remain.
 
 ## Develop
 
